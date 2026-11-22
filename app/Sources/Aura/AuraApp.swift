@@ -18,6 +18,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var panel: AuraPanel!
     private var hotKey: HotKey?
     private var warmTimer: Timer?
+    private lazy var workshop = WorkshopStore { [weak self] in self?.store.transport }
+    private var workshopWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -29,9 +31,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return { text, profile in try await transport.speech(text, voice: profile.voice ?? "", speed: profile.speed) }
         }
         store.speech = SpeechController(engine: RoutingSpeechEngine(system: SystemSpeechEngine(), neural: neural))
-        panel = AuraPanel(rootView: ChatView(store: store, avatar: avatar, backdrop: starfield) { [weak self] in
+        let chat = ChatView(store: store, avatar: avatar, backdrop: starfield) { [weak self] in
             self?.restartServer()
-        })
+        }
+        .environment(\.openWorkshop, OpenWorkshopAction { [weak self] taskID in self?.openWorkshop(taskID) })
+        panel = AuraPanel(rootView: chat)
         panel.onHide = { [weak self] in self?.panelHidden() }
         hotKey = HotKey(keyCode: UInt32(kVK_Space), modifiers: UInt32(optionKey)) { [weak self] in
             self?.togglePanel()
@@ -157,6 +161,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         add(hotKey == nil ? "Open Aura" : "Open Aura (⌥Space)", #selector(openPanel))
         add("New Conversation", #selector(newConversation))
+        add("Open Workshop…", #selector(openWorkshopFromMenu))
         menu.addItem(.separator())
         add("Open Vault in Finder", #selector(openVault))
         add("Open Audit Log", #selector(openAuditLog))
@@ -167,6 +172,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func openPanel() { showPanel() }
+
+    @objc private func openWorkshopFromMenu() { openWorkshop(nil) }
+
+    /// The Workshop: a normal, resizable window (code review needs room), optionally on a task.
+    func openWorkshop(_ taskID: String?) {
+        if workshopWindow == nil {
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 1040, height: 720),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+                backing: .buffered, defer: false)
+            window.title = "Aura Workshop"
+            window.isReleasedWhenClosed = false
+            window.contentView = NSHostingView(rootView: WorkshopView(store: workshop))
+            window.setFrameAutosaveName("AuraWorkshop")
+            if window.frame.origin == .zero { window.center() }
+            workshopWindow = window
+        }
+        if let taskID { workshop.selectedTaskID = taskID }
+        NSApp.activate()
+        workshopWindow?.makeKeyAndOrderFront(nil)
+        Task { await workshop.refresh() }
+        AppLog.write("workshop opened\(taskID.map { " on task \($0)" } ?? "")")
+    }
 
     @objc private func newConversation() {
         Task { await store.newConversation() }

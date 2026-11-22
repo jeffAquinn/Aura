@@ -13,6 +13,13 @@ public protocol AuraTransport: Sendable {
     func resetPersona() async throws -> PersonaInfo
     func voices() async throws -> [VoiceInfo]
     func speech(_ text: String, voice: String, speed: Double) async throws -> Data
+    func skills() async throws -> SkillsOverview
+    func toggleSkill(_ name: String, enabled: Bool) async throws
+    func propose(_ skill: String) async throws -> TaskInfo
+    func tasks() async throws -> [TaskInfo]
+    func task(_ id: String) async throws -> TaskInfo
+    func decide(_ id: String, approve: Bool) async throws -> TaskInfo
+    func status() async throws -> SystemStatus
 }
 
 /// Defaults so test fakes only implement what they exercise.
@@ -23,6 +30,13 @@ extension AuraTransport {
     public func resetPersona() async throws -> PersonaInfo { throw AuraClientError.badResponse }
     public func voices() async throws -> [VoiceInfo] { [] }
     public func speech(_ text: String, voice: String, speed: Double) async throws -> Data { throw AuraClientError.badResponse }
+    public func skills() async throws -> SkillsOverview { SkillsOverview(installed: [], inbox: []) }
+    public func toggleSkill(_ name: String, enabled: Bool) async throws {}
+    public func propose(_ skill: String) async throws -> TaskInfo { throw AuraClientError.badResponse }
+    public func tasks() async throws -> [TaskInfo] { [] }
+    public func task(_ id: String) async throws -> TaskInfo { throw AuraClientError.badResponse }
+    public func decide(_ id: String, approve: Bool) async throws -> TaskInfo { throw AuraClientError.badResponse }
+    public func status() async throws -> SystemStatus { throw AuraClientError.badResponse }
 }
 
 public enum AuraClientError: Error, LocalizedError, Equatable {
@@ -99,6 +113,38 @@ public final class AuraClient: AuraTransport {
     public func speech(_ text: String, voice: String, speed: Double) async throws -> Data {
         struct Body: Encodable { let text: String; let voice: String; let speed: Double }
         return try await send(request("/v1/speech", body: Body(text: text, voice: voice, speed: speed)))
+    }
+
+    // MARK: - the Workshop
+
+    public func skills() async throws -> SkillsOverview {
+        try Self.decoder.decode(SkillsOverview.self, from: await send(request("/v1/skills")))
+    }
+
+    public func toggleSkill(_ name: String, enabled: Bool) async throws {
+        var r = request("/v1/skills/\(name)", body: ["enabled": enabled])
+        r.httpMethod = "PATCH"
+        _ = try await send(r)
+    }
+
+    public func propose(_ skill: String) async throws -> TaskInfo {
+        try Self.decoder.decode(TaskInfo.self, from: await send(request("/v1/tasks", body: ["skill": skill])))
+    }
+
+    public func tasks() async throws -> [TaskInfo] {
+        try Self.decoder.decode([TaskInfo].self, from: await send(request("/v1/tasks")))
+    }
+
+    public func task(_ id: String) async throws -> TaskInfo {
+        try Self.decoder.decode(TaskInfo.self, from: await send(request("/v1/tasks/\(id)")))
+    }
+
+    public func decide(_ id: String, approve: Bool) async throws -> TaskInfo {
+        try Self.decoder.decode(TaskInfo.self, from: await send(request("/v1/tasks/\(id)/decision", body: ["approve": approve])))
+    }
+
+    public func status() async throws -> SystemStatus {
+        try Self.decoder.decode(SystemStatus.self, from: await send(request("/v1/status")))
     }
 
     private static var decoder: JSONDecoder {

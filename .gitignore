@@ -23,3 +23,6 @@ venv/
 # Swift app build output
 app/.build/
 app/build/
+
+# Sprint 5: staging worktrees (shadow projects)
+.aura-staging/

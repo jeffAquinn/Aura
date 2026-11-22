@@ -174,10 +174,11 @@ def test_primary_search_bypasses_the_fallback(aura):
     assert "http" in reply  # cites a source
     # Grounded: every temperature Aura states appears in what Tavily returned. Compare the
     # numbers alone, since results may be structured data ("temp_c": 5.3) without a degree sign.
-    temps = re.findall(r"(-?\d+(?:\.\d+)?)\s?°", reply)
-    results = " ".join(m.text for m in searches)
+    temps = [float(t) for t in re.findall(r"(-?\d+(?:\.\d+)?)\s?°", reply)]
+    found = [float(n) for n in re.findall(r"-?\d+(?:\.\d+)?", " ".join(m.text for m in searches))]
     assert temps, "no temperature in the reply"
-    assert all(re.search(rf"(?<![\d.]){re.escape(t)}(?![\d])", results) for t in temps), temps
+    # Honest rounding ("approximately 6°C" from 6.1) is fine; an invented figure is not.
+    assert all(any(abs(t - n) <= 0.6 for n in found) for t in temps), (temps, found[:40])
 
 
 def test_many_facts_survive_repeated_compaction_at_full_budget(settings):
@@ -303,7 +304,7 @@ def test_the_expression_can_never_contradict_the_soul(aura, request_text):
     ids=["standing-preference", "tone"],
 )
 def test_lasting_preferences_are_saved_to_the_persona_with_approval(aura, request_text, field, expected):
-    aura.chat(request_text, approve=lambda action: True)
-    print(f"\n{calls_to(aura, 'update_persona')}")
+    reply = aura.chat(request_text, approve=lambda action: True)
+    print(f"\n{reply}\n{calls_to(aura, 'update_persona')}")
     saved = aura.toolbox.identity.load().data[field]
     assert expected in (" ".join(saved) if isinstance(saved, list) else saved).lower()

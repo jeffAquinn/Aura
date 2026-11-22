@@ -23,6 +23,8 @@ public enum AuraEvent: Sendable, Equatable {
     case voice(VoiceProfile)
     /// Aura's persona changed (an approved update_persona); carries the (possibly new) name.
     case persona(name: String)
+    /// Aura proposed a skill: its audit has started (review it in the Workshop).
+    case task(id: String, skill: String)
     case done
 }
 
@@ -144,6 +146,9 @@ public struct SSEParser: Sendable {
         case "approval": return (try? json.decode(ApprovalBody.self, from: data)).map { .approval($0.actions) }
         case "error": return (try? json.decode(ErrorBody.self, from: data)).map { .error($0.message) }
         case "voice": return (try? json.decode(VoiceProfile.self, from: data)).map { .voice($0) }
+        case "task":
+            struct TaskBody: Decodable { let id: String; let skill: String }
+            return (try? json.decode(TaskBody.self, from: data)).map { .task(id: $0.id, skill: $0.skill) }
         case "persona":
             struct PersonaBody: Decodable { let name: String }
             return (try? json.decode(PersonaBody.self, from: data)).map { .persona(name: $0.name) }

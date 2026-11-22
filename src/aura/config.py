@@ -8,6 +8,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+PROJECT_DIR = Path(__file__).resolve().parents[2]  # the repository: src/aura/config.py -> ../..
+
 
 @dataclass(frozen=True)
 class Settings:
@@ -30,6 +32,8 @@ class Settings:
     sandbox_timeout: float = 30.0
     # Aura's own settings: persona.json (+ history) and voice.json.
     data_dir: Path = Path("~/Library/Application Support/Aura").expanduser()
+    # The repository Aura runs from: skills/ lives here, and staging worktrees under .aura-staging/.
+    project_dir: Path = PROJECT_DIR
     # Append-only record of approvals, file changes, code runs and blocked paths. Kept
     # outside the vault so Aura's own tools cannot alter it.
     audit_log: Path = Path("~/Library/Logs/Aura/actions.jsonl").expanduser()
@@ -50,5 +54,19 @@ class Settings:
             sandbox_image=env("AURA_SANDBOX_IMAGE", d.sandbox_image),
             sandbox_timeout=float(env("AURA_SANDBOX_TIMEOUT", d.sandbox_timeout)),
             data_dir=Path(env("AURA_DATA_DIR", str(d.data_dir))).expanduser(),
+            project_dir=Path(env("AURA_PROJECT_DIR", str(d.project_dir))).expanduser(),
             audit_log=Path(env("AURA_AUDIT_LOG", str(d.audit_log))).expanduser(),
         )
+
+    @property
+    def skills_dir(self) -> Path:
+        return self.project_dir / "skills"
+
+    @property
+    def skills_inbox(self) -> Path:
+        """Where new skills wait to be proposed: inside the vault, easy to drop into with Finder."""
+        return self.vault_dir / "Skills Inbox"
+
+    @property
+    def staging_dir(self) -> Path:
+        return self.project_dir / ".aura-staging"

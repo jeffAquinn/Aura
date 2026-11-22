@@ -161,6 +161,49 @@ struct SnapshotTests {
         _ = SettingsView(store: store).body
     }
 
+    @Test func workshopAuditCard() throws {
+        let green = AuditReportInfo(
+            skill: "pdf_text", version: "1.0.0", purpose: "Extract the text of a PDF file in the vault, page by page.",
+            findings: [
+                Finding(check: "write-scope", severity: "pass", message: "only skills/pdf_text/ changed (3 files)"),
+                Finding(check: "protected", severity: "pass", message: "the constitution, core and Governor are untouched"),
+                Finding(check: "manifest", severity: "pass", message: "valid manifest; vault access: read; network: none"),
+                Finding(check: "static-scan", severity: "pass", message: "no network, system or dynamic-code use found"),
+                Finding(check: "provenance", severity: "pass", message: "pypdf==7.1.1: 12 years on PyPI, 127 releases, ready-built package"),
+            ],
+            tests: [TestResult(name: "test_extracts_text_page_by_page", status: "passed"),
+                    TestResult(name: "test_refuses_paths_outside_the_vault", status: "passed")],
+            suite: SuiteResult(passed: 213, failed: 0, summary: "213 passed, 1 skipped"), risk: "green", blocked: false)
+        let red = AuditReportInfo(
+            skill: "yaml_tool", version: "0.1.0", purpose: "Parse YAML files.",
+            findings: [Finding(check: "provenance", severity: "red", message: "4 known vulnerabilities in pyyaml 5.3",
+                               detail: "GHSA-6757-jp84-gxfx, GHSA-8q59-q68h-6hv4, PYSEC-2020-96"),
+                       Finding(check: "static-scan", severity: "red", message: "uses the network (requests)", detail: "skills/yaml_tool/skill.py:3")],
+            tests: [], suite: SuiteResult(passed: nil, failed: nil, summary: nil), risk: "red", blocked: true)
+        let diff = FileDiff(file: "skill.py", status: "modified", rows: [
+            DiffRow(left: "def run(args: dict) -> str:", right: "def run(args: dict) -> str:", kind: "same"),
+            DiffRow(left: "    return extract(path)", right: "    return extract(path, limit=LIMIT)", kind: "changed"),
+            DiffRow(left: nil, right: "LIMIT = 12_000", kind: "added"),
+            DiffRow(left: "import os", right: nil, kind: "removed"),
+        ])
+        let view = VStack(alignment: .leading, spacing: 16) {
+            HStack { Text("pdf_text 1.0.0").font(.title3.weight(.semibold)); Spacer(); RiskBadge(risk: "green") }
+            AuditFindings(report: green)
+            HStack { Text("yaml_tool 0.1.0").font(.title3.weight(.semibold)); Spacer(); RiskBadge(risk: "red") }
+            AuditFindings(report: red)
+            DiffTable(diff: diff)
+        }
+        .padding(20)
+        .frame(width: 760)
+        .background(.background)
+        let renderer = ImageRenderer(content: view)
+        renderer.scale = 2
+        let image = try #require(renderer.cgImage)
+        let png = try #require(NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]))
+        try png.write(to: Self.outDir.appending(path: "12-workshop-audit-card.png"))
+        #expect(image.width == 1520)
+    }
+
     @Test func toolStatusReadsLikeASentence() {
         #expect(ToolStatusView.readable("[Tool: File_System_Tool] Reading 'budget.csv'...") == "Reading 'budget.csv'…")
         #expect(ToolStatusView.readable("Plain status") == "Plain status")

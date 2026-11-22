@@ -1,0 +1,11 @@
+name = "pdf_text"
+version = "1.0.0"
+purpose = "Extract the text of a PDF file in the vault, page by page."
+dependencies = ["pypdf==7.1.1"]
+
+[inputs]
+path = "vault-relative path to a .pdf file, e.g. 'reports/q3.pdf'"
+
+[permissions]
+network = false
+vault = "read"

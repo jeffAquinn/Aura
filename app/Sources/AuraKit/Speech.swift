@@ -351,6 +351,17 @@ public final class SpeechController {
         silenced = true
     }
 
+    /// A short spoken status line ("Running the pdf text skill."), when spoken replies are on
+    /// and the user hasn't stopped this reply.
+    public func announce(_ status: String) {
+        guard profile.speak, !silenced else { return }
+        let line = status
+            .replacingOccurrences(of: "...", with: ".")
+            .replacingOccurrences(of: "…", with: ".")
+            .replacingOccurrences(of: "_", with: " ")  // "pdf_text" reads as "pdf text"
+        engine.speak(line, profile: profile)
+    }
+
     /// Speak a sample with the current voice even if spoken replies are off (the user asked).
     public func preview(_ text: String) {
         engine.stop()

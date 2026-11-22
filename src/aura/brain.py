@@ -138,35 +138,45 @@ class Aura:
             return vault.describe_change(tool_call["name"], args)
 
         approval = InterruptOnConfig(allowed_decisions=["approve", "reject"], description=describe)
+        # Conversation memory (and paused approvals): checkpointed per thread_id. Kept across
+        # agent rebuilds, so deploying a skill doesn't forget the conversation.
+        self._checkpointer = InMemorySaver()
 
-        self._agent = create_agent(
-            model=llm,
-            tools=self.toolbox.tools,
-            middleware=[
-                persona,
-                DenialMiddleware(),
-                # Short-term memory compaction: when the history nears the server's context
-                # window, older turns are folded into a summary instead of silently falling off.
-                SummarizationMiddleware(
-                    model=llm,
-                    trigger=("tokens", int(budget * 0.6)),
-                    keep=("tokens", int(budget * 0.3)),
-                    summary_prompt=MEMORY_PROMPT,  # lossless fact extraction
-                    # LangChain's default trims what it summarizes to 4k tokens by dropping
-                    # the *oldest* messages: at a 16k budget that discards the earlier summary
-                    # (every fact so far) before re-summarizing. Size it to the budget so the
-                    # whole slice is summarized; it is ~30% of the budget in practice.
-                    trim_tokens_to_summarize=int(budget * 0.6),
-                ),
-                ToolCallLimitMiddleware(run_limit=TOOL_CALLS_PER_TURN),
-                ToolStatusMiddleware(),
-                HumanInTheLoopMiddleware(interrupt_on={name: approval for name in NEEDS_APPROVAL}),
-            ],
-            # Conversation memory (and paused approvals): checkpointed per thread_id. In-process
-            # for now; swap for a SQLite saver to persist across restarts.
-            checkpointer=InMemorySaver(),
-        )
+        def build(tools: list) -> Any:
+            return create_agent(
+                model=llm,
+                tools=tools,
+                middleware=[
+                    persona,
+                    DenialMiddleware(),
+                    # Short-term memory compaction: when the history nears the server's context
+                    # window, older turns are folded into a summary instead of silently falling off.
+                    SummarizationMiddleware(
+                        model=llm,
+                        trigger=("tokens", int(budget * 0.6)),
+                        keep=("tokens", int(budget * 0.3)),
+                        summary_prompt=MEMORY_PROMPT,  # lossless fact extraction
+                        # LangChain's default trims what it summarizes to 4k tokens by dropping
+                        # the *oldest* messages: at a 16k budget that discards the earlier summary
+                        # (every fact so far) before re-summarizing. Size it to the budget so the
+                        # whole slice is summarized; it is ~30% of the budget in practice.
+                        trim_tokens_to_summarize=int(budget * 0.6),
+                    ),
+                    ToolCallLimitMiddleware(run_limit=TOOL_CALLS_PER_TURN),
+                    ToolStatusMiddleware(),
+                    HumanInTheLoopMiddleware(interrupt_on={name: approval for name in NEEDS_APPROVAL}),
+                ],
+                checkpointer=self._checkpointer,
+            )
+
+        self._build = build
+        self._agent = build(self.toolbox.all_tools())
+        self.toolbox.workshop.on_deployed = self.reload_tools
         self.new_conversation()
+
+    def reload_tools(self) -> None:
+        """Rebuild the agent with the current tools (e.g. a newly deployed skill). Memory is kept."""
+        self._agent = self._build(self.toolbox.all_tools())
 
     def new_conversation(self) -> None:
         self.thread_id = uuid.uuid4().hex

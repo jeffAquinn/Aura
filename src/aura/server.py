@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import socket
+import subprocess
 import sys
 import threading
 from collections.abc import AsyncIterator, Iterator
@@ -32,7 +33,9 @@ from pydantic import BaseModel, Field
 
 from aura.brain import Aura, Changed, Event, Status, Text
 from aura.config import Settings
+from aura.governor.workshop import WorkshopError
 from aura.speech import Kokoro, SpeechUnavailable
+from aura.tools.sandbox import find_docker
 from aura.voice import VoiceError
 
 KEEP_ALIVE = "30m"
@@ -108,7 +111,7 @@ class Guard:
         if not hmac.compare_digest(headers.get("authorization", "").encode(), self.expected):
             return _error(401, "Missing or invalid token.")
         content_type = headers.get("content-type", "").split(";")[0].strip().lower()
-        if method in ("POST", "PUT") and content_type != "application/json":
+        if method in ("POST", "PUT", "PATCH") and content_type != "application/json":
             return _error(415, "Send JSON (Content-Type: application/json).")
         return None
 
@@ -213,6 +216,18 @@ class SpeechIn(BaseModel):
     text: str = Field(min_length=1, max_length=1000)
     voice: str = Field(min_length=1, max_length=100)
     speed: float = Field(default=1.0, ge=0.5, le=2.0)
+
+
+class ProposeIn(BaseModel):
+    skill: str = Field(min_length=1, max_length=40)
+
+
+class DecisionIn(BaseModel):
+    approve: bool
+
+
+class ToggleIn(BaseModel):
+    enabled: bool
 
 
 class ApprovalsIn(BaseModel):
@@ -332,6 +347,74 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
     def reset_persona() -> dict:
         identity.reset(by="user")
         return persona_state()
+
+    # ── the Workshop: skills, audits, decisions (Sprint 5) ──────────────────────────────────
+
+    workshop, skills = aura.toolbox.workshop, aura.toolbox.skills
+
+    @app.get("/v1/skills")
+    def get_skills() -> dict:
+        return {"installed": [s.public() for s in skills.scan()], "inbox": workshop.inbox()}
+
+    @app.patch("/v1/skills/{name}")
+    def toggle_skill(name: str, body: ToggleIn) -> Response:
+        if not turn.acquire(blocking=False):
+            return busy()
+        try:
+            if not skills.set_enabled(name, body.enabled):
+                return _error(404, f"'{name}' is not an installed skill.")
+            aura.reload_tools()
+        finally:
+            turn.release()
+        return JSONResponse(next(s.public() for s in skills.scan() if s.name == name))
+
+    @app.post("/v1/tasks", status_code=202)
+    def propose(body: ProposeIn) -> Response:
+        try:
+            task = workshop.propose(body.skill)
+        except WorkshopError as e:
+            return _error(409, str(e))
+        return JSONResponse(task.public(), status_code=202)
+
+    @app.get("/v1/tasks")
+    def tasks() -> list[dict]:
+        return [t.public() for t in sorted(workshop.tasks.values(), key=lambda t: t.created, reverse=True)]
+
+    @app.get("/v1/tasks/{task_id}")
+    def task(task_id: str) -> Response:
+        t = workshop.tasks.get(task_id)
+        if t is None:
+            return _error(404, "No such task.")
+        return JSONResponse({**t.public(), "diff": workshop.diff(task_id)})
+
+    @app.post("/v1/tasks/{task_id}/decision")
+    def decide(task_id: str, body: DecisionIn) -> Response:
+        if not turn.acquire(blocking=False):  # deploying swaps the agent's tools between turns
+            return busy()
+        try:
+            t = workshop.decide(task_id, body.approve)
+        except WorkshopError as e:
+            return _error(409, str(e))
+        finally:
+            turn.release()
+        return JSONResponse(t.public())
+
+    @app.get("/v1/status")
+    def status() -> dict:
+        rss = subprocess.run(["ps", "-o", "rss=", "-p", str(os.getpid())], capture_output=True, text=True).stdout.strip()
+        try:
+            docker = subprocess.run([find_docker(), "info"], capture_output=True, timeout=5).returncode == 0
+        except Exception:  # noqa: BLE001
+            docker = False
+        installed = skills.scan()
+        return {
+            "model": aura.settings.model,
+            "model_loaded": keeper.loaded(),
+            "server_memory_mb": round(int(rss or 0) / 1024),
+            "docker": docker,
+            "skills": {"enabled": sum(s.enabled for s in installed), "installed": len(installed)},
+            "tasks_running": sum(t.stage in ("staging", "auditing") for t in workshop.tasks.values()),
+        }
 
     @app.post("/v1/warmup", status_code=202)
     def warmup() -> dict:

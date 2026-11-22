@@ -8,10 +8,13 @@ runs on one dedicated worker thread, in request order.
 from __future__ import annotations
 
 import asyncio
+import importlib.metadata
 import importlib.util
 import io
+import shutil
 import threading
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Any
 
 PREFIX = "kokoro:"
@@ -36,6 +39,37 @@ DEFAULT_VOICE = PREFIX + "af_heart"
 
 class SpeechUnavailable(RuntimeError):
     pass
+
+
+ESPEAK_PATH_LIMIT = 150  # eSpeak NG keeps its data path in a fixed buffer (~160 characters)
+
+
+def espeak_copy(package: Path, cache_dir: Path, version: str) -> Path:
+    """A copy of the eSpeak package (library and data) at a short path. (A symlinked short path
+    was tried and isn't enough: the long real path still reached eSpeak.)"""
+    copy = cache_dir / f"espeakng-{version}"
+    if not (copy / "espeak-ng-data" / "phontab").exists():
+        staging = cache_dir / f"espeakng-{version}.partial"
+        shutil.rmtree(staging, ignore_errors=True)
+        shutil.copytree(package, staging, ignore=shutil.ignore_patterns("__pycache__", "*.py"))
+        shutil.rmtree(copy, ignore_errors=True)
+        staging.rename(copy)  # complete or absent: never half-copied
+    return copy
+
+
+def _guard_espeak() -> None:
+    """eSpeak NG truncates a long data path and then calls exit(1), killing the whole process
+    (seen when Aura runs from a deeply nested folder). Use a short-path copy when needed."""
+    import espeakng_loader
+
+    if len(espeakng_loader.get_data_path()) <= ESPEAK_PATH_LIMIT:
+        return
+    package = Path(espeakng_loader.__file__).parent
+    library = Path(espeakng_loader.get_library_path()).name
+    copy = espeak_copy(package, Path("~/Library/Caches/Aura").expanduser(),
+                       importlib.metadata.version("espeakng-loader"))  # fmt: skip
+    espeakng_loader.get_library_path = lambda: str(copy / library)  # read by misaki when it loads
+    espeakng_loader.get_data_path = lambda: str(copy / "espeak-ng-data")
 
 
 def available() -> bool:
@@ -94,6 +128,7 @@ class Kokoro:
     def _load(self) -> Any:
         with self._load_lock:
             if self._model is None:
+                _guard_espeak()  # before misaki loads eSpeak
                 from mlx_audio.tts.utils import load_model
 
                 self._model = load_model(self.repo)

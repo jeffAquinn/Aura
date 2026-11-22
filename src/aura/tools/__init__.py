@@ -16,6 +16,11 @@ from aura.tools.sandbox import Sandbox, sandbox_tools
 from aura.tools.vault import Vault, vault_tools
 from aura.tools.voice import voice_tools
 from aura.tools.web import WebSearch, web_tools
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:  # imported lazily in from_settings (they import this package themselves)
+    from aura.governor.workshop import Workshop
+    from aura.skills import SkillManager
 from aura import speech
 from aura.voice import VoiceStore
 
@@ -37,6 +42,9 @@ GROUP = {
     "set_voice": "Voice_Tool",
     "view_persona": "Persona_Tool",
     "update_persona": "Persona_Tool",
+    "check_library": "Governor",
+    "list_skills": "Workshop",
+    "propose_skill": "Workshop",
 }
 
 _DOING: dict[str, Callable[[dict], str]] = {
@@ -51,11 +59,16 @@ _DOING: dict[str, Callable[[dict], str]] = {
     "set_voice": lambda a: "Adjusting my voice...",
     "view_persona": lambda a: "Reviewing my persona...",
     "update_persona": lambda a: f"Updating my {a.get('field', 'persona')}...",
+    "check_library": lambda a: f"Checking '{a.get('name')}' on PyPI and OSV...",
+    "list_skills": lambda a: "Looking through my skills...",
+    "propose_skill": lambda a: f"Staging the '{a.get('name')}' skill for audit...",
 }
 
 
 def status_line(tool_name: str, args: dict) -> str:
     """e.g. "[Tool: File_System_Tool] Reading 'budget.csv'..." """
+    if tool_name.startswith("skill_"):  # installed skills: Gemma's spoken status line
+        return f"[Tool: Skill_Tool] Running the {tool_name[len('skill_'):]} skill..."
     doing = _DOING.get(tool_name, lambda a: "Working...")(args)
     return f"[Tool: {GROUP.get(tool_name, tool_name)}] {doing}"
 
@@ -68,7 +81,13 @@ class Toolbox:
     sandbox: Sandbox
     identity: IdentityStore
     voice: VoiceStore
+    skills: SkillManager
+    workshop: Workshop
     tools: list[BaseTool] = field(default_factory=list)
+
+    def all_tools(self) -> list[BaseTool]:
+        """The built-in tools plus every approved, enabled skill (re-read on each rebuild)."""
+        return [*self.tools, *self.skills.tools()]
 
     @classmethod
     def from_settings(
@@ -77,6 +96,7 @@ class Toolbox:
         *,
         search: WebSearch | None = None,
         sandbox: Sandbox | None = None,
+        run_suite: bool = True,
     ) -> Toolbox:
         audit = AuditLog(settings.audit_log)
         vault = Vault(settings.vault_dir, audit)
@@ -93,4 +113,11 @@ class Toolbox:
             *voice_tools(voice),
             *identity_tools(identity),
         ]
-        return cls(audit, vault, search, sandbox, identity, voice, tools)
+        from aura.governor.workshop import Workshop
+        from aura.skills import SkillManager
+        from aura.tools.workshop import workshop_tools
+
+        skills = SkillManager(settings.skills_dir, settings.data_dir, sandbox, audit)
+        workshop = Workshop(settings, skills, sandbox, audit, run_suite=run_suite)
+        tools += workshop_tools(workshop)
+        return cls(audit, vault, search, sandbox, identity, voice, skills, workshop, tools)

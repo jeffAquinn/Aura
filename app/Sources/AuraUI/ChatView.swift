@@ -285,8 +285,49 @@ struct ItemView: View {
                 .font(.callout)
                 .foregroundStyle(.orange)
                 .padding(.leading, 32)
+        case .task:
+            TaskCard(skill: item.text, taskID: item.actions.first?.description)
         }
     }
+}
+
+/// A skill audit started from the chat: it continues in the Workshop.
+struct TaskCard: View {
+    let skill: String
+    let taskID: String?
+    @Environment(\.openWorkshop) private var openWorkshop
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "hammer.fill").foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 2) {
+                Text("Auditing the **\(skill)** skill").font(.callout)
+                Text("Checks run in a shadow project; you decide in the Workshop.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 8)
+            Button("Open Workshop") { openWorkshop(taskID) }.controlSize(.small)
+        }
+        .padding(10)
+        .background(Color.primary.opacity(0.06), in: .rect(cornerRadius: 12))
+        .padding(.leading, 32)
+    }
+}
+
+/// Opens the Workshop window, optionally on a task (like SwiftUI's OpenURLAction).
+public struct OpenWorkshopAction: Sendable {
+    private let handler: @MainActor @Sendable (String?) -> Void
+
+    public init(_ handler: @escaping @MainActor @Sendable (String?) -> Void) {
+        self.handler = handler
+    }
+
+    @MainActor public func callAsFunction(_ taskID: String?) { handler(taskID) }
+}
+
+public extension EnvironmentValues {
+    /// Provided by the app.
+    @Entry var openWorkshop = OpenWorkshopAction { _ in }
 }
 
 /// Tool activity: smaller and quieter than Aura's speech.
@@ -310,6 +351,9 @@ struct ToolStatusView: View {
         if text.contains("Code_Interpreter_Tool") { return "terminal" }
         if text.contains("Voice_Tool") { return "speaker.wave.2" }
         if text.contains("Persona_Tool") { return "person.crop.circle" }
+        if text.contains("Skill_Tool") { return "puzzlepiece.extension" }
+        if text.contains("Governor") { return "checkmark.shield" }
+        if text.contains("Workshop") { return "hammer" }
         return "folder"
     }
 

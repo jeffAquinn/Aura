@@ -14,7 +14,7 @@ public final class ChatStore {
     }
 
     public struct Item: Identifiable, Equatable, Sendable {
-        public enum Role: Sendable { case user, aura, status, approval, error }
+        public enum Role: Sendable { case user, aura, status, approval, error, task }
         public let id = UUID()
         public let role: Role
         public var text: String
@@ -168,6 +168,9 @@ public final class ChatStore {
             phase = .waking
         case let .status(text):
             items.append(Item(role: .status, text: text))
+            if text.contains("Skill_Tool") {  // Gemma: installed skills get a spoken status line
+                speech?.announce(text.replacingOccurrences(of: #"^\[Tool: [^\]]*\]\s*"#, with: "", options: .regularExpression))
+            }
             phase = .streaming
         case let .text(text):
             if let last = items.indices.last, items[last].role == .aura {
@@ -191,6 +194,8 @@ public final class ChatStore {
             speech?.warmUp()  // e.g. "talk to me" just switched spoken replies on
         case let .persona(name):
             persona.name = name
+        case let .task(id, skill):
+            items.append(Item(role: .task, text: skill, actions: [PendingAction(tool: "task", description: id)]))
         case .done:
             break
         }

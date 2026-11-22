@@ -110,6 +110,31 @@ struct SpeechControllerTests {
         #expect(engine.spoken == ["Let me check.", "It's 6°C."])
     }
 
+    @Test func installedSkillsGetASpokenStatusLineButOtherToolsDont() async {
+        let (s, engine) = store(speak: true, events: [[
+            .status("[Tool: File_System_Tool] Reading 'a.pdf'..."),
+            .status("[Tool: Skill_Tool] Running the pdf_text skill..."),
+            .text("It has two pages."), .done,
+        ]])
+        s.send("Read a.pdf")
+        await s.turnTask?.value
+        #expect(engine.spoken == ["Running the pdf text skill.", "It has two pages."])
+    }
+
+    @Test func skillStatusLinesStaySilentWhenSpeechIsOffOrStopped() async {
+        let (quiet, quietEngine) = store(speak: false, events: [[.status("[Tool: Skill_Tool] Running the pdf_text skill..."), .done]])
+        quiet.send("Read a.pdf")
+        await quiet.turnTask?.value
+        #expect(quietEngine.spoken.isEmpty)
+
+        let engine = FakeEngine()
+        let speech = SpeechController(engine: engine, profile: VoiceProfile(speak: true))
+        speech.beginReply()
+        speech.stop()
+        speech.announce("Running the pdf_text skill...")
+        #expect(engine.spoken.isEmpty)
+    }
+
     @Test func approvalCardsAreReadAloud() async {
         let card = PendingAction(tool: "delete_path", description: "delete file 'old-draft.txt' (6 B)")
         let (s, engine) = store(speak: true, events: [[.approval([card]), .done]])

@@ -62,7 +62,15 @@ class Sandbox:
         self.audit = audit
         self._image_ready = False
 
-    def command(self, docker: str, name: str) -> list[str]:
+    def command(
+        self, docker: str, name: str, image: str | None = None,
+        mounts: tuple[tuple[Path, str], ...] = (), vault: bool = True,
+    ) -> list[str]:
+        extra: list[str] = []
+        if vault:
+            extra += ["--mount", f"type=bind,source={self.vault_dir},target=/vault,readonly"]
+        for source, target in mounts:  # always read-only
+            extra += ["--mount", f"type=bind,source={source},target={target},readonly"]
         return [
             docker, "run", "--rm", "-i", "--name", name,
             "--network", "none",                              # no internet, no LAN
@@ -72,8 +80,8 @@ class Sandbox:
             "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
             "--user", "65534:65534",                          # nobody
             "--workdir", "/tmp", "--env", "HOME=/tmp",
-            "--mount", f"type=bind,source={self.vault_dir},target=/vault,readonly",
-            self.image, "python", "-I", "-",                  # code arrives on stdin
+            *extra,
+            image or self.image, "python", "-I", "-",         # code arrives on stdin
         ]  # fmt: skip
 
     def ensure_image(self, docker: str, on_status: Callable[[str], None] = lambda _: None) -> None:
@@ -95,14 +103,34 @@ class Sandbox:
             self.audit.record("sandbox_image_built", image=self.image)
         self._image_ready = True
 
-    def run(self, code: str, on_status: Callable[[str], None] = lambda _: None) -> RunResult:
+    def image_exists(self, tag: str) -> bool:
+        probe = subprocess.run([find_docker(), "image", "inspect", tag], capture_output=True, text=True)
+        if _daemon_down(probe.stderr):
+            raise SandboxUnavailable("Docker isn't running. Start Docker Desktop and try again.")
+        return probe.returncode == 0
+
+    def build_image(self, tag: str, dockerfile: str, on_status: Callable[[str], None] = lambda _: None) -> None:
+        """Build an image from a Dockerfile given as text (no build context)."""
         docker = find_docker()
-        self.ensure_image(docker, on_status)
+        self.ensure_image(docker, on_status)  # skill images build on top of the base sandbox
+        on_status(f"Building {tag}...")
+        build = subprocess.run([docker, "build", "-t", tag, "-"], input=dockerfile,
+                               capture_output=True, text=True, timeout=900)  # fmt: skip
+        if build.returncode != 0:
+            raise SandboxUnavailable(f"couldn't build {tag}: {build.stderr[-600:]}")
+
+    def run(
+        self, code: str, on_status: Callable[[str], None] = lambda _: None, image: str | None = None,
+        mounts: tuple[tuple[Path, str], ...] = (), vault: bool = True,
+    ) -> RunResult:
+        docker = find_docker()
+        if image is None:
+            self.ensure_image(docker, on_status)
         name = f"aura-run-{uuid.uuid4().hex[:12]}"
         start = time.monotonic()
         try:
             proc = subprocess.run(
-                self.command(docker, name),
+                self.command(docker, name, image, mounts, vault),
                 input=code, capture_output=True, text=True, errors="replace",
                 timeout=self.timeout,
             )
