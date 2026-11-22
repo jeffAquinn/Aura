@@ -149,22 +149,30 @@ class Aura:
 
     # ── the interface API ──────────────────────────────────────────────────────────────────
 
+    @property
+    def awaiting_approval(self) -> bool:
+        return self._pending is not None
+
+    # stream() and resume() validate eagerly, then return the run's event iterator, so a caller
+    # (e.g. the HTTP server) learns about a bad request before it starts streaming a reply.
+
     def stream(self, text: str) -> Iterator[Event]:
         """Send a message; yield Aura's reply, tool status lines, and possibly a final
         ApprovalNeeded (answer it with `resume`)."""
         if self._pending:
             raise RuntimeError("An approval is pending; answer it with resume() first.")
         self._turn_notices: set[str] = set()  # each notice is said once per turn
-        yield from self._run({"messages": [{"role": "user", "content": text}]})
+        return self._run({"messages": [{"role": "user", "content": text}]})
 
     def resume(self, approvals: Sequence[bool]) -> Iterator[Event]:
         """Answer the pending ApprovalNeeded, one bool per action, and continue the run."""
-        pending, self._pending = self._pending, None
+        pending = self._pending
         if pending is None:
             raise RuntimeError("Nothing is waiting for approval.")
         actions = pending.value["action_requests"]
         if len(approvals) != len(actions):
             raise ValueError(f"Expected {len(actions)} decisions, got {len(approvals)}.")
+        self._pending = None  # only once the answer is known to be valid
         decisions = []
         for action, ok in zip(actions, approvals):
             self.toolbox.audit.record(
@@ -174,7 +182,7 @@ class Aura:
                 decision="approved" if ok else "denied",
             )
             decisions.append({"type": "approve"} if ok else {"type": "reject", "message": REJECTION_NOTE})
-        yield from self._run(Command(resume={pending.id: {"decisions": decisions}}))
+        return self._run(Command(resume={pending.id: {"decisions": decisions}}))
 
     def chat(self, text: str, approve: Callable[[Action], bool] = lambda _: False) -> str:
         """Non-interactive convenience: run a full turn, deciding approvals with `approve`

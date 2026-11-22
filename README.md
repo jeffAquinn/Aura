@@ -10,6 +10,16 @@ uv run aura                 # chat in the terminal (/new = fresh conversation, /
 uv run pytest               # all tests; live ones skip if Ollama / Docker / network are absent
 ```
 
+### The menu bar app (Sprint 3, in progress)
+
+```sh
+scripts/build-app.sh        # builds app/build/Aura.app (needs Xcode 26+)
+open app/build/Aura.app     # sparkle icon in the menu bar; ⌥Space opens the panel
+```
+
+The app launches its own local server (`uv run aura-server`, 127.0.0.1 only, per-launch token)
+and stops it when it quits. `cd app && swift test` runs the client's unit tests.
+
 Requires [Ollama](https://ollama.com) serving `gemma4:26b` (or any OpenAI-compatible endpoint), and
 Docker Desktop running for the code interpreter. Configuration: see `.env.example`.
 
@@ -36,6 +46,8 @@ File tools are confined to `~/Documents/Aura_Vault`. Everything consequential is
 | `src/aura/audit.py` | JSONL audit log |
 | `src/aura/tools/` | `vault.py` (whitelist + file tools), `web.py` (search), `sandbox.py` (Docker runner) |
 | `src/aura/main.py` | Terminal interface |
+| `src/aura/server.py` | Local HTTP + SSE server for the app (auth, streaming, Smart-Warm) |
+| `app/` | SwiftUI menu bar app: `AuraKit` (client, SSE, state) + `Aura` (UI) + `aura-smoke` |
 | `docs/sprint-2-design.md` | Sprint 2 design, as approved by Gemma |
 
 ## Roadmap

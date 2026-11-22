@@ -6,33 +6,14 @@ import dataclasses
 from typing import Any
 
 import pytest
-from conftest import ScriptedModel, call
+from conftest import ScriptedModel, call, make_aura, tool_turn
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.messages.utils import count_tokens_approximately
 
-from aura.audit import AuditLog
 from aura.brain import ApprovalNeeded, Aura, Event, Status, Text
 from aura.config import Settings
 from aura.middleware import DENIAL
-from aura.tools import Toolbox
-from aura.tools.web import FALLBACK_NOTICE, Hit, WebSearch
-
-
-def fake_ddg(query: str, n: int) -> list[Hit]:
-    return [Hit("London weather", "https://example.com/london", "12°C and light rain.")]
-
-
-def make_aura(
-    settings: Settings, *script: AIMessage, report_usage: bool = False, tavily=None, **overrides: Any
-) -> tuple[Aura, ScriptedModel]:
-    s = dataclasses.replace(settings, **overrides)
-    search = WebSearch(s.tavily_api_key, AuditLog(s.audit_log), tavily=tavily, duckduckgo=fake_ddg)
-    model = ScriptedModel(script=list(script), report_usage=report_usage)
-    return Aura(settings=s, model=model, toolbox=Toolbox.from_settings(s, search=search)), model
-
-
-def tool_turn(*calls: dict) -> AIMessage:
-    return AIMessage(content="", tool_calls=list(calls))
+from aura.tools.web import FALLBACK_NOTICE, Hit
 
 
 def said(events: list[Event]) -> str:

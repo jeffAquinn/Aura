@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import uuid
 from typing import Any
 
@@ -12,7 +13,11 @@ from langchain_core.messages.utils import count_tokens_approximately
 from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import Field
 
+from aura.audit import AuditLog
+from aura.brain import Aura
 from aura.config import Settings
+from aura.tools import Toolbox
+from aura.tools.web import Hit, WebSearch
 
 
 @pytest.fixture(autouse=True)
@@ -63,3 +68,20 @@ class ScriptedModel(BaseChatModel):
     def agent_calls(self) -> list[list[BaseMessage]]:
         """Calls made by Aura's agent loop (as opposed to the memory summarizer)."""
         return [c for c in self.calls if isinstance(c[0], SystemMessage) and "You are Aura" in c[0].text]
+
+
+def fake_ddg(query: str, n: int) -> list[Hit]:
+    return [Hit("London weather", "https://example.com/london", "12°C and light rain.")]
+
+
+def make_aura(
+    settings: Settings, *script: AIMessage, report_usage: bool = False, tavily=None, **overrides: Any
+) -> tuple[Aura, ScriptedModel]:
+    s = dataclasses.replace(settings, **overrides)
+    search = WebSearch(s.tavily_api_key, AuditLog(s.audit_log), tavily=tavily, duckduckgo=fake_ddg)
+    model = ScriptedModel(script=list(script), report_usage=report_usage)
+    return Aura(settings=s, model=model, toolbox=Toolbox.from_settings(s, search=search)), model
+
+
+def tool_turn(*calls: dict) -> AIMessage:
+    return AIMessage(content="", tool_calls=list(calls))

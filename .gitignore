@@ -19,3 +19,7 @@ venv/
 # IDEs
 .vscode/
 .idea/
+
+# Swift app build output
+app/.build/
+app/build/

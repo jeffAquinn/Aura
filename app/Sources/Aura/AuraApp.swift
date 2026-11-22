@@ -1,0 +1,165 @@
+import AppKit
+import AuraKit
+import Carbon.HIToolbox
+import SwiftUI
+
+@main
+struct AuraApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var delegate
+    var body: some Scene { Settings { EmptyView() } }  // menu-bar only: no windows of its own
+}
+
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    private let store = ChatStore()
+    private var server: ServerManager?
+    private var statusItem: StatusItemController!
+    private var panel: AuraPanel!
+    private var hotKey: HotKey?
+    private var warmTimer: Timer?
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.accessory)
+        let avatar = Bundle.main.image(forResource: "Avatar").map { Image(nsImage: $0) }
+        panel = AuraPanel(rootView: ChatView(store: store, avatar: avatar))
+        panel.onHide = { [weak self] in self?.panelHidden() }
+        hotKey = HotKey(keyCode: UInt32(kVK_Space), modifiers: UInt32(optionKey)) { [weak self] in
+            self?.togglePanel()
+        }
+        AppLog.write(hotKey == nil ? "hotkey ⌥Space: taken by another app" : "hotkey ⌥Space: registered")
+        statusItem = StatusItemController(menu: makeMenu()) { [weak self] in self?.togglePanel() }
+        startServer()
+        // Opening Aura should visibly open it: show the panel once the menu bar icon is placed.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+            guard let self else { return }
+            AppLog.write("menu bar icon: \(self.statusItem.diagnostics)")
+            self.showPanel()
+        }
+    }
+
+    /// Opening Aura again while it runs (Finder, Spotlight, `open`) brings the panel back.
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        AppLog.write("reopened")
+        showPanel()
+        return false
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        server?.shutDownWithoutWaiting()  // the server exits when its stdin closes
+    }
+
+    // MARK: - server
+
+    private var projectDir: URL? {
+        if let dir = ProcessInfo.processInfo.environment["AURA_PROJECT_DIR"] {
+            return URL(fileURLWithPath: dir)
+        }
+        return (Bundle.main.object(forInfoDictionaryKey: "AuraProjectDir") as? String)
+            .map { URL(fileURLWithPath: $0) }
+    }
+
+    private func startServer() {
+        guard let projectDir else {
+            store.connection = .offline("Aura doesn't know where its project folder is.")
+            return
+        }
+        do {
+            let server = try ServerManager(projectDir: projectDir)
+            self.server = server
+            server.onStateChange = { [weak self] state in self?.serverChanged(state) }
+            Task { try? await server.start() }
+        } catch {
+            store.connection = .offline(error.localizedDescription)
+        }
+    }
+
+    private func serverChanged(_ state: ServerManager.State) {
+        AppLog.write("server: \(state)")
+        switch state {
+        case .starting:
+            store.connection = .starting
+        case let .running(port):
+            guard let server else { return }
+            store.transport = AuraClient(port: port, token: server.token)
+            if panel.isVisible { warm() }
+        case let .failed(reason):
+            store.connectionLost(reason)
+        case .stopped:
+            store.connectionLost("Aura Server stopped.")
+        }
+    }
+
+    // MARK: - panel + Smart-Warm
+
+    private func togglePanel() {
+        panel.isVisible ? panel.hide() : showPanel()
+    }
+
+    private func showPanel() {
+        panel.show(below: statusItem.buttonFrame)
+        store.focusRequests += 1
+        warm()  // the user is about to type: load the model now
+        warmTimer?.invalidate()
+        warmTimer = Timer.scheduledTimer(withTimeInterval: 600, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.warm() }  // keep it loaded while the panel is open
+        }
+    }
+
+    private func panelHidden() {
+        warmTimer?.invalidate()
+        warmTimer = nil
+        warm()  // restart the 30-minute countdown from the moment the panel closed
+    }
+
+    private func warm() {
+        guard let transport = store.transport else { return }
+        Task { try? await transport.warmup() }
+    }
+
+    // MARK: - menu
+
+    private func makeMenu() -> NSMenu {
+        let menu = NSMenu()
+        func add(_ title: String, _ action: Selector) {
+            let item = NSMenuItem(title: title, action: action, keyEquivalent: "")
+            item.target = self
+            menu.addItem(item)
+        }
+        add(hotKey == nil ? "Open Aura" : "Open Aura (⌥Space)", #selector(openPanel))
+        add("New Conversation", #selector(newConversation))
+        menu.addItem(.separator())
+        add("Open Vault in Finder", #selector(openVault))
+        add("Open Audit Log", #selector(openAuditLog))
+        add("Restart Aura Server", #selector(restartServer))
+        menu.addItem(.separator())
+        menu.addItem(NSMenuItem(title: "Quit Aura", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+        return menu
+    }
+
+    @objc private func openPanel() { showPanel() }
+
+    @objc private func newConversation() {
+        Task { await store.newConversation() }
+    }
+
+    @objc private func openVault() {
+        Task {
+            let vault = (try? await store.transport?.health())?.vault
+                ?? FileManager.default.homeDirectoryForCurrentUser.appending(path: "Documents/Aura_Vault").path
+            NSWorkspace.shared.open(URL(fileURLWithPath: vault))
+        }
+    }
+
+    @objc private func openAuditLog() {
+        let log = FileManager.default.homeDirectoryForCurrentUser.appending(path: "Library/Logs/Aura/actions.jsonl")
+        NSWorkspace.shared.open(log)
+    }
+
+    @objc private func restartServer() {
+        guard let server else { return startServer() }
+        Task {
+            await server.stop()
+            _ = try? await server.start()
+        }
+    }
+}
