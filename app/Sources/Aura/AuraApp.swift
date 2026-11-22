@@ -46,6 +46,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.togglePanel()
         }
         AppLog.write(hotKey == nil ? "hotkey ⌥Space: taken by another app" : "hotkey ⌥Space: registered")
+        AppLog.write("main menu: \(NSApp.mainMenu?.items.map(\.title) ?? [])")
         menu = makeMenu()
         statusItem = StatusItemController(menu: menu) { [weak self] in self?.togglePanel() }
         workshop.onAlertsChanged = { [weak self] in self?.checkAlerts() }

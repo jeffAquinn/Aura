@@ -98,7 +98,9 @@ final class AuraPanel: NSPanel {
         level = .floating
         hidesOnDeactivate = false
         isReleasedWhenClosed = false
-        isMovableByWindowBackground = true
+        // Not movable by its background: dragging over the conversation selects text. The header
+        // moves the panel (WindowDragArea).
+        isMovableByWindowBackground = false
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
         backgroundColor = .clear
         isOpaque = false
@@ -108,12 +110,54 @@ final class AuraPanel: NSPanel {
 
         let glass = NSGlassEffectView()
         glass.style = .regular
-        glass.cornerRadius = 20
+        glass.cornerRadius = Self.cornerRadius
         glass.contentView = NSHostingView(rootView: rootView)
-        contentView = glass
+        glass.autoresizingMask = [.width, .height]
+        // The window's shape is this rounded frame in every state, so macOS never outlines (or
+        // shadows) the panel's square edges when it stops being the active window.
+        let frame = NSView()
+        frame.wantsLayer = true
+        frame.layer?.cornerRadius = Self.cornerRadius
+        frame.layer?.cornerCurve = .continuous
+        frame.layer?.masksToBounds = true
+        glass.frame = frame.bounds
+        frame.addSubview(glass)
+        contentView = frame
     }
 
+    static let cornerRadius: CGFloat = 20
+
     override var canBecomeKey: Bool { true }
+
+    // The shadow is redrawn when the panel becomes or stops being the key window: recompute it
+    // from the rounded shape each time (otherwise a dark square edge can show).
+    override func becomeKey() {
+        super.becomeKey()
+        DispatchQueue.main.async { [weak self] in self?.invalidateShadow() }
+    }
+
+    override func resignKey() {
+        super.resignKey()
+        DispatchQueue.main.async { [weak self] in self?.invalidateShadow() }
+    }
+
+    /// ⌘C, ⌘V, ⌘X, ⌘A, ⌘Z and ⇧⌘Z in the panel, whether or not the app has an Edit menu (a menu
+    /// bar app's menus aren't shown, and the panel doesn't activate the app).
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if flags == .command || flags == [.command, .shift],
+           let key = event.charactersIgnoringModifiers?.lowercased(),
+           let action = Self.editActions[flags.contains(.shift) ? "⇧" + key : key],
+           NSApp.sendAction(action, to: nil, from: self) {
+            return true
+        }
+        return super.performKeyEquivalent(with: event)
+    }
+
+    private static let editActions: [String: Selector] = [
+        "c": #selector(NSText.copy(_:)), "v": #selector(NSText.paste(_:)), "x": #selector(NSText.cut(_:)),
+        "a": #selector(NSResponder.selectAll(_:)), "z": Selector(("undo:")), "⇧z": Selector(("redo:")),
+    ]
 
     override func cancelOperation(_ sender: Any?) { hide() }  // Esc
 

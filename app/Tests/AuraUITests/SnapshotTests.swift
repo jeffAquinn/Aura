@@ -48,7 +48,8 @@ struct SnapshotTests {
     """
 
     @discardableResult
-    private func render(_ name: String, _ store: ChatStore, dark: Bool = false, theme: Theme = .glass) throws -> CGSize {
+    private func render(_ name: String, _ store: ChatStore, dark: Bool = false, theme: Theme = .glass,
+                        text: ChatTextStyle = .standard, bubbles: BubbleColors = .standard) throws -> CGSize {
         let panel = VStack(spacing: 0) {
             HeaderView(store: store, avatar: Self.avatar)
             if case let .offline(message) = store.connection {
@@ -68,6 +69,8 @@ struct SnapshotTests {
         .clipShape(.rect(cornerRadius: 20))
         .environment(\.colorScheme, dark ? .dark : .light)
         .environment(\.rendersOffscreen, true)
+        .environment(\.chatText, text)
+        .environment(\.bubbles, bubbles)
 
         let renderer = ImageRenderer(content: panel)
         renderer.scale = 2
@@ -333,6 +336,41 @@ struct SnapshotTests {
             KeyRow(secret: SecretInfo(name: "tavily_api_key", label: "Tavily API key (web search)", set: true, hint: "tvly-…3f9a"), store: chat)
         }.padding(16)
         try renderWide("21-keys", width: 360, keys)
+    }
+
+    // MARK: - chat appearance (font, size, bubble colors)
+
+    @Test func chatAppearanceLargeSerifAndCustomColors() throws {
+        let standard = try render("22-bubbles-default", ChatStore(items: conversation))
+        let custom = try render("23-bubbles-custom", ChatStore(items: conversation), dark: true,
+                                text: ChatTextStyle(size: 17, style: .serif),
+                                bubbles: ChatAppearance.bubbles(user: "#0F8B8D", aura: "#F2E8FF"))
+        #expect(custom.height > standard.height)  // larger text, taller conversation
+        let preview = VStack(alignment: .leading, spacing: 12) {
+            BubblePreview(text: .standard, colors: .standard)
+            BubblePreview(text: ChatTextStyle(size: 15, style: .rounded), colors: ChatAppearance.bubbles(user: "#2E9E4F", aura: "#5B6270"))
+        }.padding(12)
+        let renderer = ImageRenderer(content: preview.frame(width: 360).background(.background))
+        renderer.scale = 2
+        let image = try #require(renderer.cgImage)
+        let png = try #require(NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]))
+        try png.write(to: Self.outDir.appending(path: "24-bubble-preview.png"))
+    }
+
+    @Test func colorsRoundTripAndTextStaysReadable() {
+        #expect(ChatAppearance.hex(ChatAppearance.color(hex: "#7C4DFF")!) == "#7C4DFF")
+        #expect(ChatAppearance.color(hex: "") == nil && ChatAppearance.color(hex: "#12345") == nil && ChatAppearance.color(hex: "zzzzzz") == nil)
+        #expect(ChatAppearance.prefersWhiteText(r: 124 / 255, g: 77 / 255, b: 1))  // the default violet: white text
+        #expect(ChatAppearance.prefersWhiteText(r: 0, g: 122 / 255, b: 1))  // the system blue: white text
+        #expect(!ChatAppearance.prefersWhiteText(r: 242 / 255, g: 232 / 255, b: 1))  // a pale lilac: black text
+        #expect(!ChatAppearance.prefersWhiteText(r: 1, g: 0.85, b: 0.2))  // yellow: black text
+        for swatch in ChatAppearance.swatches where !swatch.hex.isEmpty {  // every preset: white text at AA (4.5:1)
+            let c = ChatAppearance.rgb(swatch.hex)!
+            #expect(ChatAppearance.contrastWithWhite(r: c.r, g: c.g, b: c.b) >= 4.5, "\(swatch.name)")
+        }
+        #expect(ChatAppearance.textStyle(size: 99, style: "nope") == ChatTextStyle(size: 22, style: .system))  // clamped, defaulted
+        #expect(ChatAppearance.textStyle(size: 15, style: "georgia") == ChatTextStyle(size: 15, style: .georgia))
+        #expect(ChatAppearance.bubbles(user: "", aura: "").aura == ChatAppearance.color(hex: ChatAppearance.defaultAura))
     }
 
     @Test func toolStatusReadsLikeASentence() {

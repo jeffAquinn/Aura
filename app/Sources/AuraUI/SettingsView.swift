@@ -48,6 +48,7 @@ struct SettingsView: View {
                     ForEach(Theme.allCases, id: \.rawValue) { Text($0.label).tag($0.rawValue) }
                 }
                 .pickerStyle(.segmented)
+                ChatAppearanceSettings()
             }
             Section("Persona") {
                 LabeledContent("Name", value: store.persona.name)
@@ -70,7 +71,7 @@ struct SettingsView: View {
             KeysSection(store: store)
         }
         .formStyle(.grouped)
-        .frame(width: 360, height: 560)
+        .frame(width: 400, height: 600)
         .onAppear(perform: syncSliders)
         .task { await store.loadSecrets() }
         .onChange(of: store.voice) { syncSliders() }
@@ -95,6 +96,100 @@ struct SettingsView: View {
                 if !editing { Task { await store.updateVoice(patch(value.wrappedValue)) } }
             }
         }
+    }
+}
+
+/// The chat's font, text size and bubble colors, with a live preview.
+struct ChatAppearanceSettings: View {
+    @AppStorage(ChatAppearance.sizeKey) private var fontSize = ChatAppearance.defaultSize
+    @AppStorage(ChatAppearance.styleKey) private var fontStyle = ChatFontStyle.system.rawValue
+    @AppStorage(ChatAppearance.userBubbleKey) private var userBubble = ""
+    @AppStorage(ChatAppearance.auraBubbleKey) private var auraBubble = ChatAppearance.defaultAura
+
+    private var text: ChatTextStyle { ChatAppearance.textStyle(size: fontSize, style: fontStyle) }
+    private var colors: BubbleColors { ChatAppearance.bubbles(user: userBubble, aura: auraBubble) }
+
+    var body: some View {
+        Picker("Font", selection: $fontStyle) {
+            ForEach(ChatFontStyle.allCases, id: \.rawValue) { style in
+                Text(style.label).font(style.font(size: 13, weight: .regular)).tag(style.rawValue)
+            }
+        }
+        LabeledContent("Text size") {
+            HStack {
+                Slider(value: $fontSize, in: ChatAppearance.sizes, step: 1)
+                Text("\(Int(fontSize)) pt").monospacedDigit().foregroundStyle(.secondary).frame(width: 40, alignment: .trailing)
+            }
+        }
+        BubbleColorRow(title: "Your bubbles", hex: $userBubble)
+        BubbleColorRow(title: "Aura's bubbles", hex: $auraBubble)
+        BubblePreview(text: text, colors: colors)
+        HStack {
+            Spacer()
+            Button("Reset Chat Appearance") {
+                fontSize = ChatAppearance.defaultSize
+                fontStyle = ChatFontStyle.system.rawValue
+                userBubble = ""
+                auraBubble = ChatAppearance.defaultAura
+            }
+            .controlSize(.small)
+        }
+    }
+}
+
+/// Preset swatches (they work without leaving the popover), plus the system color picker.
+struct BubbleColorRow: View {
+    let title: String
+    @Binding var hex: String
+
+    var body: some View {
+        LabeledContent(title) {
+            HStack(spacing: 5) {
+                ForEach(ChatAppearance.swatches, id: \.name) { swatch in
+                    Button { hex = swatch.hex } label: {
+                        Circle()
+                            .fill(ChatAppearance.color(hex: swatch.hex) ?? .accentColor)
+                            .frame(width: 16, height: 16)
+                            .overlay(Circle().strokeBorder(.primary.opacity(hex == swatch.hex ? 0.9 : 0), lineWidth: 2).padding(-3))
+                    }
+                    .buttonStyle(.plain)
+                    .help(swatch.name)
+                }
+                ColorPicker(title, selection: Binding(
+                    get: { ChatAppearance.color(hex: hex) ?? .accentColor },
+                    set: { hex = ChatAppearance.hex($0) }), supportsOpacity: false)
+                    .labelsHidden()
+                    .help("Any color")
+            }
+        }
+    }
+}
+
+/// How the chat will look.
+struct BubblePreview: View {
+    let text: ChatTextStyle
+    let colors: BubbleColors
+
+    var body: some View {
+        VStack(spacing: 6) {
+            HStack {
+                Spacer(minLength: 40)
+                Text("Hi Aura, can you summarise my notes?")
+                    .font(text.font())
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .foregroundStyle(colors.userText)
+                    .background(colors.user, in: .rect(cornerRadius: 14))
+            }
+            HStack {
+                Text("Of course. Your notes cover **three** things:")
+                    .font(text.font())
+                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .foregroundStyle(colors.auraText)
+                    .background(colors.aura, in: .rect(cornerRadius: 14))
+                Spacer(minLength: 40)
+            }
+        }
+        .padding(.vertical, 4)
     }
 }
 

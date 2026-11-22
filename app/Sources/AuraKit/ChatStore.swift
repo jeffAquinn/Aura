@@ -66,6 +66,31 @@ public final class ChatStore {
     }
 
     public var canSend: Bool { phase == .idle && transport != nil }
+
+    /// One message as plain text for the clipboard (Aura's Markdown rendered as text).
+    public static func copyText(_ item: Item) -> String {
+        switch item.role {
+        case .aura: Markdown.plainText(item.text)
+        case .approval: item.actions.map(\.description).joined(separator: "\n")
+        default: item.text
+        }
+    }
+
+    /// The whole conversation as plain text: who said what, in order (tool lines and cards
+    /// included, so the record is complete).
+    public func conversationText(you: String = "You") -> String {
+        items.compactMap { item -> String? in
+            switch item.role {
+            case .user: "\(you): \(item.text)"
+            case .aura: "\(persona.name): \(Markdown.plainText(item.text))"
+            case .status: "  [\(item.text.replacingOccurrences(of: #"^\[Tool: [^\]]*\]\s*"#, with: "", options: .regularExpression))]"
+            case .approval: "  [Approval: \(item.actions.map { $0.description.components(separatedBy: "\n").first ?? "" }.joined(separator: "; "))]"
+            case .error: "  [\(item.text)]"
+            case .task, .build: "  [\(item.role == .build ? "Building" : "Auditing") the \(item.text) skill]"
+            }
+        }
+        .joined(separator: "\n\n")
+    }
     public var isBusy: Bool { phase == .thinking || phase == .waking || phase == .streaming }
 
     public func send(_ raw: String) {

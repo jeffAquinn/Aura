@@ -175,3 +175,26 @@ public enum Markdown {
         return false
     }
 }
+
+extension Markdown {
+    /// A reply as plain text for the clipboard: no `**`, `#` or ``` fences; lists keep their
+    /// markers, quotes their `>`, and table cells are separated by tabs.
+    public static func plainText(_ source: String) -> String {
+        blocks(source).map { block -> String in
+            let quote = String(repeating: "> ", count: block.quoteDepth)
+            switch block.kind {
+            case .paragraph, .heading, .code:
+                return block.plainText.split(separator: "\n", omittingEmptySubsequences: false)
+                    .map { quote + $0 }.joined(separator: "\n")
+            case let .listItem(marker, depth):
+                return quote + String(repeating: "    ", count: depth) + marker + " " + block.plainText
+            case .rule:
+                return quote + "———"
+            case let .table(header, rows):
+                return ([header] + rows).map { row in row.map { String($0.characters) }.joined(separator: "\t") }
+                    .map { quote + $0 }.joined(separator: "\n")
+            }
+        }
+        .joined(separator: "\n\n")
+    }
+}

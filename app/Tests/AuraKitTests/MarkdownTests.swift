@@ -136,4 +136,11 @@ struct FriendlyMessageTests {
             #expect(!message.isEmpty)
         }
     }
+
+    @Test func copiedRepliesArePlainText() {
+        let reply = "## Plan\nIt's **5.3°C** and *overcast*.\n\n1. Take a `coat`\n   - umbrella\n\n> quoted\n\n| A | B |\n|---|---|\n| 1 | 2 |\n\n```python\nprint(1)\n```"
+        let text = Markdown.plainText(reply)
+        #expect(text == "Plan\n\nIt's 5.3°C and overcast.\n\n1. Take a coat\n\n    ◦ umbrella\n\n> quoted\n\nA\tB\n1\t2\n\nprint(1)")
+        #expect(!text.contains("**") && !text.contains("```") && !text.contains("##"))
+    }
 }

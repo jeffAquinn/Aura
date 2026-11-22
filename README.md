@@ -20,6 +20,11 @@ open app/build/Aura.app     # sparkle icon in the menu bar; ⌥Space opens the p
 The app launches its own local server (`uv run aura-server`, 127.0.0.1 only, per-launch token)
 and stops it when it quits. `cd app && swift test` runs the client's unit tests.
 
+**In the panel:** drag the header to move it. Drag over any message to select text; right-click
+a message for **Copy Message** or **Copy Conversation** (copied as plain text), or use the copy
+button that appears beside Aura's replies. Settings (the gear) → Appearance sets the font, the
+text size and the colors of your bubbles and Aura's (violet by default).
+
 Requires [Ollama](https://ollama.com) serving `gemma4:26b` (or any OpenAI-compatible endpoint), and
 Docker Desktop running for the code interpreter. Configuration: see `.env.example`.
 

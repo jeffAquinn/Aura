@@ -9,6 +9,10 @@ public struct ChatView: View {
     let backdrop: Image?
     let onRestart: () -> Void
     @AppStorage(Theme.key) private var theme = Theme.glass.rawValue
+    @AppStorage(ChatAppearance.sizeKey) private var fontSize = ChatAppearance.defaultSize
+    @AppStorage(ChatAppearance.styleKey) private var fontStyle = ChatFontStyle.system.rawValue
+    @AppStorage(ChatAppearance.userBubbleKey) private var userBubble = ""
+    @AppStorage(ChatAppearance.auraBubbleKey) private var auraBubble = ChatAppearance.defaultAura
 
     public init(store: ChatStore, avatar: Image?, backdrop: Image? = nil, onRestart: @escaping () -> Void) {
         self.store = store
@@ -32,6 +36,8 @@ public struct ChatView: View {
         }
         .frame(minWidth: 360, minHeight: 440)
         .background { ThemeBackdrop(theme: Theme(rawValue: theme) ?? .glass, image: backdrop) }
+        .environment(\.chatText, ChatAppearance.textStyle(size: fontSize, style: fontStyle))
+        .environment(\.bubbles, ChatAppearance.bubbles(user: userBubble, aura: auraBubble))
     }
 }
 
@@ -83,20 +89,26 @@ struct HeaderView: View {
     let store: ChatStore
     let avatar: Image?
     @State private var showSettings = false
+    @Environment(\.rendersOffscreen) private var offscreen
 
     private var speaking: Bool { store.speech?.isSpeaking == true }
 
     var body: some View {
         HStack(spacing: 10) {
-            AvatarView(image: avatar, size: 30, pulsing: store.phase == .waking || store.connection == .starting || speaking)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(store.persona.name).font(.headline)
-                HStack(spacing: 5) {
-                    Circle().fill(dotColor).frame(width: 6, height: 6)
-                    Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+            HStack(spacing: 10) {
+                AvatarView(image: avatar, size: 30, pulsing: store.phase == .waking || store.connection == .starting || speaking)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(store.persona.name).font(.headline)
+                    HStack(spacing: 5) {
+                        Circle().fill(dotColor).frame(width: 6, height: 6)
+                        Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    }
                 }
+                Spacer(minLength: 0)
             }
-            Spacer()
+            .contentShape(.rect)
+            .overlay { if !offscreen { WindowDragArea() } }  // the panel moves by its header; elsewhere, drags select text
+            .help("Drag to move")
             Button {
                 if speaking { store.speech?.stop() }
                 Task { await store.updateVoice(VoicePatch(speak: !store.voice.speak)) }
@@ -256,6 +268,8 @@ struct ItemView: View {
     let item: ChatStore.Item
     let store: ChatStore
     let avatar: Image?
+    @Environment(\.chatText) private var chat
+    @Environment(\.bubbles) private var bubbles
 
     var body: some View {
         switch item.role {
@@ -263,21 +277,20 @@ struct ItemView: View {
             HStack {
                 Spacer(minLength: 56)
                 Text(item.text)
+                    .font(chat.font())
                     .textSelection(.enabled)
                     .lineSpacing(2)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
-                    .foregroundStyle(.white)
-                    .background(Color.accentColor, in: .rect(cornerRadius: 16))
+                    .foregroundStyle(bubbles.userText)
+                    .background(bubbles.user, in: .rect(cornerRadius: 16))
+                    .contextMenu { MessageMenu(item: item, store: store) }
             }
         case .aura:
-            HStack(alignment: .top, spacing: 10) {
-                AvatarView(image: avatar, size: 22)
-                MarkdownView(item.text)
-                Spacer(minLength: 12)
-            }
+            AuraMessage(item: item, store: store, avatar: avatar)
         case .status:
             ToolStatusView(text: item.text)
+                .contextMenu { MessageMenu(item: item, store: store) }
         case .approval:
             if item.actions.count == 1, let build = item.actions[0].build {
                 SpecificationApprovalCard(item: item, proposal: build, store: store)
@@ -286,14 +299,64 @@ struct ItemView: View {
             }
         case .error:
             Label(item.text, systemImage: "exclamationmark.triangle.fill")
-                .font(.callout)
+                .font(chat.font(0.92))
                 .foregroundStyle(.orange)
                 .padding(.leading, 32)
+                .contextMenu { MessageMenu(item: item, store: store) }
         case .task:
             TaskCard(skill: item.text, taskID: item.actions.first?.description)
         case .build:
             TaskCard(skill: item.text, taskID: item.actions.first?.description, building: true)
         }
+    }
+}
+
+/// Aura's reply: in its bubble (violet unless the user chose another color), with a copy button
+/// on hover and Copy Message / Copy Conversation on right-click.
+struct AuraMessage: View {
+    let item: ChatStore.Item
+    let store: ChatStore
+    let avatar: Image?
+    @Environment(\.bubbles) private var bubbles
+    @State private var hovering = false
+    @State private var copied = false
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: 6) {
+            HStack(alignment: .top, spacing: 10) {
+                AvatarView(image: avatar, size: 22)
+                MarkdownView(item.text)
+                    .foregroundStyle(bubbles.auraText)
+                    .tint(bubbles.auraText)  // links: underlined, in the bubble's text color
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .background(bubbles.aura, in: .rect(cornerRadius: 16))
+                    .contextMenu { MessageMenu(item: item, store: store) }
+            }
+            Button {
+                Clipboard.copy(ChatStore.copyText(item))
+                copied = true
+            } label: {
+                Image(systemName: copied ? "checkmark" : "doc.on.doc").font(.caption)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("Copy this reply")
+            .opacity(hovering || copied ? 1 : 0)
+            Spacer(minLength: 8)
+        }
+        .onHover { hovering = $0; if !$0 { copied = false } }
+    }
+}
+
+/// Right-click on any message.
+struct MessageMenu: View {
+    let item: ChatStore.Item
+    let store: ChatStore
+
+    var body: some View {
+        Button("Copy Message") { Clipboard.copy(ChatStore.copyText(item)) }
+        Button("Copy Conversation") { Clipboard.copy(store.conversationText()) }
     }
 }
 
@@ -342,14 +405,15 @@ public extension EnvironmentValues {
 /// Tool activity: smaller and quieter than Aura's speech.
 struct ToolStatusView: View {
     let text: String
+    @Environment(\.chatText) private var chat
 
     var body: some View {
         Label {
-            Text(Self.readable(text))
+            Text(Self.readable(text))  // copy: right-click → Copy Message
         } icon: {
             Image(systemName: icon)
         }
-        .font(.caption)
+        .font(chat.font(0.85))
         .foregroundStyle(.secondary)
         .lineLimit(2)
         .padding(.leading, 32)
@@ -453,11 +517,13 @@ struct InputBar: View {
     let store: ChatStore
     @State private var draft = ""
     @FocusState private var focused: Bool
+    @Environment(\.chatText) private var chat
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 8) {
             TextField(placeholder, text: $draft, axis: .vertical)
                 .textFieldStyle(.plain)
+                .font(chat.font())
                 .lineLimit(1...8)
                 .focused($focused)
                 .onSubmit(send)

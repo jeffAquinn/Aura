@@ -29,14 +29,20 @@ struct MarkdownView: View {
 
 private struct BlockView: View {
     let block: MarkdownBlock
+    @Environment(\.chatText) private var chat
 
     var body: some View {
+        content.font(chat.font())
+    }
+
+    @ViewBuilder private var content: some View {
         switch block.kind {
         case .paragraph:
-            Text(styled(block.text)).lineSpacing(2).fixedSize(horizontal: false, vertical: true)
+            Text(styled(block.text, chat)).lineSpacing(2).fixedSize(horizontal: false, vertical: true)
         case let .heading(level):
-            Text(styled(block.text))
-                .font(level <= 1 ? .title3.weight(.semibold) : level == 2 ? .headline : .subheadline.weight(.semibold))
+            Text(styled(block.text, chat))
+                .font(level <= 1 ? chat.font(1.2, weight: .semibold) : level == 2 ? chat.font(1.05, weight: .bold)
+                    : chat.font(1, weight: .semibold))
                 .padding(.top, 4)
         case let .listItem(marker, depth):
             HStack(alignment: .firstTextBaseline, spacing: 6) {
@@ -44,7 +50,7 @@ private struct BlockView: View {
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
                     .frame(minWidth: 14, alignment: .trailing)
-                Text(styled(block.text)).lineSpacing(2).fixedSize(horizontal: false, vertical: true)
+                Text(styled(block.text, chat)).lineSpacing(2).fixedSize(horizontal: false, vertical: true)
             }
             .padding(.leading, CGFloat(depth) * 18)
         case let .code(language):
@@ -52,17 +58,23 @@ private struct BlockView: View {
         case .rule:
             Divider().padding(.vertical, 2)
         case let .table(header, rows):
-            TableBlockView(header: header.map(styled), rows: rows.map { $0.map(styled) })
+            TableBlockView(header: header.map { styled($0, chat) }, rows: rows.map { $0.map { styled($0, chat) } })
         }
     }
 }
 
-/// Inline `code` gets an explicit monospaced face and a subtle background.
-private func styled(_ text: AttributedString) -> AttributedString {
+/// Inline `code` gets an explicit monospaced face and a subtle background; links are underlined
+/// (they keep the bubble's text color, so they stay readable on any bubble).
+private func styled(_ text: AttributedString, _ chat: ChatTextStyle) -> AttributedString {
     var out = text
-    for run in text.runs where run.inlinePresentationIntent?.contains(.code) == true {
-        out[run.range].font = .system(.callout, design: .monospaced)
-        out[run.range].backgroundColor = Color.primary.opacity(0.08)
+    for run in text.runs {
+        if run.inlinePresentationIntent?.contains(.code) == true {
+            out[run.range].font = chat.code()
+            out[run.range].backgroundColor = Color.black.opacity(0.14)
+        }
+        if run.link != nil {
+            out[run.range].underlineStyle = .single
+        }
     }
     return out
 }
@@ -71,6 +83,7 @@ private struct CodeBlockView: View {
     let code: String
     let language: String?
     @State private var copied = false
+    @Environment(\.chatText) private var chat
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -93,19 +106,20 @@ private struct CodeBlockView: View {
             }
             FitsOrScrolls {
                 Text(code)
-                    .font(.system(.callout, design: .monospaced))
+                    .font(chat.code())
                     .fixedSize()
                     .textSelection(.enabled)
             }
         }
         .padding(10)
-        .background(Color.primary.opacity(0.07), in: .rect(cornerRadius: 10))
+        .background(Color.black.opacity(0.16), in: .rect(cornerRadius: 10))  // reads on any bubble color
     }
 }
 
 private struct TableBlockView: View {
     let header: [AttributedString]
     let rows: [[AttributedString]]
+    @Environment(\.chatText) private var chat
 
     var body: some View {
         FitsOrScrolls {
@@ -120,10 +134,10 @@ private struct TableBlockView: View {
                     }
                 }
             }
-            .font(.callout)
+            .font(chat.font(0.92))
             .padding(10)
         }
-        .background(Color.primary.opacity(0.05), in: .rect(cornerRadius: 10))
+        .background(Color.black.opacity(0.10), in: .rect(cornerRadius: 10))
     }
 }
 

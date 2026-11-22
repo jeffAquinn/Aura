@@ -152,4 +152,24 @@ struct ChatStoreTests {
         await s.newConversation()
         #expect(s.items.isEmpty && fake.newConversations == 1)
     }
+
+    @Test func messagesAndTheConversationCopyAsPlainText() {
+        let s = ChatStore(items: [
+            ChatStore.Item(role: .user, text: "What's in budget.csv?"),
+            ChatStore.Item(role: .status, text: "[Tool: File_System_Tool] Reading 'budget.csv'..."),
+            ChatStore.Item(role: .aura, text: "Rent is **1200**."),
+            ChatStore.Item(role: .approval, text: "", actions: [PendingAction(tool: "delete_path", description: "delete file 'a.txt' (6 B)")]),
+        ])
+        #expect(ChatStore.copyText(s.items[2]) == "Rent is 1200.")
+        #expect(ChatStore.copyText(s.items[0]) == "What's in budget.csv?")
+        #expect(s.conversationText() == """
+        You: What's in budget.csv?
+
+          [Reading 'budget.csv'...]
+
+        Aura: Rent is 1200.
+
+          [Approval: delete file 'a.txt' (6 B)]
+        """)
+    }
 }
