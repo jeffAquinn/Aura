@@ -1,6 +1,7 @@
 # Aura
 
-A local AI agent living on a Mac mini. Architecture and reviews by Gemma; implementation by Claude Code.
+A local, agentic AI system for macOS, living on a Mac mini.
+Architecture and reviews by Gemma; implementation by Claude Code.
 
 ## Run
 
@@ -43,3 +44,7 @@ File tools are confined to `~/Documents/Aura_Vault`. Everything consequential is
 - [x] Sprint 2: Tools (vault with whitelist + approvals, Tavily search with DuckDuckGo fallback, Docker sandbox) and high-fidelity memory retention
 - [ ] Sprint 3: SwiftUI menu bar app + FastAPI local "Aura Server"
 - [ ] Sprint 4: UX refinement (Markdown rendering, persona polish)
+
+## License
+
+MIT. See [LICENSE](LICENSE).
