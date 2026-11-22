@@ -253,7 +253,7 @@ class SecretIn(BaseModel):
 
 class CredentialsIn(BaseModel):
     client_id: str = Field(min_length=1, max_length=300)
-    client_secret: str = Field(min_length=1, max_length=300)
+    client_secret: str = Field(default="", max_length=300)  # Slack (PKCE) has none
 
 
 class ConnectIn(BaseModel):

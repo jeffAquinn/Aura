@@ -1,3 +1,4 @@
+import AppKit
 import AuraKit
 import SwiftUI
 
@@ -14,35 +15,27 @@ public struct ConnectionsView: View {
             List(selection: Binding(get: { store.selectedID }, set: { store.selectedID = $0 })) {
                 Section("Connections") {
                     ForEach(store.connections) { c in
-                        ConnectionRow(icon: ConnectionsView.icon(c.id), title: c.label, subtitle: c.summary,
+                        ConnectionRow(icon: ProviderGuide.of(c.id).icon, title: c.label, subtitle: c.summary,
                                       connected: c.isConnected)  // fmt: skip
                             .tag(Optional(c.id))
                     }
-                    ConnectionRow(icon: "number.square", title: "Slack", subtitle: "Coming next", connected: false)
-                        .foregroundStyle(.secondary).selectionDisabled()
-                    ConnectionRow(icon: "bubble.left.and.bubble.right", title: "Discord", subtitle: "Coming next",
-                                  connected: false)  // fmt: skip
-                        .foregroundStyle(.secondary).selectionDisabled()
+                    if !store.connections.contains(where: { $0.id == "discord" }) {
+                        ConnectionRow(icon: ProviderGuide.of("discord").icon, title: "Discord", subtitle: "Coming next",
+                                      connected: false)  // fmt: skip
+                            .foregroundStyle(.secondary).selectionDisabled()
+                    }
                 }
             }
             .listStyle(.sidebar)
             .navigationSplitViewColumnWidth(min: 200, ideal: 220)
         } detail: {
-            if let c = store.selected, c.id == "google" {
-                GoogleSetupView(store: store, connection: c)
+            if let c = store.selected {
+                ConnectionSetupView(store: store, connection: c).id(c.id)
             } else {
                 ContentUnavailableView("Choose a connection", systemImage: "link")
             }
         }
         .task { await store.refresh() }
-    }
-
-    static func icon(_ id: String) -> String {
-        switch id {
-        case "google": "envelope.badge"
-        case "slack": "number.square"
-        default: "bubble.left.and.bubble.right"
-        }
     }
 }
 
@@ -65,16 +58,84 @@ struct ConnectionRow: View {
     }
 }
 
-/// Google: create the OAuth client (guided), save it to the Keychain, choose services, sign in.
-struct GoogleSetupView: View {
+// MARK: - per-service setup guides
+
+/// What differs between services: the guide, the credentials it needs, the sign-in button.
+struct ProviderGuide {
+    struct Field {
+        let placeholder: String
+        let secure: Bool
+    }
+
+    struct StepInfo {
+        let text: String
+        var links: [(String, String)] = []
+        var copy: (label: String, value: String)?
+    }
+
+    let icon: String
+    let subtitle: String
+    let fields: [Field]  // client ID, then client secret when there is one
+    let signIn: String
+    let steps: (ConnectionInfo) -> [StepInfo]
+
+    static func of(_ id: String) -> ProviderGuide {
+        switch id {
+        case "google": google
+        case "slack": slack
+        default: ProviderGuide(icon: "bubble.left.and.bubble.right", subtitle: "", fields: [], signIn: "Sign In…", steps: { _ in [] })
+        }
+    }
+
+    static var google: ProviderGuide { ProviderGuide(
+        icon: "envelope.badge",
+        subtitle: "Gmail, Calendar and Drive, through your own Google Cloud client.",
+        fields: [Field(placeholder: "Client ID (ends with .apps.googleusercontent.com)", secure: false),
+                 Field(placeholder: "Client secret (starts with GOCSPX-)", secure: true)],
+        signIn: "Sign In with Google…",
+        steps: { _ in [
+            StepInfo(text: "Create a Google Cloud project (name it “Aura”, Location: No organization).",
+                     links: [("Create project", "https://console.cloud.google.com/projectcreate")]),
+            StepInfo(text: "In that project, enable the APIs for the services you want.",
+                     links: [("Gmail API", "https://console.cloud.google.com/apis/library/gmail.googleapis.com"),
+                             ("Calendar API", "https://console.cloud.google.com/apis/library/calendar-json.googleapis.com"),
+                             ("Drive API", "https://console.cloud.google.com/apis/library/drive.googleapis.com")]),
+            StepInfo(text: "Google Auth Platform → Get started: app name “Aura”, your Gmail address as the support email. For Audience choose **Personal**: only your account can use it, with no verification and no weekly sign-in. (If Personal isn't offered, choose External, then add your Gmail under Audience → Test users; Google then asks you to sign in again every 7 days.)",
+                     links: [("Google Auth Platform", "https://console.cloud.google.com/auth/overview")]),
+            StepInfo(text: "Clients → Create client. Application type: **Desktop app** (not iOS or macOS: those ask for a Bundle ID and won't work with Aura's sign-in). Name it “Aura on this Mac”, then Create. Desktop app asks for nothing else: no Bundle ID, no redirect URI. Aura signs in through a one-time address on this Mac (http://127.0.0.1). Keep the dialog open: you'll copy the Client ID and Client secret below.",
+                     links: [("Create client", "https://console.cloud.google.com/auth/clients/create")]),
+        ] }) }
+
+    static var slack: ProviderGuide { ProviderGuide(
+        icon: "number.square",
+        subtitle: "Your channels and messages, through your own Slack app, acting as you.",
+        fields: [Field(placeholder: "Client ID (looks like 1234567890123.1234567890123)", secure: false)],
+        signIn: "Sign In with Slack…",
+        steps: { c in [
+            StepInfo(text: "Open Slack's app page → **Create New App** → **From a manifest** → choose your workspace → replace everything in the box with Aura's manifest → Next → **Create**.",
+                     links: [("Create a Slack app", "https://api.slack.com/apps?new_app=1")],
+                     copy: c.setup?.manifest.map { ("Copy Aura's Manifest", $0) }),
+            StepInfo(text: "The manifest sets everything: the name, the permissions Aura may ask for, **PKCE** (so no client secret is needed), no token rotation, and Aura's return address. You don't need to type the address anywhere; it's here in case Slack asks.",
+                     copy: c.setup?.redirectUrl.map { ("Copy \($0)", $0) }),
+            StepInfo(text: "Keep the app **internal** to your workspace: don't distribute it. (Slack's AI features accept only internal or Marketplace apps.) If your workspace requires admins to approve apps, approve it as the owner."),
+            StepInfo(text: "On the app's **Basic Information** page, under App Credentials, copy the **Client ID** into the field below. Aura doesn't need the Client Secret."),
+        ] }) }
+}
+
+// MARK: - the setup page
+
+/// One service: the guide, the Keychain fields, the services and the sign-in, then the status.
+struct ConnectionSetupView: View {
     let store: ConnectionsStore
     let connection: ConnectionInfo
-    @State private var clientId = ""
-    @State private var clientSecret = ""
+    @State private var values = ["", ""]
     @State private var replacing = false
-    @State private var chosen: Set<String> = ["gmail", "calendar", "drive"]
+    @State private var chosen: Set<String>?
     @State private var error: String?
     @State private var confirmRemove = false
+
+    private var guide: ProviderGuide { .of(connection.id) }
+    private var selected: Set<String> { chosen ?? Set(connection.services.map(\.id)) }
 
     var body: some View {
         Scrolling {
@@ -82,20 +143,21 @@ struct GoogleSetupView: View {
                 header
                 if let problem = connection.problem {
                     Label(problem, systemImage: "exclamationmark.triangle.fill").foregroundStyle(.orange)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
                 if let e = error ?? store.lastError {
-                    Label(e, systemImage: "xmark.octagon.fill").foregroundStyle(.red)
+                    Label(e, systemImage: "xmark.octagon.fill").foregroundStyle(.red).fixedSize(horizontal: false, vertical: true)
                 }
                 if connection.isConnected { status }
-                guide
+                steps
                 credentials
                 signIn
-                SecurityNote()
+                SecurityNote(service: connection.label)
             }
             .padding(24)
             .frame(maxWidth: 720, alignment: .leading)
         }
-        .confirmationDialog("Remove your Google client from the Keychain? Aura is also signed out of Google.",
+        .confirmationDialog("Remove your \(connection.label) app's details from the Keychain? Aura is also signed out of \(connection.label).",
                             isPresented: $confirmRemove) {  // fmt: skip
             Button("Remove", role: .destructive) { Task { await store.removeCredentials(connection.id) } }
         }
@@ -103,10 +165,10 @@ struct GoogleSetupView: View {
 
     private var header: some View {
         HStack(spacing: 12) {
-            Image(systemName: "envelope.badge").font(.largeTitle).foregroundStyle(.secondary)
+            Image(systemName: guide.icon).font(.largeTitle).foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 2) {
-                Text("Google").font(.title2.weight(.semibold))
-                Text("Gmail, Calendar and Drive, through your own Google Cloud client.").foregroundStyle(.secondary)
+                Text(connection.label).font(.title2.weight(.semibold))
+                Text(guide.subtitle).foregroundStyle(.secondary)
             }
             Spacer()
             Text(connection.summary)
@@ -150,23 +212,16 @@ struct GoogleSetupView: View {
         }
     }
 
-    private var guide: some View {
+    private var steps: some View {
         Card {
             VStack(alignment: .leading, spacing: 10) {
-                Step(n: 1, text: "Create a Google Cloud project (name it “Aura”).",
-                     links: [("Create project", "https://console.cloud.google.com/projectcreate")])
-                Step(n: 2, text: "In that project, enable the APIs for the services you want.",
-                     links: [("Gmail API", "https://console.cloud.google.com/apis/library/gmail.googleapis.com"),
-                             ("Calendar API", "https://console.cloud.google.com/apis/library/calendar-json.googleapis.com"),
-                             ("Drive API", "https://console.cloud.google.com/apis/library/drive.googleapis.com")])
-                Step(n: 3, text: "Google Auth Platform → Get started: app name “Aura”, your Gmail address as the support email. For Audience choose **Personal**: only your account can use it, with no verification and no weekly sign-in. (If Personal isn't offered, choose External, then add your Gmail under Audience → Test users; Google then asks you to sign in again every 7 days.)",
-                     links: [("Google Auth Platform", "https://console.cloud.google.com/auth/overview")])
-                Step(n: 4, text: "Clients → Create client. Application type: **Desktop app** (not iOS or macOS: those ask for a Bundle ID and won't work with Aura's sign-in). Name it “Aura on this Mac”, then Create. Desktop app asks for nothing else: no Bundle ID, no redirect URI. Aura signs in through a one-time address on this Mac (http://127.0.0.1). Keep the dialog open: you'll copy the Client ID and Client secret below.",
-                     links: [("Create client", "https://console.cloud.google.com/auth/clients/create")])
+                ForEach(Array(guide.steps(connection).enumerated()), id: \.offset) { i, step in
+                    Step(n: i + 1, text: step.text, links: step.links, copy: step.copy)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         } title: {
-            Label("1. Create your Google client (once, about 5 minutes)", systemImage: "list.number").font(.headline)
+            Label("1. Create your \(connection.label) app (once, a few minutes)", systemImage: "list.number").font(.headline)
         }
     }
 
@@ -184,21 +239,24 @@ struct GoogleSetupView: View {
                     }
                     .controlSize(.small)
                 } else {
-                    TextField("Client ID (ends with .apps.googleusercontent.com)", text: $clientId)
-                        .textFieldStyle(.roundedBorder)
-                    SecureField("Client secret (starts with GOCSPX-)", text: $clientSecret)
-                        .textFieldStyle(.roundedBorder)
+                    ForEach(Array(guide.fields.enumerated()), id: \.offset) { i, field in
+                        if field.secure {
+                            SecureField(field.placeholder, text: $values[i]).textFieldStyle(.roundedBorder)
+                        } else {
+                            TextField(field.placeholder, text: $values[i]).textFieldStyle(.roundedBorder)
+                        }
+                    }
                     HStack {
                         Spacer()
                         if replacing { Button("Cancel") { reset() } }
                         Button("Save to Keychain") { save() }
-                            .disabled(clientId.isEmpty || clientSecret.isEmpty || store.busy)
+                            .disabled(values.prefix(guide.fields.count).contains(where: \.isEmpty) || store.busy)
                     }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         } title: {
-            Label("2. Save your client to the Keychain", systemImage: "key").font(.headline)
+            Label("2. Save it to the Keychain", systemImage: "key").font(.headline)
         }
     }
 
@@ -206,15 +264,15 @@ struct GoogleSetupView: View {
         Card {
             VStack(alignment: .leading, spacing: 8) {
                 ForEach(connection.services) { s in
-                    Toggle(isOn: Binding(get: { chosen.contains(s.id) },
-                                         set: { on in if on { chosen.insert(s.id) } else { chosen.remove(s.id) } })) {  // fmt: skip
+                    Toggle(isOn: Binding(get: { selected.contains(s.id) },
+                                         set: { on in var set = selected; if on { set.insert(s.id) } else { set.remove(s.id) }; chosen = set })) {  // fmt: skip
                         VStack(alignment: .leading, spacing: 1) {
                             Text(s.label)
                             Text(s.purpose).font(.caption).foregroundStyle(.secondary)
                         }
                     }
                 }
-                Text("Aura asks Google only for these. Nothing is used until the Permissions screen lets you decide what Aura may do, and anything that writes (a draft, an event, a file) will always ask you first.")
+                Text("Aura asks \(connection.label) only for these. Nothing is used until the Permissions screen lets you decide what Aura may do, and anything that writes or sends will always ask you first.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 HStack {
                     if connection.isSigningIn {
@@ -222,40 +280,41 @@ struct GoogleSetupView: View {
                         Text("Finish signing in in your browser…").foregroundStyle(.secondary)
                     }
                     Spacer()
-                    Button(connection.isConnected ? "Sign In Again…" : "Sign In with Google…") {
+                    Button(connection.isConnected ? "Sign In Again…" : guide.signIn) {
                         Task {
                             error = await store.signIn(connection.id,
-                                                       services: connection.services.map(\.id).filter(chosen.contains))  // fmt: skip
+                                                       services: connection.services.map(\.id).filter(selected.contains))  // fmt: skip
                         }
                     }
-                    .disabled(!connection.configured || chosen.isEmpty || connection.isSigningIn)
+                    .disabled(!connection.configured || selected.isEmpty || connection.isSigningIn)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         } title: {
-            Label("3. Choose services and sign in", systemImage: "person.badge.key").font(.headline)
+            Label("3. Choose what to connect and sign in", systemImage: "person.badge.key").font(.headline)
         }
     }
 
     private func save() {
         Task {
-            error = await store.saveCredentials(connection.id, clientId: clientId, clientSecret: clientSecret)
+            error = await store.saveCredentials(connection.id, clientId: values[0], clientSecret: values[1])
             if error == nil { reset() }
         }
     }
 
     private func reset() {
-        clientId = ""
-        clientSecret = ""  // the secret doesn't linger in the view
+        values = ["", ""]  // nothing lingers in the view
         replacing = false
     }
 }
 
-/// One numbered setup step, with links that open in the browser.
+/// One numbered setup step, with links that open in the browser and an optional copy button.
 struct Step: View {
     let n: Int
     let text: String
     let links: [(String, String)]
+    var copy: (label: String, value: String)?
+    @State private var copied = false
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 10) {
@@ -267,6 +326,13 @@ struct Step: View {
                     ForEach(links, id: \.1) { title, url in
                         if let u = URL(string: url) { Link("\(title) ↗", destination: u).font(.callout) }
                     }
+                    if let copy {
+                        Button(copied ? "Copied" : copy.label) {
+                            Clipboard.copy(copy.value)
+                            copied = true
+                        }
+                        .controlSize(.small)
+                    }
                 }
             }
         }
@@ -274,9 +340,11 @@ struct Step: View {
 }
 
 struct SecurityNote: View {
+    var service = "Google"
+
     var body: some View {
         Label {
-            Text("Your client secret and your sign-in are kept in this Mac's Keychain: never in the project folder, a file, a log or the chat, so they can't reach git. Aura's AI and its tools can't read them. Disconnecting revokes Aura's access at Google.")
+            Text("Your app's details and your sign-in are kept in this Mac's Keychain: never in the project folder, a file, a log or the chat, so they can't reach git. Aura's AI and its tools can't read them. Disconnecting revokes Aura's access at \(service).")
                 .fixedSize(horizontal: false, vertical: true)
         } icon: {
             Image(systemName: "lock.shield")
@@ -313,14 +381,16 @@ struct ConnectionsSection: View {
         Section("Connections") {
             ForEach(connections) { c in
                 HStack {
-                    ConnectionRow(icon: ConnectionsView.icon(c.id), title: c.label, subtitle: c.summary, connected: c.isConnected)
+                    ConnectionRow(icon: ProviderGuide.of(c.id).icon, title: c.label, subtitle: c.summary, connected: c.isConnected)
                     Button(c.state == "not_set_up" ? "Set Up…" : "Manage…") { openConnections(c.id) }.controlSize(.small)
                 }
             }
             if connections.isEmpty {
                 Text(store.transport == nil ? "Aura is offline." : "Loading…").foregroundStyle(.secondary)
             }
-            Text("Slack and Discord come next.").font(.caption).foregroundStyle(.secondary)
+            if !connections.contains(where: { $0.id == "discord" }) {
+                Text("Discord comes next.").font(.caption).foregroundStyle(.secondary)
+            }
         }
         .task { connections = (try? await store.transport?.connections()) ?? [] }
     }

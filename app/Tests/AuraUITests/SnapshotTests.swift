@@ -383,7 +383,7 @@ struct SnapshotTests {
         ]
         let fresh = ConnectionInfo(id: "google", label: "Google", state: "not_set_up", services: services.map {
             ConnectionService(id: $0.id, label: $0.label, purpose: $0.purpose) })
-        try renderWide("25-google-setup", width: 720, GoogleSetupView(store: ConnectionsStore(connections: [fresh]), connection: fresh))
+        try renderWide("25-google-setup", width: 720, ConnectionSetupView(store: ConnectionsStore(connections: [fresh]), connection: fresh))
         let connected = ConnectionInfo(
             id: "google", label: "Google", state: "connected", configured: true, account: "me@gmail.com", services: services,
             credentials: [SecretInfo(name: "google_client_id", label: "Google OAuth client ID", set: true, hint: "123456…apps.googleusercontent.com"),
@@ -393,7 +393,13 @@ struct SnapshotTests {
                                      detail: "The Google Calendar API isn't enabled in your Google Cloud project yet. Enable it, wait a minute, then check again.",
                                      fixUrl: "https://console.developers.google.com/apis/api/calendar-json.googleapis.com/overview?project=781294236515")])
         try renderWide("26-google-connected", width: 720, dark: true,
-                       GoogleSetupView(store: ConnectionsStore(connections: [connected]), connection: connected))
+                       ConnectionSetupView(store: ConnectionsStore(connections: [connected]), connection: connected))
+        let slack = ConnectionInfo(
+            id: "slack", label: "Slack", state: "not_set_up",
+            services: [ConnectionService(id: "read", label: "Read messages", purpose: "Read and search your channels, private channels and direct messages."),
+                       ConnectionService(id: "send", label: "Send messages", purpose: "Post messages as you. Aura always shows you the exact message and asks first.")],
+            setup: ConnectionSetup(redirectUrl: "http://localhost:47615/slack/callback", manifest: "{}"))
+        try renderWide("27-slack-setup", width: 720, ConnectionSetupView(store: ConnectionsStore(connections: [slack]), connection: slack))
     }
 
     @Test func toolStatusReadsLikeASentence() {

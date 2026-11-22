@@ -300,7 +300,7 @@ def test_the_api_never_returns_a_secret_and_keys_stay_separate(env):  # noqa: F8
     assert client.put("/v1/secrets/google_tokens", json={"value": "x" * 30}, headers=auth).status_code == 404
     assert client.put("/v1/secrets/google_client_id", json={"value": CLIENT_ID}, headers=auth).status_code == 404
     assert client.delete("/v1/secrets/google_client_secret", headers=auth).status_code == 404
-    assert client.post("/v1/connections/slack/check", json={}, headers=auth).status_code == 404
+    assert client.post("/v1/connections/myspace/check", json={}, headers=auth).status_code == 404
     assert client.post("/v1/connections/google/disconnect", json={}, headers=auth).json()["state"] == "ready"
 
 
@@ -309,3 +309,126 @@ def test_the_agent_has_no_way_to_reach_a_connection(env):  # noqa: F811
     names = " ".join(t.name + " " + (t.description or "") for t in aura.toolbox.all_tools()).lower()
     for word in ("google", "gmail", "oauth", "token", "keychain", "secret", "connection"):
         assert word not in names, word  # no tool of Aura's mentions, let alone reaches, a connection
+
+
+# ── Slack ───────────────────────────────────────────────────────────────────────────────────
+
+from aura.connections import slack as slack_mod  # noqa: E402
+from aura.connections.slack import SlackConnection  # noqa: E402
+
+SLACK_ID = "1234567890123.9876543210987"
+XOXP = "xoxp-" + "1111-2222-3333-SECRETSECRETSECRET"
+
+
+class FakeSlack:
+    def __init__(self) -> None:
+        self.challenge = ""
+        self.grant = ""
+        self.alive = True
+        self.calls: list[tuple[str, dict, dict]] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        url = str(request.url).split("?")[0]
+        form = dict(parse_qsl(request.content.decode())) if request.method == "POST" else {}
+        self.calls.append((url, form, dict(request.headers)))
+        if url == slack_mod.API + "oauth.v2.access":
+            s256 = base64.urlsafe_b64encode(hashlib.sha256(form.get("code_verifier", "").encode()).digest()).rstrip(b"=").decode()
+            if "client_secret" in form or s256 != self.challenge or form.get("client_id") != SLACK_ID:
+                return httpx.Response(200, json={"ok": False, "error": "invalid_code"})
+            return httpx.Response(200, json={"ok": True, "app_id": "A1", "team": {"id": "T1", "name": "Aura HQ"},
+                                             "authed_user": {"id": "U1", "scope": self.grant, "access_token": XOXP,
+                                                             "token_type": "user"}})  # fmt: skip
+        authorized = request.headers.get("authorization") == f"Bearer {XOXP}"
+        if url == slack_mod.API + "auth.test":
+            ok = authorized and self.alive
+            return httpx.Response(200, json={"ok": True, "user": "jeff", "team": "Aura HQ"} if ok else {"ok": False, "error": "invalid_auth"})
+        if url == slack_mod.API + "conversations.list":
+            return httpx.Response(200, json={"ok": authorized, "channels": []})
+        if url == slack_mod.API + "auth.revoke":
+            return httpx.Response(200, json={"ok": True, "revoked": True})
+        return httpx.Response(404)
+
+
+@pytest.fixture
+def slack(tmp_path):
+    fake = FakeSlack()
+    conn = SlackConnection(Secrets(), AuditLog(tmp_path / "audit.jsonl"), http=httpx.Client(transport=httpx.MockTransport(fake)),
+                           timeout=5, port=0)  # fmt: skip  # any free port in tests
+    conn.set_credentials(SLACK_ID)
+    return conn, fake
+
+
+def slack_begin(conn: SlackConnection, fake: FakeSlack, services: list[str], grant: str | None = None) -> dict:
+    query = {k: v[0] for k, v in parse_qs(urlparse(conn.begin(services)).query, keep_blank_values=True).items()}
+    fake.challenge = query["code_challenge"]
+    fake.grant = query["user_scope"] if grant is None else grant
+    return query
+
+
+def test_slacks_manifest_registers_aura_with_pkce_and_no_rotation():
+    m = json.loads(slack_mod.manifest())
+    assert m["oauth_config"]["redirect_urls"] == ["http://localhost:47615/slack/callback"] == [slack_mod.REDIRECT]
+    assert m["oauth_config"]["pkce_enabled"] is True and m["settings"]["token_rotation_enabled"] is False
+    assert set(m["oauth_config"]["scopes"]["user"]) == {sc for s in slack_mod.SERVICES.values() for sc in s.scopes}
+    assert "bot" not in m["oauth_config"]["scopes"]  # Aura acts as the user, with no bot
+
+
+def test_slack_needs_only_a_client_id(tmp_path):
+    conn = SlackConnection(Secrets(), AuditLog(tmp_path / "audit.jsonl"))
+    with pytest.raises(SecretError, match="should look like 1234567890123.1234567890123"):
+        conn.set_credentials("xoxp-not-a-client-id-0000")
+    conn.set_credentials(f" {SLACK_ID} ")
+    status = conn.status()
+    assert status["state"] == "ready" and [c["hint"] for c in status["credentials"]] == ["1234…0987"]
+    assert status["setup"]["redirect_url"] == slack_mod.REDIRECT and "pkce_enabled" in status["setup"]["manifest"]
+
+
+def test_slack_sign_in_uses_pkce_without_a_secret_and_keeps_the_user_token(slack, tmp_path):
+    conn, fake = slack
+    query = slack_begin(conn, fake, ["read"])
+    assert query["scope"] == "" and query["code_challenge_method"] == "S256"
+    assert set(query["user_scope"].split(",")) == set(slack_mod.SERVICES["read"].scopes)  # not chat:write
+    assert query["redirect_uri"].startswith("http://localhost:") and query["redirect_uri"].endswith("/slack/callback")
+    page = browser(query, code="slack-code", state=query["state"])
+    finish(conn)
+    assert page.status_code == 200, page.text
+    status = conn.status()
+    assert status["state"] == "connected" and status["account"] == "jeff in Aura HQ"
+    assert {s["id"]: s["granted"] for s in status["services"]} == {"read": True, "send": False}
+    exchange = next(form for url, form, _ in fake.calls if url.endswith("oauth.v2.access"))
+    assert "client_secret" not in exchange  # Slack, with PKCE: "should not include client_secret"
+    shown = json.dumps(status) + (tmp_path / "audit.jsonl").read_text()
+    assert XOXP not in shown and "slack-code" not in shown
+
+
+def test_slack_checks_reading_and_clears_a_revoked_token(slack):
+    conn, fake = slack
+    query = slack_begin(conn, fake, ["read", "send"])
+    browser(query, code="slack-code", state=query["state"])
+    finish(conn)
+    checks = {c["service"]: c for c in conn.check()["checks"]}
+    assert checks["read"]["ok"] and checks["send"]["ok"] and "ask before sending" in checks["send"]["detail"]
+    fake.alive = False  # the user removed the app from their workspace
+    status = conn.check()
+    assert status["state"] == "ready" and "Sign in again" in status["problem"]
+
+
+def test_slack_disconnect_revokes_and_errors_are_explained(slack):
+    conn, fake = slack
+    query = slack_begin(conn, fake, ["read"])
+    browser(query, code="slack-code", state=query["state"])
+    finish(conn)
+    conn.disconnect()
+    revoke = [h for url, _, h in fake.calls if url.endswith("auth.revoke")]
+    assert revoke and revoke[0]["authorization"] == f"Bearer {XOXP}" and conn.secrets.get("slack_tokens") is None
+    assert "Redirect URL" in slack_mod._explain("bad_redirect_uri") and slack_mod._explain("weird") == "weird"
+
+
+def test_slack_over_the_api_needs_no_secret_and_shows_its_manifest(env):  # noqa: F811
+    client, auth, _ = workshop_client(env)
+    slack_status = next(c for c in client.get("/v1/connections", headers=auth).json() if c["id"] == "slack")
+    assert slack_status["state"] == "not_set_up" and json.loads(slack_status["setup"]["manifest"])["oauth_config"]["pkce_enabled"]
+    saved = client.put("/v1/connections/slack/credentials", json={"client_id": SLACK_ID}, headers=auth)
+    assert saved.status_code == 200 and saved.json()["state"] == "ready"
+    google = client.put("/v1/connections/google/credentials", json={"client_id": CLIENT_ID}, headers=auth)
+    assert google.status_code == 422  # Google's client does need its secret

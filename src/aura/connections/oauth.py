@@ -19,6 +19,7 @@ import hashlib
 import hmac
 import html
 import secrets
+import socket
 import threading
 import time
 from collections.abc import Callable
@@ -43,16 +44,20 @@ class LoopbackSignIn:
     """One browser sign-in. `on_code(code, verifier, redirect_uri)` redeems the code; whatever it
     raises becomes this sign-in's error (shown to the user, never the code itself)."""
 
-    def __init__(self, on_code: Callable[[str, str, str], None], issuer: str | None = None, timeout: float = 300):
+    def __init__(self, on_code: Callable[[str, str, str], None], issuer: str | None = None, timeout: float = 300,
+                 port: int = 0, host: str = "127.0.0.1", path: str = CALLBACK):  # fmt: skip
+        """`port` 0: any free port (Google). A fixed port and host "localhost": for services that
+        match the redirect exactly against one the user registered (Slack)."""
         self.on_code = on_code
         self.issuer = issuer
         self.timeout = timeout
+        self.port, self.host, self.path = port, host, path
         self.state = secrets.token_urlsafe(32)
         self.verifier, self.challenge = pkce_pair()
         self.done = threading.Event()
         self.error: str | None = None
         self.redirect_uri = ""
-        self._server: ThreadingHTTPServer | None = None
+        self._servers: list[ThreadingHTTPServer] = []
         self._lock = threading.Lock()
         self._answered = False
 
@@ -74,9 +79,21 @@ class LoopbackSignIn:
             def log_message(self, *args: object) -> None:  # the request line holds the code: never log it
                 pass
 
-        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        self.redirect_uri = f"http://127.0.0.1:{self._server.server_port}{CALLBACK}"
-        threading.Thread(target=self._server.serve_forever, daemon=True, name="oauth-loopback").start()
+        try:
+            first = ThreadingHTTPServer(("127.0.0.1", self.port), Handler)
+        except OSError as e:
+            raise OAuthError(f"Port {self.port} on this Mac is in use by another app, so the sign-in can't come back. "
+                             "Quit that app and try again.") from e  # fmt: skip
+        self._servers = [first]
+        if self.host == "localhost":  # a browser may try "localhost" as ::1 first: answer there too
+            try:
+                v6 = type("V6", (ThreadingHTTPServer,), {"address_family": socket.AF_INET6})
+                self._servers.append(v6(("::1", first.server_port), Handler))
+            except OSError:
+                pass  # no IPv6 loopback: browsers fall back to 127.0.0.1
+        self.redirect_uri = f"http://{self.host}:{first.server_port}{self.path}"
+        for server in self._servers:
+            threading.Thread(target=server.serve_forever, daemon=True, name="oauth-loopback").start()
         threading.Thread(target=self._expire, daemon=True, name="oauth-timeout").start()
         return self.redirect_uri
 
@@ -93,7 +110,7 @@ class LoopbackSignIn:
 
     def _answer(self, path: str) -> tuple[int, str, str]:
         url = urlparse(path)
-        if url.path != CALLBACK:
+        if url.path != self.path:
             return 404, "Not found", "This address only accepts Aura's sign-in."
         query = {k: v[0] for k, v in parse_qs(url.query).items()}
         with self._lock:
@@ -121,9 +138,10 @@ class LoopbackSignIn:
 
     def _close(self) -> None:
         self.done.set()
-        server, self._server = self._server, None
-        if server is not None:
+        servers, self._servers = self._servers, []
+        if servers:
             time.sleep(0.2)  # let the last response go out
+        for server in servers:
             server.shutdown()
             server.server_close()
 

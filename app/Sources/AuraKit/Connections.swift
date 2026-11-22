@@ -38,6 +38,17 @@ public struct ConnectionCheck: Codable, Sendable, Equatable {
     }
 }
 
+/// What a service's setup needs to show (Slack: Aura's app manifest and its return address).
+public struct ConnectionSetup: Codable, Sendable, Equatable {
+    public let redirectUrl: String?
+    public let manifest: String?
+
+    public init(redirectUrl: String? = nil, manifest: String? = nil) {
+        self.redirectUrl = redirectUrl
+        self.manifest = manifest
+    }
+}
+
 public struct ConnectionInfo: Codable, Sendable, Equatable, Identifiable {
     public let id: String
     public let label: String
@@ -48,10 +59,11 @@ public struct ConnectionInfo: Codable, Sendable, Equatable, Identifiable {
     public let credentials: [SecretInfo]  // masked hints only
     public let problem: String?
     public let checks: [ConnectionCheck]
+    public let setup: ConnectionSetup?
 
     public init(id: String, label: String, state: String, configured: Bool = false, account: String? = nil,
                 services: [ConnectionService] = [], credentials: [SecretInfo] = [], problem: String? = nil,
-                checks: [ConnectionCheck] = []) {
+                checks: [ConnectionCheck] = [], setup: ConnectionSetup? = nil) {
         self.id = id
         self.label = label
         self.state = state
@@ -61,6 +73,7 @@ public struct ConnectionInfo: Codable, Sendable, Equatable, Identifiable {
         self.credentials = credentials
         self.problem = problem
         self.checks = checks
+        self.setup = setup
     }
 
     public var isConnected: Bool { state == "connected" }

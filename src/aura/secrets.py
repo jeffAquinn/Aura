@@ -12,6 +12,7 @@ needs it. Only the names below can be stored: this is not a general-purpose pass
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -28,6 +29,8 @@ class KeySpec:
     suffix: str = ""  # ... or ends with
     group: str = "keys"  # "keys" (Settings → Keys) or a connection's id
     user_settable: bool = True  # False: written only by the server (sign-in tokens)
+    pattern: str = ""  # a full-match regex, when the shape is known exactly
+    example: str = ""  # what it looks like, for the error message
 
 
 KEYS = {
@@ -39,6 +42,9 @@ KEYS = {
                 group="google"),
         KeySpec("google_client_secret", "Google OAuth client secret", "GOCSPX-", group="google"),
         KeySpec("google_tokens", "Google sign-in", group="google", user_settable=False),
+        KeySpec("slack_client_id", "Slack app Client ID", min_length=10, group="slack", pattern=r"\d{6,20}\.\d{6,20}",
+                example="1234567890123.1234567890123"),
+        KeySpec("slack_tokens", "Slack sign-in", group="slack", user_settable=False),
     )
 }
 
@@ -72,10 +78,11 @@ class Secrets:
             raise SecretError(f"{spec.label} is written only by Aura's sign-in, not by hand.")
         value = value.strip()
         if (not value.startswith(spec.prefix) or not value.endswith(spec.suffix) or len(value) < spec.min_length
-                or any(c.isspace() for c in value)):  # fmt: skip
+                or any(c.isspace() for c in value) or (spec.pattern and not re.fullmatch(spec.pattern, value))):  # fmt: skip
             what = spec.label.split(" (")[0]
             article = "an" if what[0].lower() in "aeiou" else "a"
-            should = f"start with '{spec.prefix}'" if spec.prefix else f"end with '{spec.suffix}'"
+            should = (f"look like {spec.example}" if spec.example else f"start with '{spec.prefix}'" if spec.prefix
+                      else f"end with '{spec.suffix}'")  # fmt: skip
             raise SecretError(f"That doesn't look like {article} {what} (it should {should}).")
         self.backend.set_password(SERVICE, name, value)
         self.record("secret_set", name=name)  # the name only, never the value
@@ -111,7 +118,9 @@ class Secrets:
 
     @staticmethod
     def hint(spec: KeySpec, value: str) -> str:
-        return f"{spec.prefix}…{value[-4:]}" if spec.prefix else f"{value[:6]}…{spec.suffix.lstrip('.')}"
+        if spec.prefix:
+            return f"{spec.prefix}…{value[-4:]}"
+        return f"{value[:6]}…{spec.suffix.lstrip('.')}" if spec.suffix else f"{value[:4]}…{value[-4:]}"
 
     @staticmethod
     def _spec(name: str) -> KeySpec:
