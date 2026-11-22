@@ -68,7 +68,15 @@ class ApprovalNeeded:
     actions: tuple[Action, ...]
 
 
-Event = Text | Status | ApprovalNeeded
+@dataclass(frozen=True)
+class Changed:
+    """A setting changed during the turn: kind "voice" (the new profile) or "persona" (name)."""
+
+    kind: str
+    data: dict[str, Any]
+
+
+Event = Text | Status | ApprovalNeeded | Changed
 
 
 def build_model(settings: Settings) -> ChatOpenAI:
@@ -97,16 +105,24 @@ class Aura:
         llm = model or build_model(self.settings)
         budget = self.settings.context_tokens
         vault = self.toolbox.vault
+        identity = self.toolbox.identity
 
         @dynamic_prompt
         def persona(request: ModelRequest) -> str:
             # Rendered per call so a long-running Aura (e.g. resident in the menu bar) never has
             # a stale date. Date only, not time: the prompt prefix stays stable between turns,
             # so the server's prompt cache stays warm.
-            return system_prompt(date.today(), self.settings.model, vault.root)
+            # The persona is re-read every turn, so an approved change applies on the next reply.
+            return system_prompt(date.today(), self.settings.model, vault.root, identity.load())
 
         def describe(tool_call: dict, state: Any, runtime: Any) -> str:
-            return vault.describe_change(tool_call["name"], tool_call["args"])
+            args = tool_call["args"]
+            if tool_call["name"] == "update_persona":
+                return identity.describe(
+                    str(args.get("field", "")), str(args.get("change", "")),
+                    str(args.get("value", "")), str(args.get("reason", "")),
+                )  # fmt: skip
+            return vault.describe_change(tool_call["name"], args)
 
         approval = InterruptOnConfig(allowed_decisions=["approve", "reject"], description=describe)
 
@@ -211,6 +227,10 @@ class Aura:
                     yield Text(data["notice"] + "\n\n")
                 elif "reply" in data:
                     yield Text(data["reply"])
+                elif "voice" in data:
+                    yield Changed("voice", data["voice"])
+                elif "persona" in data:
+                    yield Changed("persona", data["persona"])
                 continue
             chunk, meta = data
             # Only the agent's own model node; skips e.g. the summarizer's internal LLM call.

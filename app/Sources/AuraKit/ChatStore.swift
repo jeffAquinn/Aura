@@ -39,6 +39,16 @@ public final class ChatStore {
         didSet { if transport != nil { connection = .connected } }
     }
 
+    // Voice and identity (Sprint 4). The server owns them; these mirror it.
+    public private(set) var voice = VoiceProfile()
+    public private(set) var persona = PersonaInfo.initial
+    public private(set) var voices: [VoiceInfo] = []
+    /// Speaks replies and approval requests when spoken replies are on.
+    public var speech: SpeechController? {
+        didSet { speech?.profile = voice }
+    }
+    @ObservationIgnored private var speakingItem: UUID?
+
     /// The running (or last) turn; tests and the smoke tool await it.
     @ObservationIgnored public private(set) var turnTask: Task<Void, Never>?
 
@@ -58,6 +68,9 @@ public final class ChatStore {
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, canSend, let transport else { return }
         items.append(Item(role: .user, text: text))
+        speech?.stop()  // a new message interrupts whatever Aura was saying
+        speech?.beginReply()
+        speakingItem = nil
         run(transport.chat(text))
     }
 
@@ -68,12 +81,44 @@ public final class ChatStore {
               approvals.count == items[i].actions.count
         else { return }
         items[i].decisions = approvals
+        speech?.stop()
+        speech?.beginReply()
         run(transport.approve(approvals))
     }
 
-    /// Stop the reply being generated (closes the stream; the server frees the turn).
+    /// Stop the reply being generated (closes the stream; the server frees the turn) and stop
+    /// speaking it.
     public func stop() {
         turnTask?.cancel()
+        speech?.stop()
+    }
+
+    // MARK: - voice and persona
+
+    public func loadSettings() async {
+        guard let settings = try? await transport?.settings() else { return }
+        setVoice(settings.voice)
+        persona = settings.persona
+    }
+
+    /// Report the voices this Mac can speak with, so Aura only ever names real ones.
+    public func registerVoices(_ catalog: [VoiceInfo]) async {
+        voices = catalog
+        try? await transport?.registerVoices(catalog)
+    }
+
+    public func updateVoice(_ patch: VoicePatch) async {
+        guard let profile = try? await transport?.updateVoice(patch) else { return }
+        setVoice(profile)
+    }
+
+    public func resetPersona() async {
+        if let reset = try? await transport?.resetPersona() { persona = reset }
+    }
+
+    private func setVoice(_ profile: VoiceProfile) {
+        voice = profile
+        speech?.profile = profile
     }
 
     /// The server went away (it restarts with fresh state): end the turn, expire any open card.
@@ -126,20 +171,41 @@ public final class ChatStore {
             if let last = items.indices.last, items[last].role == .aura {
                 items[last].text += text
             } else {
+                finishSpokenSegment()  // Aura speaks again after a tool: a new segment
                 items.append(Item(role: .aura, text: text))
+                speakingItem = items[items.count - 1].id
             }
+            speech?.reply(items[items.count - 1].text, final: false)
             phase = .streaming
         case let .approval(actions):
+            finishSpokenSegment()
             items.append(Item(role: .approval, text: "", actions: actions))
+            speech?.approvalRequested(actions)  // the verbal audit trail
             phase = .awaitingApproval
         case let .error(message):
             items.append(Item(role: .error, text: message))
+        case let .voice(profile):
+            setVoice(profile)
+        case let .persona(name):
+            persona.name = name
         case .done:
             break
         }
     }
 
+    /// Speak the last sentence of the current reply segment, then start a fresh one.
+    private func finishSpokenSegment() {
+        if let id = speakingItem, let item = items.first(where: { $0.id == id }) {
+            speech?.reply(item.text, final: true)
+        }
+        speakingItem = nil
+        speech?.beginReply()
+    }
+
     private func endTurn() {
-        if phase != .awaitingApproval { phase = .idle }
+        if phase != .awaitingApproval {
+            finishSpokenSegment()
+            phase = .idle
+        }
     }
 }

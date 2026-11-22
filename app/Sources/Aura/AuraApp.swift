@@ -22,7 +22,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         let avatar = Bundle.main.image(forResource: "Avatar").map { Image(nsImage: $0) }
-        panel = AuraPanel(rootView: ChatView(store: store, avatar: avatar) { [weak self] in
+        let starfield = Bundle.main.image(forResource: "Starfield").map { Image(nsImage: $0) }
+        store.speech = SpeechController(engine: SystemSpeechEngine())  // replies stay silent until turned on
+        panel = AuraPanel(rootView: ChatView(store: store, avatar: avatar, backdrop: starfield) { [weak self] in
             self?.restartServer()
         })
         panel.onHide = { [weak self] in self?.panelHidden() }
@@ -98,6 +100,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let server else { return }
             store.transport = AuraClient(port: port, token: server.token)
             if panel.isVisible { warm() }
+            Task {
+                // Tell the server which voices this Mac has, then mirror voice + persona settings.
+                await store.registerVoices(SystemSpeechEngine.catalog())
+                await store.loadSettings()
+                AppLog.write("voices registered: \(store.voices.count); speak=\(store.voice.speak); persona=\(store.persona.name)")
+            }
         case .failed:  // technical reason is in app.log; the server restarts itself
             store.connectionLost(FriendlyMessage.reconnecting)
         case .stopped:
@@ -114,6 +122,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func showPanel() {
         panel.show(below: statusItem.buttonFrame)
         store.focusRequests += 1
+        store.speech?.warmUp()  // load the voice now, so the first sentence isn't late
         warm()  // the user is about to type: load the model now
         warmTimer?.invalidate()
         warmTimer = Timer.scheduledTimer(withTimeInterval: 600, repeats: true) { [weak self] _ in

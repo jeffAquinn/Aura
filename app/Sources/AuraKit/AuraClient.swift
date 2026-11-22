@@ -7,6 +7,18 @@ public protocol AuraTransport: Sendable {
     func newConversation() async throws
     func warmup() async throws
     func health() async throws -> Health
+    func settings() async throws -> AppSettings
+    func registerVoices(_ voices: [VoiceInfo]) async throws
+    func updateVoice(_ patch: VoicePatch) async throws -> VoiceProfile
+    func resetPersona() async throws -> PersonaInfo
+}
+
+/// Defaults so test fakes only implement what they exercise.
+extension AuraTransport {
+    public func settings() async throws -> AppSettings { throw AuraClientError.badResponse }
+    public func registerVoices(_ voices: [VoiceInfo]) async throws {}
+    public func updateVoice(_ patch: VoicePatch) async throws -> VoiceProfile { throw AuraClientError.badResponse }
+    public func resetPersona() async throws -> PersonaInfo { throw AuraClientError.badResponse }
 }
 
 public enum AuraClientError: Error, LocalizedError, Equatable {
@@ -54,6 +66,31 @@ public final class AuraClient: AuraTransport {
         let json = JSONDecoder()
         json.keyDecodingStrategy = .convertFromSnakeCase
         return try json.decode(Health.self, from: data)
+    }
+
+    public func settings() async throws -> AppSettings {
+        try Self.decoder.decode(AppSettings.self, from: await send(request("/v1/settings")))
+    }
+
+    public func registerVoices(_ voices: [VoiceInfo]) async throws {
+        struct Body: Encodable { let voices: [VoiceInfo] }
+        _ = try await send(request("/v1/voices", body: Body(voices: voices)))
+    }
+
+    public func updateVoice(_ patch: VoicePatch) async throws -> VoiceProfile {
+        var r = request("/v1/voice", body: patch)
+        r.httpMethod = "PUT"
+        return try Self.decoder.decode(VoiceProfile.self, from: await send(r))
+    }
+
+    public func resetPersona() async throws -> PersonaInfo {
+        try Self.decoder.decode(PersonaInfo.self, from: await send(request("/v1/persona/reset", body: [String: String]())))
+    }
+
+    private static var decoder: JSONDecoder {
+        let d = JSONDecoder()
+        d.keyDecodingStrategy = .convertFromSnakeCase
+        return d
     }
 
     // MARK: - plumbing

@@ -30,8 +30,9 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
-from aura.brain import Aura, Event, Status, Text
+from aura.brain import Aura, Changed, Event, Status, Text
 from aura.config import Settings
+from aura.voice import VoiceError
 
 KEEP_ALIVE = "30m"
 LOCAL_HOSTS = {"127.0.0.1", "localhost"}
@@ -106,7 +107,7 @@ class Guard:
         if not hmac.compare_digest(headers.get("authorization", "").encode(), self.expected):
             return _error(401, "Missing or invalid token.")
         content_type = headers.get("content-type", "").split(";")[0].strip().lower()
-        if method == "POST" and content_type != "application/json":
+        if method in ("POST", "PUT") and content_type != "application/json":
             return _error(415, "Send JSON (Content-Type: application/json).")
         return None
 
@@ -132,6 +133,8 @@ def encode(ev: Event) -> str:
         return sse("text", {"text": ev.text})
     if isinstance(ev, Status):
         return sse("status", {"text": ev.text})
+    if isinstance(ev, Changed):
+        return sse(ev.kind, ev.data)  # "voice" or "persona"
     return sse("approval", {"actions": [asdict(a) for a in ev.actions]})
 
 
@@ -182,6 +185,27 @@ def stream_turn(
 
 class ChatIn(BaseModel):
     text: str = Field(min_length=1, max_length=20_000)
+
+
+class VoiceIn(BaseModel):
+    voice: str | None = None
+    speed: float | None = None
+    pitch: float | None = None
+    volume: float | None = None
+    speak: bool | None = None
+
+
+class VoiceInfo(BaseModel):
+    id: str = Field(min_length=1, max_length=200)
+    name: str = Field(min_length=1, max_length=100)
+    language: str = Field(default="", max_length=20)
+    quality: str = "default"
+    gender: str = "unknown"
+    novelty: bool = False
+
+
+class VoicesIn(BaseModel):
+    voices: list[VoiceInfo] = Field(max_length=1000)
 
 
 class ApprovalsIn(BaseModel):
@@ -247,6 +271,39 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None) -> FastAPI:
         finally:
             turn.release()
         return Response(status_code=204)
+
+    # ── voice and persona (the user acting directly: no approval needed) ──────────────────────
+
+    voice, identity = aura.toolbox.voice, aura.toolbox.identity
+
+    def persona_state() -> dict:
+        persona = identity.load()
+        return {**persona.public(), "history": identity.history_count(), "error": identity.error}
+
+    @app.get("/v1/settings")
+    def settings() -> dict:
+        return {"voice": asdict(voice.load()), "persona": persona_state(), "voices_registered": len(voice.catalog)}
+
+    @app.post("/v1/voices")
+    def register_voices(body: VoicesIn) -> dict:
+        return {"registered": voice.register([v.model_dump() for v in body.voices])}
+
+    @app.put("/v1/voice")
+    def set_voice(body: VoiceIn) -> Response:
+        try:
+            profile = voice.update(by="user", **body.model_dump())
+        except VoiceError as e:
+            return _error(422, str(e))
+        return JSONResponse(asdict(profile))
+
+    @app.get("/v1/persona")
+    def get_persona() -> dict:
+        return persona_state()
+
+    @app.post("/v1/persona/reset")
+    def reset_persona() -> dict:
+        identity.reset(by="user")
+        return persona_state()
 
     @app.post("/v1/warmup", status_code=202)
     def warmup() -> dict:

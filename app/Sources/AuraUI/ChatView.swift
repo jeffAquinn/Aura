@@ -6,11 +6,14 @@ import SwiftUI
 public struct ChatView: View {
     let store: ChatStore
     let avatar: Image?
+    let backdrop: Image?
     let onRestart: () -> Void
+    @AppStorage(Theme.key) private var theme = Theme.glass.rawValue
 
-    public init(store: ChatStore, avatar: Image?, onRestart: @escaping () -> Void) {
+    public init(store: ChatStore, avatar: Image?, backdrop: Image? = nil, onRestart: @escaping () -> Void) {
         self.store = store
         self.avatar = avatar
+        self.backdrop = backdrop
         self.onRestart = onRestart
     }
 
@@ -21,13 +24,26 @@ public struct ChatView: View {
                 OfflineBanner(message: message, onRestart: onRestart)
             }
             if store.items.isEmpty, store.phase == .idle {
-                WelcomeView(avatar: avatar)
+                WelcomeView(avatar: avatar, name: store.persona.name)
             } else {
                 TranscriptView(store: store, avatar: avatar)
             }
             InputBar(store: store)
         }
         .frame(minWidth: 360, minHeight: 440)
+        .background { ThemeBackdrop(theme: Theme(rawValue: theme) ?? .glass, image: backdrop) }
+    }
+}
+
+/// "Aura Starfield": a faint, blurred starfield from the portrait, under the system glass.
+struct ThemeBackdrop: View {
+    let theme: Theme
+    let image: Image?
+
+    var body: some View {
+        if theme == .starfield, let image {
+            image.resizable().scaledToFill().blur(radius: 18).opacity(0.38).allowsHitTesting(false)
+        }
     }
 }
 
@@ -66,18 +82,37 @@ struct AvatarView: View {
 struct HeaderView: View {
     let store: ChatStore
     let avatar: Image?
+    @State private var showSettings = false
+
+    private var speaking: Bool { store.speech?.isSpeaking == true }
 
     var body: some View {
         HStack(spacing: 10) {
-            AvatarView(image: avatar, size: 30, pulsing: store.phase == .waking || store.connection == .starting)
+            AvatarView(image: avatar, size: 30, pulsing: store.phase == .waking || store.connection == .starting || speaking)
             VStack(alignment: .leading, spacing: 1) {
-                Text("Aura").font(.headline)
+                Text(store.persona.name).font(.headline)
                 HStack(spacing: 5) {
                     Circle().fill(dotColor).frame(width: 6, height: 6)
                     Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
             }
             Spacer()
+            Button {
+                if speaking { store.speech?.stop() }
+                Task { await store.updateVoice(VoicePatch(speak: !store.voice.speak)) }
+            } label: {
+                Image(systemName: store.voice.speak ? "speaker.wave.2.fill" : "speaker.slash")
+                    .symbolEffect(.variableColor.iterative, isActive: speaking)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(store.voice.speak ? Color.accentColor : .secondary)
+            .help(store.voice.speak ? "Spoken replies are on" : "Spoken replies are off")
+            .disabled(store.transport == nil)
+            Button { showSettings.toggle() } label: { Image(systemName: "gearshape") }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help("Settings")
+                .popover(isPresented: $showSettings, arrowEdge: .bottom) { SettingsView(store: store) }
             Button {
                 Task { await store.newConversation() }
             } label: {
@@ -99,7 +134,7 @@ struct HeaderView: View {
         case .offline: "Offline"
         case .connected:
             switch store.phase {
-            case .idle: "Ready"
+            case .idle: speaking ? "Speaking…" : "Ready"
             case .thinking: "Thinking…"
             case .waking: "Waking up…"
             case .streaming: "Typing…"
@@ -144,12 +179,13 @@ struct OfflineBanner: View {
 
 struct WelcomeView: View {
     let avatar: Image?
+    var name = "Aura"
 
     var body: some View {
         VStack(spacing: 10) {
             Spacer()
             AvatarView(image: avatar, size: 64)
-            Text("Hi, I'm Aura.").font(.title3.weight(.semibold))
+            Text("Hi, I'm \(name).").font(.title3.weight(.semibold))
             Text("Ask me anything, search the web, run some Python,\nor have me work in your vault.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -272,6 +308,8 @@ struct ToolStatusView: View {
     private var icon: String {
         if text.contains("Web_Search_Tool") { return "globe" }
         if text.contains("Code_Interpreter_Tool") { return "terminal" }
+        if text.contains("Voice_Tool") { return "speaker.wave.2" }
+        if text.contains("Persona_Tool") { return "person.crop.circle" }
         return "folder"
     }
 
@@ -293,7 +331,7 @@ struct ApprovalCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Label("Aura wants to:", systemImage: "hand.raised.fill")
+            Label("\(store.persona.name) wants to:", systemImage: "hand.raised.fill")
                 .font(.subheadline.weight(.semibold))
             ForEach(Array(item.actions.enumerated()), id: \.offset) { _, action in
                 Text(action.description)
@@ -392,7 +430,7 @@ struct InputBar: View {
 
     private var placeholder: String {
         if store.transport == nil { return "Aura is offline" }
-        return store.phase == .awaitingApproval ? "Answer the approval request first" : "Ask Aura…"
+        return store.phase == .awaitingApproval ? "Answer the approval request first" : "Ask \(store.persona.name)…"
     }
 
     private func send() {

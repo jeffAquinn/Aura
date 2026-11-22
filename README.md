@@ -10,7 +10,7 @@ uv run aura                 # chat in the terminal (/new = fresh conversation, /
 uv run pytest               # all tests; live ones skip if Ollama / Docker / network are absent
 ```
 
-### The menu bar app (Sprint 3, in progress)
+### The menu bar app
 
 ```sh
 scripts/build-app.sh        # builds app/build/Aura.app (needs Xcode 26+)
@@ -31,6 +31,17 @@ Docker Desktop running for the code interpreter. Configuration: see `.env.exampl
 | `write_file`, `create_folder`, `delete_path` | File_System_Tool | asked first (`Allow? [y/N]`) |
 | `web_search` (Tavily, DuckDuckGo fallback) | Web_Search_Tool | — |
 | `run_python` (fresh offline Docker container per run) | Code_Interpreter_Tool | — |
+
+| `list_voices`, `set_voice` | Voice_Tool | — (instant, reversible) |
+| `view_persona`, `update_persona` (one field at a time) | Persona_Tool | asked first, with a diff |
+
+**Voice:** the app speaks replies sentence by sentence with macOS system voices (offline), and
+reads approval requests aloud. Spoken replies are off until you turn them on (header speaker
+icon, Settings, or "Aura, talk to me").
+
+**Identity (Tri-Layer model):** the *Soul* (`src/aura/constitution.md` + core rules in
+`persona.py`) is permanent; the *Expression* (`~/Library/Application Support/Aura/persona.json`)
+changes one field at a time with your approval, is versioned, and can be reset.
 
 File tools are confined to `~/Documents/Aura_Vault`. Everything consequential is recorded in
 `~/Library/Logs/Aura/actions.jsonl`.
@@ -54,8 +65,9 @@ File tools are confined to `~/Documents/Aura_Vault`. Everything consequential is
 
 - [x] Sprint 1: Core engine (brain, persona, memory, compaction, streaming, error handling)
 - [x] Sprint 2: Tools (vault with whitelist + approvals, Tavily search with DuckDuckGo fallback, Docker sandbox) and high-fidelity memory retention
-- [ ] Sprint 3: SwiftUI menu bar app + FastAPI local "Aura Server"
-- [ ] Sprint 4: UX refinement (Markdown rendering, persona polish)
+- [x] Sprint 3: SwiftUI menu bar app + FastAPI local "Aura Server", visual polish
+- [x] Sprint 4: Voice and identity (TTS, voice tool, Tri-Layer persona), pending Gemma's review
+- [ ] Sprint 5: Skill registry and the security governor for self-expansion
 
 ## License
 

@@ -1,5 +1,5 @@
 import AppKit
-import AuraKit
+@testable import AuraKit
 import SwiftUI
 import Testing
 @testable import AuraUI
@@ -48,7 +48,7 @@ struct SnapshotTests {
     """
 
     @discardableResult
-    private func render(_ name: String, _ store: ChatStore, dark: Bool = false) throws -> CGSize {
+    private func render(_ name: String, _ store: ChatStore, dark: Bool = false, theme: Theme = .glass) throws -> CGSize {
         let panel = VStack(spacing: 0) {
             HeaderView(store: store, avatar: Self.avatar)
             if case let .offline(message) = store.connection {
@@ -62,6 +62,7 @@ struct SnapshotTests {
             InputBar(store: store)
         }
         .frame(width: 420)
+        .background { ThemeBackdrop(theme: theme, image: Self.backdrop) }
         .background(.regularMaterial)
         .background { Self.backdrop?.resizable().scaledToFill().blur(radius: 30) }
         .clipShape(.rect(cornerRadius: 20))
@@ -123,6 +124,40 @@ struct SnapshotTests {
         try render("8-offline", store)
         #expect(store.connection == .offline("Aura is offline. Please check your connection."))
         #expect(store.items.last?.text == "Aura went offline before answering. Try again once it's back.")
+    }
+
+    @Test func voiceAndPersonaFlow() throws {
+        let store = ChatStore(items: [
+            item(.user, "Speak more softly, and call yourself Nova from now on."),
+            item(.status, "[Tool: Voice_Tool] Adjusting my voice..."),
+            item(.aura, "Done, I'll speak more softly."),
+            item(.approval, actions: [PendingAction(tool: "update_persona", description: "rename Aura → Nova\n    reason: you asked me to")], decisions: [true]),
+            item(.status, "[Tool: Persona_Tool] Updating my name..."),
+            item(.aura, "I'm **Nova** now. My core principles haven't changed."),
+        ])
+        store.apply(.persona(name: "Nova"))
+        store.apply(.voice(VoiceProfile(volume: 0.5, speak: true)))
+        try render("9-voice-persona", store)
+        #expect(store.persona.name == "Nova" && store.voice.speak)
+    }
+
+    @Test func starfieldTheme() throws {
+        try render("10-starfield", ChatStore(items: conversation), dark: true, theme: .starfield)
+    }
+
+    @Test func settingsVoiceGrouping() throws {
+        let store = ChatStore(items: [])
+        let catalog = [
+            VoiceInfo(id: "v6", name: "Voice 6", language: "en-US", quality: "enhanced", gender: "female", novelty: false),
+            VoiceInfo(id: "sam", name: "Samantha", language: "en-US", quality: "default", gender: "female", novelty: false),
+            VoiceInfo(id: "bells", name: "Bells", language: "en-US", quality: "default", gender: "unknown", novelty: true),
+        ]
+        let groups = VoiceGroups(catalog, languages: ["en-US"]).sections
+        #expect(groups.map(\.title) == ["Recommended", "More voices"])
+        #expect(groups.flatMap(\.voices).map(\.name) == ["Voice 6", "Samantha"])  // novelty hidden
+        // The popover itself is native form controls, which can't render offscreen; its
+        // grouping logic is what's checked here.
+        _ = SettingsView(store: store).body
     }
 
     @Test func toolStatusReadsLikeASentence() {

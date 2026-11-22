@@ -9,7 +9,8 @@ from langchain.agents.middleware import AgentMiddleware, AgentState, ToolCallReq
 from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from langgraph.runtime import Runtime
 
-from aura.tools import emit, status_line
+from aura.events import emit
+from aura.tools import status_line
 from aura.tools.web import FALLBACK_NOTICE
 
 DENIAL = "[Action Denied by User]. I will not perform that action. How else can I help?"

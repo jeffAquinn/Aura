@@ -1,6 +1,6 @@
 #!/bin/sh
 # Derive Aura's UI assets from assets/Aura.jpeg (the source of truth, never shipped as is).
-#   scripts/build-assets.sh <output-dir>   ->  Avatar.png, AppIcon.icns
+#   scripts/build-assets.sh <output-dir>   ->  Avatar.png, Starfield.png, AppIcon.icns
 set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$1"
@@ -14,6 +14,10 @@ sips -s format png -c 1100 1100 --cropOffset 60 935 "$ROOT/assets/Aura.jpeg" --o
 # Avatar: a tighter crop so the face stays recognisable in 22-30 pt circles; 256 px = 2x+.
 sips -s format png -c 760 760 --cropOffset 215 1085 "$ROOT/assets/Aura.jpeg" --out "$TMP/face.png" >/dev/null
 sips -Z 256 "$TMP/face.png" --out "$OUT/Avatar.png" >/dev/null
+
+# "Aura Starfield" theme: the starfield at the right of the portrait (no face), blurred in-app.
+sips -s format png -c 1536 752 --cropOffset 0 2000 "$ROOT/assets/Aura.jpeg" --out "$TMP/stars.png" >/dev/null
+sips -Z 900 "$TMP/stars.png" --out "$OUT/Starfield.png" >/dev/null
 
 # App icon (Finder, permission prompts, Activity Monitor).
 ICONSET="$TMP/AppIcon.iconset"

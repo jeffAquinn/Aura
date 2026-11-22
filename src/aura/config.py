@@ -28,6 +28,8 @@ class Settings:
     # Code interpreter: one disposable Docker container per run.
     sandbox_image: str = "aura-sandbox:1"
     sandbox_timeout: float = 30.0
+    # Aura's own settings: persona.json (+ history) and voice.json.
+    data_dir: Path = Path("~/Library/Application Support/Aura").expanduser()
     # Append-only record of approvals, file changes, code runs and blocked paths. Kept
     # outside the vault so Aura's own tools cannot alter it.
     audit_log: Path = Path("~/Library/Logs/Aura/actions.jsonl").expanduser()
@@ -47,5 +49,6 @@ class Settings:
             tavily_api_key=env("TAVILY_API_KEY") or None,
             sandbox_image=env("AURA_SANDBOX_IMAGE", d.sandbox_image),
             sandbox_timeout=float(env("AURA_SANDBOX_TIMEOUT", d.sandbox_timeout)),
+            data_dir=Path(env("AURA_DATA_DIR", str(d.data_dir))).expanduser(),
             audit_log=Path(env("AURA_AUDIT_LOG", str(d.audit_log))).expanduser(),
         )

@@ -19,7 +19,86 @@ public enum AuraEvent: Sendable, Equatable {
     case text(String)
     case approval([PendingAction])
     case error(String)
+    /// Aura changed how it sounds (the set_voice tool).
+    case voice(VoiceProfile)
+    /// Aura's persona changed (an approved update_persona); carries the (possibly new) name.
+    case persona(name: String)
     case done
+}
+
+/// How Aura sounds. Owned by the server (voice.json); spoken replies are off by default.
+public struct VoiceProfile: Codable, Sendable, Equatable {
+    public var voice: String?
+    public var speed: Double
+    public var pitch: Double
+    public var volume: Double
+    public var speak: Bool
+
+    public init(voice: String? = nil, speed: Double = 1, pitch: Double = 1, volume: Double = 0.9, speak: Bool = false) {
+        self.voice = voice
+        self.speed = speed
+        self.pitch = pitch
+        self.volume = volume
+        self.speak = speak
+    }
+}
+
+/// A partial voice change from the settings UI: nil fields stay as they are.
+public struct VoicePatch: Codable, Sendable, Equatable {
+    public var voice: String?
+    public var speed: Double?
+    public var pitch: Double?
+    public var volume: Double?
+    public var speak: Bool?
+
+    public init(voice: String? = nil, speed: Double? = nil, pitch: Double? = nil, volume: Double? = nil, speak: Bool? = nil) {
+        self.voice = voice
+        self.speed = speed
+        self.pitch = pitch
+        self.volume = volume
+        self.speak = speak
+    }
+}
+
+/// A voice the app can speak with, reported to the server so the agent only names real voices.
+public struct VoiceInfo: Codable, Sendable, Equatable, Identifiable {
+    public let id: String
+    public let name: String
+    public let language: String
+    public let quality: String  // "premium" | "enhanced" | "default"
+    public let gender: String
+    public let novelty: Bool
+
+    public init(id: String, name: String, language: String, quality: String, gender: String, novelty: Bool) {
+        self.id = id
+        self.name = name
+        self.language = language
+        self.quality = quality
+        self.gender = gender
+        self.novelty = novelty
+    }
+}
+
+/// Aura's Expression layer (persona.json), as the settings panel shows it.
+public struct PersonaInfo: Codable, Sendable, Equatable {
+    public var name: String
+    public var tone: String
+    public var brevity: String
+    public var formality: String
+    public var backstory: String
+    public var style: [String]
+    public var constraints: [String]
+    public var history: Int
+    public var error: String?
+
+    public static let initial = PersonaInfo(
+        name: "Aura", tone: "", brevity: "", formality: "", backstory: "", style: [], constraints: [], history: 0)
+}
+
+public struct AppSettings: Codable, Sendable, Equatable {
+    public let voice: VoiceProfile
+    public let persona: PersonaInfo
+    public let voicesRegistered: Int
 }
 
 public struct Health: Codable, Sendable, Equatable {
@@ -64,6 +143,10 @@ public struct SSEParser: Sendable {
         case "text": return (try? json.decode(TextBody.self, from: data)).map { .text($0.text) }
         case "approval": return (try? json.decode(ApprovalBody.self, from: data)).map { .approval($0.actions) }
         case "error": return (try? json.decode(ErrorBody.self, from: data)).map { .error($0.message) }
+        case "voice": return (try? json.decode(VoiceProfile.self, from: data)).map { .voice($0) }
+        case "persona":
+            struct PersonaBody: Decodable { let name: String }
+            return (try? json.decode(PersonaBody.self, from: data)).map { .persona(name: $0.name) }
         default: return nil  // unknown event types are ignored (forward compatibility)
         }
     }

@@ -25,11 +25,12 @@ def _isolate_from_real_vault(tmp_path, monkeypatch):
     # Settings.from_env() (used by live tests) must never resolve to the real vault or log.
     monkeypatch.setenv("AURA_VAULT_DIR", str(tmp_path / "vault"))
     monkeypatch.setenv("AURA_AUDIT_LOG", str(tmp_path / "audit.jsonl"))
+    monkeypatch.setenv("AURA_DATA_DIR", str(tmp_path / "data"))
 
 
 @pytest.fixture
 def settings(tmp_path) -> Settings:
-    return Settings(vault_dir=tmp_path / "vault", audit_log=tmp_path / "audit.jsonl")
+    return Settings(vault_dir=tmp_path / "vault", audit_log=tmp_path / "audit.jsonl", data_dir=tmp_path / "data")
 
 
 def call(name: str, **args: Any) -> dict:
