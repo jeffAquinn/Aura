@@ -1,55 +1,46 @@
-"""Sprint 1 acceptance tests, grouped by Gemma's review checkpoints.
-
-Uses a recording fake model, so these run offline in milliseconds. Live checks against the
-real LLM are in tests/test_live.py.
-"""
+"""Agent-loop tests (offline, deterministic), grouped by Gemma's review checkpoints."""
 
 from __future__ import annotations
 
+import dataclasses
 from typing import Any
 
 import pytest
-from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
+from conftest import ScriptedModel, call
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.messages.utils import count_tokens_approximately
-from langchain_core.outputs import ChatGeneration, ChatResult
-from pydantic import Field
 
-from aura.brain import Aura
+from aura.audit import AuditLog
+from aura.brain import ApprovalNeeded, Aura, Event, Status, Text
 from aura.config import Settings
+from aura.middleware import DENIAL
+from aura.tools import Toolbox
+from aura.tools.web import FALLBACK_NOTICE, Hit, WebSearch
 
 
-class RecordingModel(BaseChatModel):
-    """Replies 'reply N' and records every message list it is shown.
-
-    With report_usage=True it also reports token usage the way a real server does: counting
-    the *whole* prompt, system prompt included.
-    """
-
-    calls: list[list[BaseMessage]] = Field(default_factory=list)
-    report_usage: bool = False
-
-    @property
-    def _llm_type(self) -> str:
-        return "recording"
-
-    def _generate(self, messages: list[BaseMessage], stop=None, run_manager=None, **kw: Any):
-        self.calls.append(list(messages))
-        reply = AIMessage(content=f"reply {len(self.calls)}")
-        if self.report_usage:
-            used = count_tokens_approximately(messages)
-            reply.usage_metadata = {"input_tokens": used, "output_tokens": 2, "total_tokens": used + 2}
-            reply.response_metadata = {"model_provider": self._get_ls_params()["ls_provider"]}
-        return ChatResult(generations=[ChatGeneration(message=reply)])
-
-    def agent_calls(self) -> list[list[BaseMessage]]:
-        """Calls made by Aura's agent loop (as opposed to the memory summarizer)."""
-        return [c for c in self.calls if isinstance(c[0], SystemMessage) and "You are Aura" in c[0].text]
+def fake_ddg(query: str, n: int) -> list[Hit]:
+    return [Hit("London weather", "https://example.com/london", "12°C and light rain.")]
 
 
-def make_aura(*, report_usage: bool = False, **settings: Any) -> tuple[Aura, RecordingModel]:
-    model = RecordingModel(report_usage=report_usage)
-    return Aura(settings=Settings(**settings), model=model), model
+def make_aura(
+    settings: Settings, *script: AIMessage, report_usage: bool = False, tavily=None, **overrides: Any
+) -> tuple[Aura, ScriptedModel]:
+    s = dataclasses.replace(settings, **overrides)
+    search = WebSearch(s.tavily_api_key, AuditLog(s.audit_log), tavily=tavily, duckduckgo=fake_ddg)
+    model = ScriptedModel(script=list(script), report_usage=report_usage)
+    return Aura(settings=s, model=model, toolbox=Toolbox.from_settings(s, search=search)), model
+
+
+def tool_turn(*calls: dict) -> AIMessage:
+    return AIMessage(content="", tool_calls=list(calls))
+
+
+def said(events: list[Event]) -> str:
+    return "".join(e.text for e in events if isinstance(e, Text))
+
+
+def statuses(events: list[Event]) -> list[str]:
+    return [e.text for e in events if isinstance(e, Status)]
 
 
 def texts(messages: list[BaseMessage]) -> list[str]:
@@ -60,23 +51,11 @@ def history(aura: Aura) -> list[BaseMessage]:
     return aura._agent.get_state(aura._config).values.get("messages", [])
 
 
-def run_turns(aura: Aura, model: RecordingModel, n: int) -> list[tuple[int, bool]]:
-    """Chat n turns; per turn return (estimated history tokens, whether compaction ran)."""
-    turns = []
-    for i in range(n):
-        prompt = f"Fact {i}: " + "detail " * 20
-        size = count_tokens_approximately([*history(aura), HumanMessage(prompt)])
-        before = len(model.calls)
-        aura.chat(prompt)
-        turns.append((size, len(model.calls) - before > 1))  # 2 calls = summarizer + reply
-    return turns
+# ── Sprint 1 · Integrity: persona initialization prevents model identity leakage ──────────
 
 
-# ── Integrity: persona initialization prevents model identity leakage ──────────────────────
-
-
-def test_persona_is_the_first_thing_the_model_sees():
-    aura, model = make_aura()
+def test_persona_is_the_first_thing_the_model_sees(settings):
+    aura, model = make_aura(settings)
     aura.chat("Hello")
 
     first = model.calls[0][0]
@@ -88,15 +67,35 @@ def test_persona_is_the_first_thing_the_model_sees():
     assert "gemma4:26b" in first.text  # ...but stays honest about what powers it, if asked.
 
 
-# ── Robustness: .env configuration flows into the logic ─────────────────────────────────────
+def test_persona_describes_the_tools_and_their_limits(settings):
+    aura, model = make_aura(settings)
+    aura.chat("Hello")
+
+    prompt = model.calls[0][0].text
+    assert str(settings.vault_dir.name) in prompt
+    assert "read-only at /vault" in prompt and "no internet" in prompt
+    assert "never ask for permission in chat" in prompt  # no double confirmation
+    assert "Never say an action happened unless a tool result confirms it" in prompt
 
 
-def test_settings_come_from_env(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("AURA_BASE_URL", "http://example.local/v1")
-    monkeypatch.setenv("AURA_API_KEY", "k")
-    monkeypatch.setenv("AURA_MODEL", "some-model")
-    monkeypatch.setenv("AURA_REASONING_EFFORT", "")  # empty -> omit the parameter
-    monkeypatch.setenv("AURA_CONTEXT_TOKENS", "4096")
+# ── Sprint 1 · Robustness: .env configuration flows into the logic ─────────────────────────
+
+
+def test_settings_come_from_env(monkeypatch: pytest.MonkeyPatch, tmp_path):
+    env = {
+        "AURA_BASE_URL": "http://example.local/v1",
+        "AURA_API_KEY": "k",
+        "AURA_MODEL": "some-model",
+        "AURA_REASONING_EFFORT": "",  # empty -> omit the parameter
+        "AURA_CONTEXT_TOKENS": "4096",
+        "AURA_VAULT_DIR": str(tmp_path / "v"),
+        "TAVILY_API_KEY": "tvly-x",
+        "AURA_SANDBOX_IMAGE": "img:2",
+        "AURA_SANDBOX_TIMEOUT": "12",
+        "AURA_AUDIT_LOG": str(tmp_path / "a.jsonl"),
+    }
+    for k, v in env.items():
+        monkeypatch.setenv(k, v)
 
     assert Settings.from_env() == Settings(
         base_url="http://example.local/v1",
@@ -104,37 +103,60 @@ def test_settings_come_from_env(monkeypatch: pytest.MonkeyPatch):
         model="some-model",
         reasoning_effort=None,
         context_tokens=4096,
+        vault_dir=tmp_path / "v",
+        tavily_api_key="tvly-x",
+        sandbox_image="img:2",
+        sandbox_timeout=12.0,
+        audit_log=tmp_path / "a.jsonl",
     )
 
 
-# ── Reliability: compaction triggers on token count, and the window is never exceeded ─────
+def test_vault_is_created_on_startup(settings):
+    assert not settings.vault_dir.exists()
+    make_aura(settings)
+    assert settings.vault_dir.is_dir()
 
 
-def test_compaction_triggers_at_60_percent_of_context_budget():
-    aura, model = make_aura(context_tokens=1000)  # -> compact at 600 tokens, keep 300
+# ── Sprint 1 · Reliability: compaction triggers on token count ─────────────────────────────
+
+
+def run_turns(aura: Aura, model: ScriptedModel, n: int) -> list[tuple[int, bool]]:
+    """Chat n turns; per turn return (estimated history tokens, whether compaction ran)."""
+    turns = []
+    for i in range(n):
+        prompt = f"Fact {i}: " + "detail " * 20
+        size = count_tokens_approximately([*history(aura), HumanMessage(prompt)])
+        before = len(model.calls)
+        aura.chat(prompt)
+        turns.append((size, len(model.calls) - before > 1))  # 2 calls = summarizer + reply
+    return turns
+
+
+def test_compaction_triggers_at_60_percent_of_context_budget(settings):
+    aura, model = make_aura(settings, context_tokens=1000)  # -> compact at 600 tokens, keep 300
     turns = run_turns(aura, model, 25)
 
     for i, (size, compacted) in enumerate(turns):
         assert compacted == (size >= 600), f"turn {i}: {size} tokens, compacted={compacted}"
     assert sum(c for _, c in turns) >= 2  # fired, and fired again after re-growing
-    for call in model.agent_calls():
-        assert count_tokens_approximately(call[1:]) < 600  # history never reaches the trigger
+    for c in model.agent_calls():
+        assert count_tokens_approximately(c[1:]) < 600  # history never reaches the trigger
 
 
-def test_compaction_counts_tokens_the_local_estimate_cannot_see():
+def test_compaction_counts_tokens_the_local_estimate_cannot_see(settings):
     # The local estimate counts only the conversation. The server's reported usage also counts
-    # the system prompt (and, from Sprint 2, tool schemas), so compaction must start earlier.
-    aura, model = make_aura(context_tokens=1000, report_usage=True)
-    turns = run_turns(aura, model, 15)
+    # the system prompt and tool schemas, so compaction must start earlier.
+    aura, model = make_aura(settings, context_tokens=2000, report_usage=True)  # trigger 1200
+    turns = run_turns(aura, model, 25)
 
     first = next(i for i, (_, compacted) in enumerate(turns) if compacted)
-    assert turns[first][0] < 600  # the conversation-only estimate alone would not have fired
-    for call in model.agent_calls():
-        assert count_tokens_approximately(call) < 1000  # whole prompt, system prompt included
+    assert turns[first][0] < 1200  # the conversation-only estimate alone would not have fired
+    for c in model.agent_calls():
+        assert count_tokens_approximately(c) < 2000  # whole prompt, system prompt included
 
 
-def test_compaction_folds_old_turns_into_a_summary():
-    aura, model = make_aura(context_tokens=200)
+def test_compaction_folds_old_turns_into_a_summary(settings):
+    aura, model = make_aura(settings, context_tokens=200)
     run_turns(aura, model, 8)
 
     last_prompt = " ".join(texts(model.agent_calls()[-1]))
@@ -143,40 +165,210 @@ def test_compaction_folds_old_turns_into_a_summary():
     assert "summary" in last_prompt.lower()  # ...into a summary, rather than silently dropped
 
 
-def test_streaming_shows_only_auras_reply_during_compaction():
-    aura, model = make_aura(context_tokens=200)
+def test_streaming_shows_only_auras_reply_during_compaction(settings):
+    aura, model = make_aura(settings, context_tokens=200)
     run_turns(aura, model, 4)
     before = len(model.calls)
 
-    out = "".join(aura.stream("One more."))
+    out = said(list(aura.stream("One more.")))
     assert len(model.calls) - before == 2  # this turn ran the summarizer, then Aura
     assert out == f"reply {len(model.calls)}"  # and only Aura's reply reached the screen
 
 
-# ── Memory: Aura remembers the conversation ─────────────────────────────────────────────────
+def summarizer_calls(model: ScriptedModel) -> list[str]:
+    """The prompt text of each memory-compaction call (i.e. not Aura's own agent calls)."""
+    return [c[-1].text for c in model.calls if not isinstance(c[0], SystemMessage)]
 
 
-def test_remembers_previous_turns():
-    aura, model = make_aura()
+def test_compaction_uses_auras_lossless_fact_prompt(settings):
+    aura, model = make_aura(settings, context_tokens=200)
+    aura.chat("My locker code is 7319.")
+    run_turns(aura, model, 4)
+
+    prompt = summarizer_calls(model)[0]
+    assert "Perform lossless fact extraction" in prompt
+    assert "Never round, reformat, convert or paraphrase a number" in prompt
+    assert "carry every fact in it forward unchanged" in prompt
+    assert "My locker code is 7319." in prompt
+
+
+def test_compaction_at_full_budget_never_drops_what_it_summarizes(settings):
+    # LangChain's default pre-trim (4k tokens, oldest dropped first) made every compaction at
+    # the real 16k budget miss the earliest message and, later, the previous summary: the
+    # locker code was gone before the summarizer ever saw it (seen: 4/4 compactions).
+    aura, model = make_aura(settings)  # default context_tokens=16384
+    aura.chat("Remember: my locker code is 7319.")
+    for i in range(40):
+        aura.chat(f"Note {i}: " + "detail " * 400)
+
+    first, *later = summarizer_calls(model)
+    assert len(later) >= 2  # compacted repeatedly
+    assert "my locker code is 7319" in first
+    for prompt in later:  # each re-summarization sees the summary that carries the facts
+        assert "Here is a summary of the conversation to date" in prompt
+
+
+# ── Sprint 1 · Memory ───────────────────────────────────────────────────────────────────────
+
+
+def test_remembers_previous_turns(settings):
+    aura, model = make_aura(settings)
     assert aura.chat("My name is Ada.") == "reply 1"
     assert aura.chat("What is my name?") == "reply 2"
 
-    # The second call must include the full first exchange, in order.
     assert texts(model.calls[1][1:]) == ["My name is Ada.", "reply 1", "What is my name?"]
 
 
-def test_streamed_replies_are_remembered_too():
-    aura, model = make_aura()
-    assert "".join(aura.stream("Remember: the code is 42.")) == "reply 1"
+def test_streamed_replies_are_remembered_too(settings):
+    aura, model = make_aura(settings)
+    assert said(list(aura.stream("Remember: the code is 42."))) == "reply 1"
     aura.chat("What was the code?")
 
     assert texts(model.calls[1][1:3]) == ["Remember: the code is 42.", "reply 1"]
 
 
-def test_new_conversation_starts_clean():
-    aura, model = make_aura()
+def test_new_conversation_starts_clean(settings):
+    aura, model = make_aura(settings)
     aura.chat("My name is Ada.")
     aura.new_conversation()
     aura.chat("What is my name?")
 
     assert texts(model.calls[1][1:]) == ["What is my name?"]
+
+
+# ── Sprint 2 · Confirmation Step ────────────────────────────────────────────────────────────
+
+
+def test_vault_change_pauses_for_approval_and_runs_once_approved(settings):
+    aura, model = make_aura(
+        settings, tool_turn(call("create_folder", path="Project Aura")), AIMessage("Created it.")
+    )
+
+    events = list(aura.stream("Create a folder named 'Project Aura'."))
+    assert isinstance(events[-1], ApprovalNeeded)
+    (action,) = events[-1].actions
+    assert action.tool == "create_folder"
+    assert action.description == "create folder 'Project Aura/'"
+    assert not (settings.vault_dir / "Project Aura").exists()  # nothing happens before approval
+
+    events = list(aura.resume([True]))
+    assert statuses(events) == ["[Tool: File_System_Tool] Creating folder 'Project Aura'..."]
+    assert said(events) == "Created it."
+    assert (settings.vault_dir / "Project Aura").is_dir()
+
+    log = [(e["event"], e.get("decision")) for e in aura.toolbox.audit.entries()]
+    assert log == [("approval", "approved"), ("folder_created", None)]
+
+
+@pytest.mark.parametrize(
+    "request_call",
+    [
+        call("write_file", path="notes.txt", content="hello"),
+        call("create_folder", path="Project Aura"),
+        call("delete_path", path="keep.txt"),
+    ],
+    ids=["write", "create_folder", "delete"],
+)
+def test_denied_action_gets_the_exact_denial_and_nothing_happens(settings, request_call):
+    aura, model = make_aura(settings, tool_turn(request_call))
+    (settings.vault_dir / "keep.txt").write_text("precious")
+
+    events = list(aura.stream("Do the thing."))
+    assert isinstance(events[-1], ApprovalNeeded)
+    events = list(aura.resume([False]))
+
+    assert said(events) == DENIAL  # exact wording, no apology or retry
+    assert statuses(events) == []  # the tool never ran
+    assert len(model.agent_calls()) == 1  # the model wasn't asked to improvise a reply
+    assert sorted(p.name for p in settings.vault_dir.iterdir()) == ["keep.txt"]
+    assert (settings.vault_dir / "keep.txt").read_text() == "precious"
+    assert aura.toolbox.audit.entries()[-1]["decision"] == "denied"
+
+
+def test_after_a_denial_the_conversation_continues_and_remembers_it(settings):
+    aura, model = make_aura(settings, tool_turn(call("create_folder", path="X")))
+    aura.chat("Create folder X.")  # chat() denies by default
+    aura.chat("OK, never mind.")
+
+    seen = model.agent_calls()[-1]
+    assert any(isinstance(m, ToolMessage) and "declined" in m.text for m in seen)
+    assert any(isinstance(m, AIMessage) and m.text == DENIAL for m in seen)
+
+
+def test_partly_approved_batch_lets_aura_report_both_outcomes(settings):
+    aura, model = make_aura(
+        settings,
+        tool_turn(call("create_folder", path="A"), call("create_folder", path="B")),
+        AIMessage("Made A; you declined B."),
+    )
+    events = list(aura.stream("Make folders A and B."))
+    assert [a.description for a in events[-1].actions] == ["create folder 'A/'", "create folder 'B/'"]
+
+    events = list(aura.resume([True, False]))
+    assert said(events) == "Made A; you declined B."  # not the blanket denial
+    assert (settings.vault_dir / "A").is_dir() and not (settings.vault_dir / "B").exists()
+
+
+def test_reads_and_lists_need_no_approval(settings):
+    (settings.vault_dir).mkdir()
+    (settings.vault_dir / "budget.csv").write_text("item,amount\nrent,1200\n")
+    aura, model = make_aura(
+        settings,
+        tool_turn(call("list_vault"), call("read_file", path="budget.csv")),
+        AIMessage("Rent is 1200."),
+    )
+
+    events = list(aura.stream("What's in budget.csv?"))
+    assert not any(isinstance(e, ApprovalNeeded) for e in events)
+    assert statuses(events) == [
+        "[Tool: File_System_Tool] Listing '.'...",
+        "[Tool: File_System_Tool] Reading 'budget.csv'...",
+    ]
+    tool_results = [m.text for m in history(aura) if isinstance(m, ToolMessage)]
+    assert "budget.csv" in tool_results[0] and "rent,1200" in tool_results[1]
+
+
+def test_runaway_tool_loops_are_capped(settings):
+    loop = [tool_turn(call("list_vault")) for _ in range(12)]
+    aura, model = make_aura(settings, *loop, AIMessage("Stopping."))
+
+    events = list(aura.stream("List forever."))
+    assert len(statuses(events)) == 8  # TOOL_CALLS_PER_TURN; the rest were refused
+
+
+# ── Sprint 2 · Search fallback is announced ────────────────────────────────────────────────
+
+
+def test_fallback_search_tells_the_user(settings):
+    aura, model = make_aura(
+        settings, tool_turn(call("web_search", query="weather London")), AIMessage("12°C, rain.")
+    )
+
+    events = list(aura.stream("Weather in London?"))
+    assert statuses(events) == ["[Tool: Web_Search_Tool] Searching for 'weather London'..."]
+    assert said(events) == FALLBACK_NOTICE + "\n\n" + "12°C, rain."
+
+
+def test_fallback_notice_is_said_once_per_turn_even_after_several_searches(settings):
+    aura, model = make_aura(
+        settings,
+        tool_turn(call("web_search", query="weather London")),
+        tool_turn(call("web_search", query="London temperature now")),
+        AIMessage("12°C."),
+    )
+    events = list(aura.stream("Weather in London?"))
+    assert len(statuses(events)) == 2
+    assert said(events) == FALLBACK_NOTICE + "\n\n" + "12°C."
+
+
+def test_primary_search_has_no_fallback_notice(settings):
+    tavily = lambda q, n: [Hit("Met Office", "https://metoffice.example", "11°C")]  # noqa: E731
+    aura, model = make_aura(
+        settings,
+        tool_turn(call("web_search", query="weather London")),
+        AIMessage("11°C."),
+        tavily=tavily,
+        tavily_api_key="tvly-test",
+    )
+
+    assert said(list(aura.stream("Weather in London?"))) == "11°C."
