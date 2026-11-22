@@ -52,11 +52,13 @@ class Task:
     base: str = ""
     digest: str = ""
     pins: list[tuple[str, str]] = field(default_factory=list)  # every package in the image
+    source: Path | None = None  # where the skill comes from (default: the Skills Inbox)
+    origin: dict[str, Any] | None = None  # set for Developer builds: engine, round, cost, specification
 
     def public(self) -> dict[str, Any]:
         r = self.report
         return {"id": self.id, "skill": self.skill, "stage": self.stage, "message": self.message,
-                "created": self.created, "report": r.to_dict() if r else None}  # fmt: skip
+                "created": self.created, "report": r.to_dict() if r else None, "origin": self.origin}  # fmt: skip
 
 
 def git(repo: Path, *args: str) -> str:
@@ -95,13 +97,18 @@ class Workshop:
 
     # ── propose -> stage -> audit ──────────────────────────────────────────────────────────
 
-    def propose(self, name: str, wait: bool = False) -> Task:
-        source = self.settings.skills_inbox / name
-        if not source.is_dir():
-            raise WorkshopError(f"there is no skill called '{name}' in the Skills Inbox")
+    def propose(self, name: str, wait: bool = False, source: Path | None = None,
+                origin: dict[str, Any] | None = None) -> Task:  # fmt: skip
+        """Stage and audit a skill: from the Skills Inbox, or (Developer builds) from `source`."""
+        if source is None:
+            source = self.settings.skills_inbox / name
+            if not source.is_dir():
+                raise WorkshopError(f"there is no skill called '{name}' in the Skills Inbox")
+        elif not source.is_dir():
+            raise WorkshopError(f"there is no skill at {source}")
         if any(t.skill == name and t.stage in ("staging", "auditing", "awaiting") for t in self.tasks.values()):
             raise WorkshopError(f"'{name}' is already being reviewed")
-        task = Task(id=uuid.uuid4().hex[:8], skill=name)
+        task = Task(id=uuid.uuid4().hex[:8], skill=name, source=source, origin=origin)
         self.tasks[task.id] = task
         self.audit.record("skill_proposed", skill=name, task=task.id)
         if wait:
@@ -135,7 +142,7 @@ class Workshop:
         dest = task.worktree / "skills" / name
         if dest.exists():
             shutil.rmtree(dest)  # an update replaces the previous version
-        shutil.copytree(self.settings.skills_inbox / name, dest, symlinks=True,
+        shutil.copytree(task.source or self.settings.skills_inbox / name, dest, symlinks=True,
                         ignore=shutil.ignore_patterns("__pycache__", ".DS_Store"))  # fmt: skip
         git(task.worktree, "add", "-A", f"skills/{name}")
         git(task.worktree, "commit", "-q", "--allow-empty", "-m", f"Stage skill {name} for audit")
@@ -242,6 +249,15 @@ class Workshop:
             raise WorkshopError("blocked skills can't be deployed")
         self._deploy(task)
         return task
+
+    def discard(self, task_id: str, message: str) -> None:
+        """A Developer round that didn't pass: wipe its Shadow Project; it is never offered."""
+        task = self.tasks.get(task_id)
+        if task is None or task.stage not in ("awaiting", "failed"):
+            return
+        self._cleanup(task)
+        task.stage, task.message = "discarded", message
+        self.audit.record("skill_discarded", skill=task.skill, task=task.id)
 
     def _deploy(self, task: Task) -> None:
         name, repo = task.skill, self.settings.project_dir

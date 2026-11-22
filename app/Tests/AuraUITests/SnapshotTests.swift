@@ -67,6 +67,7 @@ struct SnapshotTests {
         .background { Self.backdrop?.resizable().scaledToFill().blur(radius: 30) }
         .clipShape(.rect(cornerRadius: 20))
         .environment(\.colorScheme, dark ? .dark : .light)
+        .environment(\.rendersOffscreen, true)
 
         let renderer = ImageRenderer(content: panel)
         renderer.scale = 2
@@ -226,6 +227,112 @@ struct SnapshotTests {
         let png = try #require(NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]))
         try png.write(to: Self.outDir.appending(path: "13-continuous-audit-alert.png"))
         #expect(image.width == 1520)
+    }
+
+    // MARK: - Sprint 6: the Developer
+
+    static let spec = """
+    ## Goal
+    Extract the text of a PDF in the vault, page by page.
+    ## Inputs
+    path: the PDF's path in the vault.
+    ## Output
+    The text, with a '--- page N ---' line before each page.
+    ## Steps
+    Open the file under /vault, read each page with pypdf, join the pages.
+    ## Acceptance tests
+    A two-page PDF with 'Hello' and 'World' gives both words, in order, under page headings.
+    ## Constraints
+    No network. Vault read-only. pypdf==7.1.1 only.
+    """
+
+    static let specCard = PendingAction(
+        tool: "develop_skill",
+        description: """
+        have Claude Code build the new skill 'pdf_text' ($2.00 total, 10 minutes per round, up to 2 repair rounds):
+            Sent to Anthropic: this specification, the skill format guide and an example skill. Nothing from your vault or this conversation.
+            The result must pass the Security Governor; you review it in the Workshop before anything is installed.
+        """ + spec.split(separator: "\n").map { "\n    │ \($0)" }.joined(),
+        args: ["name": .string("pdf_text"), "specification": .string(spec), "engine": .string("claude"), "improve": .bool(false)])
+
+    @Test func specificationApprovalCard() throws {
+        let ask = item(.user, "Can you get Claude Code to build a skill that pulls the text out of PDFs in my vault?")
+        let size = try render("14-spec-approval", ChatStore(items: [ask, item(.approval, actions: [Self.specCard])], phase: .awaitingApproval))
+        #expect(size.height > 900)  // the specification is shown in full, not truncated
+        var approved = item(.approval, actions: [Self.specCard], decisions: [true])
+        approved.edited = true
+        try render("15-spec-approved", ChatStore(items: [
+            ask, approved,
+            item(.build, "pdf_text", actions: [PendingAction(tool: "build", description: "b-1234abcd")]),
+            item(.aura, "Claude Code is building **pdf_text** now. I'll let you know when it's ready for your review."),
+        ]), dark: true)
+        #expect(SpecificationApprovalCard.outcome([true], edited: true) == "Approved with your edits")
+        #expect(SpecificationApprovalCard.outcome([false], edited: false) == "Denied: nothing was sent")
+        let proposal = try #require(Self.specCard.build)
+        #expect(SpecificationApprovalCard.summary(proposal, engine: "claude") == proposal.summary)
+        #expect(SpecificationApprovalCard.summary(proposal, engine: "codex") == "have Codex build the new skill 'pdf_text':")
+        #expect(BuildView.title(BuildInfo(id: "b", skill: "pdf_text", stage: "ready")) == "Built pdf_text")
+        #expect(BuildView.title(BuildInfo(id: "b", skill: "pdf_text", improve: true, stage: "developing")) == "Improving pdf_text")
+    }
+
+    private func renderWide(_ name: String, width: CGFloat = 760, dark: Bool = false, _ view: some View) throws -> CGSize {
+        let framed = view.frame(width: width).background(.background)
+            .environment(\.colorScheme, dark ? .dark : .light)
+            .environment(\.rendersOffscreen, true)
+        let renderer = ImageRenderer(content: framed)
+        renderer.scale = 2
+        let image = try #require(renderer.cgImage, "\(name) did not render")
+        let png = try #require(NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]))
+        try png.write(to: Self.outDir.appending(path: "\(name).png"))
+        return CGSize(width: image.width, height: image.height)
+    }
+
+    @Test func workshopBuildLiveAndReady() throws {
+        let t = { (s: Int) in ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: 1_795_000_000 + Double(s))) }
+        let running = BuildInfo(
+            id: "b-1234abcd", skill: "pdf_text", engine: "claude", specification: Self.spec, stage: "developing",
+            round: 2, maxRounds: 3, costUsd: 0.41, budgetUsd: 2, message: "Claude Code is writing the skill (round 2 of 3)…",
+            history: [BuildRound(round: 1, task: "1a2b3c4d", passed: false,
+                                 findings: ["test test_refuses_paths_outside_the_vault failed: AssertionError: no error raised"])],
+            feed: [FeedLine(t: t(0), text: "Claude Code is writing the skill (round 1 of 3)…"),
+                   FeedLine(t: t(4), text: "Reading SPEC.md"), FeedLine(t: t(6), text: "Reading SKILL_FORMAT.md"),
+                   FeedLine(t: t(19), text: "Writing skill/skill.py"), FeedLine(t: t(25), text: "Running: python3 run_tests.py"),
+                   FeedLine(t: t(31), text: "The Security Governor is auditing round 1 (tests included)…"),
+                   FeedLine(t: t(74), text: "Round 1 didn't pass (1 finding); sent back to Claude Code."),
+                   FeedLine(t: t(76), text: "Claude Code is writing the skill (round 2 of 3)…"),
+                   FeedLine(t: t(83), text: "Editing skill/skill.py"),
+                   FeedLine(t: t(90), text: "“Paths are now resolved against /vault and anything outside it is refused.”")])
+        let size = try renderWide("16-workshop-build", BuildView(build: running, onStop: {}, onReview: {}))
+        #expect(size.width == 1520)
+        let ready = BuildInfo(id: "b-1234abcd", skill: "pdf_text", engine: "claude", specification: Self.spec, stage: "ready",
+                              round: 2, maxRounds: 3, costUsd: 0.63, budgetUsd: 2, message: "Ready for your review: passed every check in round 2.",
+                              taskId: "9f8e7d6c",
+                              history: running.history + [BuildRound(round: 2, task: "9f8e7d6c", passed: true, risk: "green")],
+                              feed: running.feed + [FeedLine(t: t(140), text: "Ready for your review: passed every check in round 2.")])
+        try renderWide("17-workshop-build-ready", dark: true, BuildView(build: ready, onStop: {}, onReview: {}))
+        try renderWide("18-built-by", VStack { BuiltByCard(origin: TaskOrigin(build: "b-1234abcd", engine: "Claude Code", round: 2,
+                                                                                   costUsd: 0.63, specification: Self.spec)) }.padding(20))
+        let sidebar = VStack(alignment: .leading, spacing: 10) {
+            BuildRow(build: running)
+            BuildRow(build: ready)
+            BuildRow(build: BuildInfo(id: "b-2", skill: "word_count", engine: "codex", stage: "deployed", budgetUsd: 0))
+            BuildRow(build: BuildInfo(id: "b-3", skill: "csv_stats", engine: "codex", stage: "failed", budgetUsd: 0))
+        }.padding(12)
+        try renderWide("19-workshop-build-rows", width: 300, sidebar)
+    }
+
+    @Test func newSkillSheetAndKeys() throws {
+        let store = WorkshopStore(developer: DeveloperInfo(engines: [
+            EngineInfo(name: "claude", label: "Claude Code", vendor: "Anthropic", capsCost: true, problem: "Add an Anthropic API key in Settings → Keys."),
+            EngineInfo(name: "codex", label: "Codex", vendor: "OpenAI", capsCost: false),
+        ]))
+        try renderWide("20-new-skill-sheet", width: 620, NewBuildSheet(store: store, improve: nil))
+        let chat = ChatStore(items: [])
+        let keys = VStack(alignment: .leading, spacing: 14) {
+            KeyRow(secret: SecretInfo(name: "anthropic_api_key", label: "Anthropic API key (Claude Code, the Developer)", set: false), store: chat)
+            KeyRow(secret: SecretInfo(name: "tavily_api_key", label: "Tavily API key (web search)", set: true, hint: "tvly-…3f9a"), store: chat)
+        }.padding(16)
+        try renderWide("21-keys", width: 360, keys)
     }
 
     @Test func toolStatusReadsLikeASentence() {

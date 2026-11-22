@@ -21,6 +21,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var alertTimer: Timer?
     private var menu: NSMenu!
     private var shownAlerts: [String] = []
+    private var shownBuilds: [String] = []  // builds ready for review, in the menu
+    private var buildCheck: Timer?
     private lazy var workshop = WorkshopStore { [weak self] in self?.store.transport }
     private var workshopWindow: NSWindow?
 
@@ -47,6 +49,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu = makeMenu()
         statusItem = StatusItemController(menu: menu) { [weak self] in self?.togglePanel() }
         workshop.onAlertsChanged = { [weak self] in self?.checkAlerts() }
+        store.onBuildStarted = { [weak self] _ in self?.checkAlerts() }
         startServer()
         // Opening Aura should visibly open it: show the panel once the menu bar icon is placed.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
@@ -167,7 +170,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         Task {
             guard let info = try? await transport.alerts() else { return }
             showAlerts(SkillAlert.pending(info.alerts))
+            showBuilds(info.builds ?? [])
         }
+    }
+
+    /// The Developer's builds: while one runs, check every few seconds; when one is ready, say so
+    /// (spoken, if spoken replies are on) and offer it in the menu.
+    private func showBuilds(_ builds: [BuildAlert]) {
+        buildCheck?.invalidate()
+        if builds.contains(where: { BuildInfo.runningStages.contains($0.stage) }) {
+            buildCheck = Timer.scheduledTimer(withTimeInterval: 5, repeats: false) { [weak self] _ in
+                MainActor.assumeIsolated { self?.checkAlerts() }
+            }
+        }
+        let ready = builds.filter { $0.stage == "ready" }
+        guard ready.map(\.id) != shownBuilds else { return }
+        for build in ready where !shownBuilds.contains(build.id) {
+            AppLog.write("build ready for review: \(build.skill) (\(build.id))")
+            store.speech?.announce("The \(build.skill) skill is ready for your review in the Workshop.")
+        }
+        shownBuilds = ready.map(\.id)
+        for item in menu.items where item.tag == Self.buildTag { menu.removeItem(item) }
+        guard !ready.isEmpty else { return }
+        let at = menu.items.firstIndex { $0.tag != Self.alertTag } ?? 0  // below any security alerts
+        let separator = NSMenuItem.separator()
+        separator.tag = Self.buildTag
+        menu.insertItem(separator, at: at)
+        for build in ready.reversed() {
+            let item = NSMenuItem(title: build.menuTitle, action: #selector(openBuildFromMenu(_:)), keyEquivalent: "")
+            item.target = self
+            item.tag = Self.buildTag
+            item.representedObject = build.id
+            item.toolTip = build.message
+            menu.insertItem(item, at: at)
+        }
+    }
+
+    @objc private func openBuildFromMenu(_ sender: NSMenuItem) {
+        openWorkshop(sender.representedObject as? String)
     }
 
     private func showAlerts(_ pending: [SkillAlert]) {
@@ -191,6 +231,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private static let alertTag = 900
+    private static let buildTag = 901
 
     // MARK: - menu
 
@@ -231,7 +272,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if window.frame.origin == .zero { window.center() }
             workshopWindow = window
         }
-        if let taskID { workshop.selectedTaskID = taskID }
+        if let taskID { workshop.select(taskID) }  // an audit's id, or a build's ("b-…")
         NSApp.activate()
         workshopWindow?.makeKeyAndOrderFront(nil)
         Task { await workshop.refresh() }

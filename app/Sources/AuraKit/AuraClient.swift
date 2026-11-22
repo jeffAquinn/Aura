@@ -4,6 +4,8 @@ import Foundation
 public protocol AuraTransport: Sendable {
     func chat(_ text: String) -> AsyncThrowingStream<AuraEvent, Error>
     func approve(_ approvals: [Bool]) -> AsyncThrowingStream<AuraEvent, Error>
+    /// The same, where an answer can approve with edits (the Specification Approval card).
+    func approve(decisions: [ApprovalDecision]) -> AsyncThrowingStream<AuraEvent, Error>
     func newConversation() async throws
     func warmup() async throws
     func health() async throws -> Health
@@ -24,6 +26,12 @@ public protocol AuraTransport: Sendable {
     func uninstall(_ skill: String) async throws
     func keepFlagged(_ skill: String) async throws
     func auditNow() async throws
+    func developer() async throws -> DeveloperInfo
+    func startBuild(_ request: BuildRequest) async throws -> BuildInfo
+    func stopBuild(_ id: String) async throws -> BuildInfo
+    func secrets() async throws -> [SecretInfo]
+    func setSecret(_ name: String, value: String) async throws -> SecretInfo
+    func deleteSecret(_ name: String) async throws
 }
 
 /// Defaults so test fakes only implement what they exercise.
@@ -45,6 +53,15 @@ extension AuraTransport {
     public func uninstall(_ skill: String) async throws {}
     public func keepFlagged(_ skill: String) async throws {}
     public func auditNow() async throws {}
+    public func approve(decisions: [ApprovalDecision]) -> AsyncThrowingStream<AuraEvent, Error> {
+        approve(decisions.map(\.approved))
+    }
+    public func developer() async throws -> DeveloperInfo { throw AuraClientError.badResponse }
+    public func startBuild(_ request: BuildRequest) async throws -> BuildInfo { throw AuraClientError.badResponse }
+    public func stopBuild(_ id: String) async throws -> BuildInfo { throw AuraClientError.badResponse }
+    public func secrets() async throws -> [SecretInfo] { [] }
+    public func setSecret(_ name: String, value: String) async throws -> SecretInfo { throw AuraClientError.badResponse }
+    public func deleteSecret(_ name: String) async throws {}
 }
 
 public enum AuraClientError: Error, LocalizedError, Equatable {
@@ -77,6 +94,10 @@ public final class AuraClient: AuraTransport {
 
     public func approve(_ approvals: [Bool]) -> AsyncThrowingStream<AuraEvent, Error> {
         stream("/v1/approvals", body: ["approvals": approvals])
+    }
+
+    public func approve(decisions: [ApprovalDecision]) -> AsyncThrowingStream<AuraEvent, Error> {
+        stream("/v1/approvals", body: ["approvals": decisions])
     }
 
     public func newConversation() async throws {
@@ -173,6 +194,37 @@ public final class AuraClient: AuraTransport {
 
     public func auditNow() async throws {
         _ = try await send(request("/v1/audit", body: [String: String]()))
+    }
+
+    // MARK: - the Developer and keys (Sprint 6)
+
+    public func developer() async throws -> DeveloperInfo {
+        try Self.decoder.decode(DeveloperInfo.self, from: await send(request("/v1/developer")))
+    }
+
+    public func startBuild(_ request: BuildRequest) async throws -> BuildInfo {
+        try Self.decoder.decode(BuildInfo.self, from: await send(self.request("/v1/builds", body: request)))
+    }
+
+    public func stopBuild(_ id: String) async throws -> BuildInfo {
+        try Self.decoder.decode(BuildInfo.self, from: await send(request("/v1/builds/\(id)/stop", body: [String: String]())))
+    }
+
+    public func secrets() async throws -> [SecretInfo] {
+        try Self.decoder.decode([SecretInfo].self, from: await send(request("/v1/secrets")))
+    }
+
+    /// The value goes to the local server only, which stores it in the macOS Keychain.
+    public func setSecret(_ name: String, value: String) async throws -> SecretInfo {
+        var r = request("/v1/secrets/\(name)", body: ["value": value])
+        r.httpMethod = "PUT"
+        return try Self.decoder.decode(SecretInfo.self, from: await send(r))
+    }
+
+    public func deleteSecret(_ name: String) async throws {
+        var r = request("/v1/secrets/\(name)")
+        r.httpMethod = "DELETE"
+        _ = try await send(r)
     }
 
     private static var decoder: JSONDecoder {

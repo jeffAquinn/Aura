@@ -35,6 +35,7 @@ Docker Desktop running for the code interpreter. Configuration: see `.env.exampl
 | `view_persona`, `update_persona` (one field at a time) | Persona_Tool | asked first, with a diff |
 | `check_library` (PyPI + OSV facts) | Governor | — |
 | `list_skills`, `propose_skill` | Workshop | — (deploying is your decision in the Workshop) |
+| `develop_skill` (Claude Code or Codex builds or improves a skill) | Developer | asked first: the Specification Approval card |
 | `skill_<name>` (each installed skill) | Skill_Tool | — (approved once, at install) |
 
 **Voice:** the app speaks replies sentence by sentence, offline: Kokoro-82M neural voices (Heart,
@@ -80,6 +81,34 @@ and against every provenance rule (PyPI and OSV) once a day while Aura is idle. 
 red is switched off at once; the menu bar icon turns into a red warning and the Workshop asks
 whether to uninstall it or keep it disabled. If the check can't reach PyPI or OSV, nothing changes.
 
+### The Developer: Claude Code and Codex build skills (Sprint 6)
+
+Aura can commission a skill instead of waiting for one to appear in the Inbox. Ask in chat ("have
+Claude Code build a skill that…"), or click **New Skill** in the Workshop (right-click an installed
+skill to **Improve** it).
+
+1. **Specification.** Aura writes a Technical Specification with six sections (Goal, Inputs, Output,
+   Steps, Acceptance tests, Constraints). The **Specification Approval card** shows the Developer,
+   the hard limits, exactly what is sent and to whom, and the specification itself. You can edit the
+   specification or switch the Developer, then **Approve & Build**. Return denies.
+2. **Developer.** Claude Code (a dedicated Anthropic API key, `--bare`, $2 hard cap per build) or Codex
+   (your ChatGPT sign-in) works in the **Developer container**:
+   - **Files:** it sees the build's scratch workspace and nothing else on this Mac.
+   - **Network:** its only route out is an allowlist of its own vendor's hosts.
+   - **Feed:** its actions stream into the build's live feed in the Workshop, where **Stop** ends it at once.
+3. **Security Governor.** Only the written `skill/` folder is taken and audited exactly as in Sprint 5:
+   - the shadow project, the static scan and provenance;
+   - the skill's tests in its sandbox, and Aura's full suite.
+
+   A failing round is wiped and its findings go back to the Developer, for at most 2 repair rounds.
+4. **Code Review.** Only a build that passed every check reaches the Audit Card, marked **Built by**
+   (the Developer, the round, the cost) with its specification. Deploying is still your click. When a
+   build is ready, the menu bar says so and, if spoken replies are on, Aura tells you.
+
+**Keys** live only in the macOS Keychain: Settings (the gear in the chat header) → Keys. A key is
+never shown again (only a masked hint), and never written to a file, a log or the chat. The
+Anthropic key is passed to Claude Code's container only.
+
 ## Layout
 
 | Path | Role |
@@ -93,6 +122,8 @@ whether to uninstall it or keep it disabled. If the check can't reach PyPI or OS
 | `src/aura/identity.py`, `voice.py`, `speech.py` | Persona store, voice settings, Kokoro neural speech |
 | `src/aura/skills.py` | Skill manifests, the registry and approvals, skill tools |
 | `src/aura/governor/` | Security Governor: `scan.py` (static), `provenance.py` (PyPI/OSV), `workshop.py` (staging, audit, deploy, uninstall), `continuous.py` (re-checks of installed skills) |
+| `src/aura/developer/` | The Developer: `engines.py` (Claude Code, Codex), `container.py` + `egress.py` (the isolated container and its egress allowlist), `workspace.py` (the scratch workspace), `workflow.py` (specification → build → audit → repair → review) |
+| `src/aura/secrets.py` | Keys in the macOS Keychain |
 | `src/aura/main.py` | Terminal interface |
 | `src/aura/server.py` | Local HTTP + SSE server for the app (auth, streaming, Smart-Warm) |
 | `app/` | SwiftUI menu bar app: `AuraKit` (client, SSE, state, speech) + `AuraUI` (chat, settings, Workshop) + `Aura` (app shell) + `aura-smoke` |
@@ -105,8 +136,9 @@ whether to uninstall it or keep it disabled. If the check can't reach PyPI or OS
 - [x] Sprint 3: SwiftUI menu bar app + FastAPI local "Aura Server", visual polish
 - [x] Sprint 4: Voice and identity (TTS, voice tool, Tri-Layer persona)
 - [x] Sprint 5: Skill registry, Security Governor, Workshop and staging (+ Continuous Audit)
-- [ ] Sprint 6: Claude Code and Codex as developer engines
-- [ ] Sprint 7: The Librarian (knowledge ingestion, secret vault, index)
+- [ ] Sprint 6: Claude Code and Codex as developer engines (the Developer-Agent Workflow)
+- [ ] Sprint 7: Connections (MCP servers in the Workshop, and a Permissions screen: files, Google account, Slack, Discord)
+- [ ] Sprint 8: The Librarian (knowledge ingestion, secret vault, index)
 
 ## License
 

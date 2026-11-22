@@ -45,7 +45,7 @@ def env(tmp_path):
     sh(repo, "add", "-A")
     sh(repo, "commit", "-q", "-m", "base")
     settings = Settings(project_dir=repo, vault_dir=tmp_path / "vault", data_dir=tmp_path / "data",
-                        audit_log=tmp_path / "audit.jsonl")  # fmt: skip
+                        audit_log=tmp_path / "audit.jsonl", dev_dir=tmp_path / "dev")  # fmt: skip
     shutil.copytree(EXAMPLE, settings.skills_inbox / "pdf_text")
     audit = AuditLog(settings.audit_log)
     sandbox = FakeSandbox()

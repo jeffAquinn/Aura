@@ -69,6 +69,13 @@ struct SpeechPlannerTests {
             "I need your approval to delete file old-draft.txt, and to rename Aura → Nova.")
     }
 
+    @Test func aBuildRequestSaysWhoBuildsItAndWhatLeavesTheMac() {
+        let card = PendingAction(tool: "develop_skill", description: "have Claude Code build the new skill 'pdf_text' ($2.00 total):\n    │ ## Goal",
+                                 args: ["name": .string("pdf_text"), "specification": .string("## Goal"), "engine": .string("claude")])
+        #expect(SpeechPlanner.approvalSentence([card]) ==
+            "I'd like Claude Code to build the pdf text skill. Only the specification on the card goes to Anthropic. I need your approval.")
+    }
+
     @Test func codeRunsGetASpokenStatusUpdate() {
         let card = PendingAction(tool: "run_python", description: "run Python in the sandbox (no internet, vault read-only, 30-second limit):\n    │ print(1)")
         #expect(SpeechPlanner.approvalSentence([card]) ==

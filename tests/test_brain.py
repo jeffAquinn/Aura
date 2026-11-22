@@ -77,6 +77,7 @@ def test_settings_come_from_env(monkeypatch: pytest.MonkeyPatch, tmp_path):
         "AURA_SANDBOX_TIMEOUT": "12",
         "AURA_AUDIT_LOG": str(tmp_path / "a.jsonl"),
         "AURA_DATA_DIR": str(tmp_path / "d"),
+        "AURA_DEV_DIR": str(tmp_path / "dev"),
     }
     for k, v in env.items():
         monkeypatch.setenv(k, v)
@@ -93,6 +94,7 @@ def test_settings_come_from_env(monkeypatch: pytest.MonkeyPatch, tmp_path):
         sandbox_timeout=12.0,
         audit_log=tmp_path / "a.jsonl",
         data_dir=tmp_path / "d",
+        dev_dir=tmp_path / "dev",
     )
 
 

@@ -77,6 +77,13 @@ public struct AuditClock: Codable, Sendable, Equatable {
 public struct AlertsInfo: Codable, Sendable, Equatable {
     public let alerts: [SkillAlert]
     public let continuousAudit: AuditClock
+    public let builds: [BuildAlert]?  // the Developer's builds: running, or ready for review
+
+    public init(alerts: [SkillAlert], continuousAudit: AuditClock, builds: [BuildAlert]? = nil) {
+        self.alerts = alerts
+        self.continuousAudit = continuousAudit
+        self.builds = builds
+    }
 }
 
 public struct InboxItem: Codable, Sendable, Equatable, Identifiable {
@@ -180,17 +187,37 @@ public struct FileDiff: Codable, Sendable, Equatable, Identifiable {
     }
 }
 
+/// Who wrote a skill the Developer built: shown as "Built by" on its Audit Card.
+public struct TaskOrigin: Codable, Sendable, Equatable {
+    public let build: String
+    public let engine: String  // the label, e.g. "Claude Code"
+    public let round: Int
+    public let costUsd: Double
+    public let specification: String
+    public let improve: Bool
+
+    public init(build: String, engine: String, round: Int, costUsd: Double, specification: String, improve: Bool = false) {
+        self.build = build
+        self.engine = engine
+        self.round = round
+        self.costUsd = costUsd
+        self.specification = specification
+        self.improve = improve
+    }
+}
+
 public struct TaskInfo: Codable, Sendable, Equatable, Identifiable {
     public let id: String
     public let skill: String
-    public let stage: String  // staging | auditing | awaiting | deployed | rejected | failed
+    public let stage: String  // staging | auditing | awaiting | deployed | rejected | failed | discarded
     public let message: String
     public let created: String
     public let report: AuditReportInfo?
     public let diff: [FileDiff]?
+    public let origin: TaskOrigin?  // set when the Developer built it
 
     public init(id: String, skill: String, stage: String, message: String, created: String = "",
-                report: AuditReportInfo? = nil, diff: [FileDiff]? = nil) {
+                report: AuditReportInfo? = nil, diff: [FileDiff]? = nil, origin: TaskOrigin? = nil) {
         self.id = id
         self.skill = skill
         self.stage = stage
@@ -198,10 +225,13 @@ public struct TaskInfo: Codable, Sendable, Equatable, Identifiable {
         self.created = created
         self.report = report
         self.diff = diff
+        self.origin = origin
     }
 
     public var isRunning: Bool { stage == "staging" || stage == "auditing" }
     public var awaitsDecision: Bool { stage == "awaiting" }
+    /// A build's failed round, wiped by the Governor (Gemma: nothing that failed is presented).
+    public var isDiscarded: Bool { stage == "discarded" }
 }
 
 public struct SystemStatus: Codable, Sendable, Equatable {
@@ -230,11 +260,22 @@ public final class WorkshopStore {
     public private(set) var inbox: [InboxItem] = []
     public private(set) var tasks: [TaskInfo] = []
     public private(set) var status: SystemStatus?
+    public private(set) var developer: DeveloperInfo?
     public var selectedTaskID: String? {
         didSet { if selectedTaskID != oldValue { Task { await loadSelected() } } }
     }
     public private(set) var selected: TaskInfo?
+    /// The build shown in the detail pane (instead of an Audit Card).
+    public var selectedBuildID: String?
     public private(set) var lastError: String?
+    /// Why the last build couldn't start (shown in the New Skill sheet).
+    public private(set) var buildError: String?
+
+    public var builds: [BuildInfo] { developer?.builds ?? [] }
+    public var engines: [EngineInfo] { developer?.engines ?? EngineInfo.known }
+    public var selectedBuild: BuildInfo? { selectedBuildID.flatMap { id in builds.first { $0.id == id } } }
+    /// The audits to list: a build's failed rounds were wiped and aren't presented.
+    public var visibleTasks: [TaskInfo] { tasks.filter { !$0.isDiscarded } }
     /// Called after anything that can change alerts (so the menu bar updates at once).
     @ObservationIgnored public var onAlertsChanged: () -> Void = {}
 
@@ -249,7 +290,7 @@ public final class WorkshopStore {
 
     /// For previews and snapshot tests.
     public init(skills: [SkillInfo] = [], inbox: [InboxItem] = [], tasks: [TaskInfo] = [], selected: TaskInfo? = nil,
-                status: SystemStatus? = nil) {
+                status: SystemStatus? = nil, developer: DeveloperInfo? = nil, selectedBuildID: String? = nil) {
         transport = { nil }
         self.skills = skills
         self.inbox = inbox
@@ -257,6 +298,20 @@ public final class WorkshopStore {
         self.selected = selected
         selectedTaskID = selected?.id
         self.status = status
+        self.developer = developer
+        self.selectedBuildID = selectedBuildID
+    }
+
+    /// Show a task's Audit Card or a build ("b-…"), e.g. from the chat or the menu bar.
+    public func select(_ id: String) {
+        if id.hasPrefix("b-") {
+            selectedBuildID = id
+            selectedTaskID = nil
+            selected = nil
+        } else {
+            selectedBuildID = nil
+            selectedTaskID = id
+        }
     }
 
     public func refresh() async {
@@ -267,12 +322,48 @@ public final class WorkshopStore {
             inbox = overview.inbox
             tasks = try await t.tasks()
             status = try? await t.status()
+            developer = try? await t.developer()
             lastError = nil
         } catch {
             lastError = FriendlyMessage.describe(error)
         }
         await loadSelected()
-        if tasks.contains(where: \.isRunning) { startPolling() }
+        if isBusy { startPolling() }
+    }
+
+    /// Something is in progress that the Workshop should follow live.
+    public var isBusy: Bool { tasks.contains(where: \.isRunning) || builds.contains(where: \.isRunning) }
+
+    /// The New Skill / Improve sheet's Build button: the user's click, with the specification,
+    /// the Developer, the limits and what leaves this Mac in view, is the approval. Returns
+    /// whether the build started.
+    public func startBuild(_ request: BuildRequest) async -> Bool {
+        guard let t = transport() else { return false }
+        do {
+            let build = try await t.startBuild(request)
+            buildError = nil
+            await refresh()
+            select(build.id)
+            onAlertsChanged()  // the menu bar follows the build, to say when it's ready
+            return true
+        } catch let AuraClientError.http(_, message) {
+            buildError = message
+        } catch {
+            buildError = FriendlyMessage.describe(error)
+        }
+        return false
+    }
+
+    public func clearBuildError() { buildError = nil }
+
+    public func stopBuild(_ id: String) async {
+        await act { _ = try await $0.stopBuild(id) }
+    }
+
+    /// From a ready build to its Audit Card (Code Review).
+    public func review(_ build: BuildInfo) {
+        guard let task = build.taskId else { return }
+        select(task)
     }
 
     public func propose(_ skill: String) async {
@@ -349,7 +440,7 @@ public final class WorkshopStore {
             while let self, !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(1))
                 await self.refresh()
-                if !self.tasks.contains(where: \.isRunning) { break }
+                if !self.isBusy { break }
             }
             self?.polling = nil
         }

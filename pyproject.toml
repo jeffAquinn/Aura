@@ -7,6 +7,7 @@ dependencies = [
     "ddgs>=9.16.1",
     "en-core-web-sm",
     "fastapi>=0.165.0",
+    "keyring==25.7.0",
     "langchain>=1.5.2",
     "langchain-openai>=1.8.5",
     "misaki[en]>=0.9.4",

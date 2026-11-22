@@ -14,18 +14,20 @@ public final class ChatStore {
     }
 
     public struct Item: Identifiable, Equatable, Sendable {
-        public enum Role: Sendable { case user, aura, status, approval, error, task }
+        public enum Role: Sendable { case user, aura, status, approval, error, task, build }
         public let id = UUID()
         public let role: Role
         public var text: String
         public var actions: [PendingAction] = []
         public var decisions: [Bool]?  // approval cards: nil until the user answers
+        public var edited = false  // approved with the user's edits (the Specification Approval card)
 
-        public init(role: Role, text: String, actions: [PendingAction] = [], decisions: [Bool]? = nil) {
+        public init(role: Role, text: String, actions: [PendingAction] = [], decisions: [Bool]? = nil, edited: Bool = false) {
             self.role = role
             self.text = text
             self.actions = actions
             self.decisions = decisions
+            self.edited = edited
         }
     }
 
@@ -48,6 +50,8 @@ public final class ChatStore {
         didSet { speech?.profile = voice }
     }
     @ObservationIgnored private var speakingItem: UUID?
+    /// A Developer build started from the chat (the app then follows it, to say when it's ready).
+    @ObservationIgnored public var onBuildStarted: (String) -> Void = { _ in }
 
     /// The running (or last) turn; tests and the smoke tool await it.
     @ObservationIgnored public private(set) var turnTask: Task<Void, Never>?
@@ -76,14 +80,22 @@ public final class ChatStore {
 
     /// Answer the pending approval card: one decision per action.
     public func decide(_ approvals: [Bool]) {
+        decide(decisions: approvals.map { $0 ? .allow : .deny })
+    }
+
+    /// The same, where an answer can approve with edits (only fields the tool allows; the server
+    /// checks).
+    public func decide(decisions: [ApprovalDecision]) {
         guard phase == .awaitingApproval, let transport,
               let i = items.lastIndex(where: { $0.role == .approval && $0.decisions == nil }),
-              approvals.count == items[i].actions.count
+              decisions.count == items[i].actions.count
         else { return }
-        items[i].decisions = approvals
+        let edited = decisions.contains { if case .allowEdited = $0 { true } else { false } }
+        items[i].decisions = decisions.map(\.approved)
+        items[i].edited = edited
         speech?.stop()
         speech?.beginReply()
-        run(transport.approve(approvals))
+        run(edited ? transport.approve(decisions: decisions) : transport.approve(decisions.map(\.approved)))
     }
 
     /// Stop the reply being generated (closes the stream; the server frees the turn) and stop
@@ -116,6 +128,34 @@ public final class ChatStore {
 
     public func resetPersona() async {
         if let reset = try? await transport?.resetPersona() { persona = reset }
+    }
+
+    // MARK: - keys (Settings → Keys; values go to the macOS Keychain and never come back)
+
+    public private(set) var secrets: [SecretInfo] = []
+
+    public func loadSecrets() async {
+        if let listing = try? await transport?.secrets() { secrets = listing }
+    }
+
+    /// Store a key. Returns why it was refused (nil: saved).
+    public func saveSecret(_ name: String, value: String) async -> String? {
+        let value = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let transport else { return FriendlyMessage.offline }
+        do {
+            let saved = try await transport.setSecret(name, value: value)
+            if let i = secrets.firstIndex(where: { $0.name == name }) { secrets[i] = saved } else { secrets.append(saved) }
+            return nil
+        } catch let AuraClientError.http(_, message) {
+            return message
+        } catch {
+            return FriendlyMessage.describe(error)
+        }
+    }
+
+    public func removeSecret(_ name: String) async {
+        try? await transport?.deleteSecret(name)
+        await loadSecrets()
     }
 
     private func setVoice(_ profile: VoiceProfile) {
@@ -196,6 +236,9 @@ public final class ChatStore {
             persona.name = name
         case let .task(id, skill):
             items.append(Item(role: .task, text: skill, actions: [PendingAction(tool: "task", description: id)]))
+        case let .build(id, skill):
+            items.append(Item(role: .build, text: skill, actions: [PendingAction(tool: "build", description: id)]))
+            onBuildStarted(id)
         case .done:
             break
         }

@@ -9,7 +9,7 @@ public enum Theme: String, CaseIterable, Sendable {
     var label: String { self == .glass ? "Clean Glass" : "Aura Starfield" }
 }
 
-/// Voice, appearance and persona. Changes made here are the user acting directly: no approval.
+/// Voice, appearance, persona and keys. Changes made here are the user acting directly: no approval.
 struct SettingsView: View {
     let store: ChatStore
     @AppStorage(Theme.key) private var theme = Theme.glass.rawValue
@@ -67,10 +67,12 @@ struct SettingsView: View {
                 Text("Ask \(store.persona.name) to change its tone, brevity or style; you approve each change.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            KeysSection(store: store)
         }
         .formStyle(.grouped)
         .frame(width: 360, height: 560)
         .onAppear(perform: syncSliders)
+        .task { await store.loadSecrets() }
         .onChange(of: store.voice) { syncSliders() }
         .confirmationDialog("Reset \(store.persona.name)'s persona to the default?", isPresented: $confirmReset) {
             Button("Reset", role: .destructive) { Task { await store.resetPersona() } }
@@ -93,6 +95,99 @@ struct SettingsView: View {
                 if !editing { Task { await store.updateVoice(patch(value.wrappedValue)) } }
             }
         }
+    }
+}
+
+/// Settings → Keys. A key goes from this field to the local Aura Server, which stores it in the
+/// macOS Keychain; it is never shown again (only a masked hint), and never written to a file, a
+/// log or the chat.
+struct KeysSection: View {
+    let store: ChatStore
+
+    var body: some View {
+        Section {
+            ForEach(store.secrets) { KeyRow(secret: $0, store: store) }
+            if store.secrets.isEmpty {
+                Text(store.transport == nil ? "Aura is offline." : "Loading…").foregroundStyle(.secondary)
+            }
+        } header: {
+            Text("Keys")
+        } footer: {
+            Text("Stored in this Mac's Keychain, never in a file, a log or the chat.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+}
+
+struct KeyRow: View {
+    let secret: SecretInfo
+    let store: ChatStore
+    @State private var entering = false
+    @State private var value = ""
+    @State private var error: String?
+    @State private var saving = false
+    @State private var confirmRemove = false
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(secret.label)
+                    Text(secret.purpose).font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                if !entering {
+                    Text(secret.hint ?? "Not set").font(.callout.monospaced())
+                        .foregroundStyle(secret.set ? Color.primary : Color.secondary)
+                }
+            }
+            if entering {
+                SecureField("Paste the key", text: $value)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($focused)
+                    .onSubmit(save)
+                if let error {
+                    Label(error, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+                }
+                HStack {
+                    if let source = secret.source { Link("Get a key…", destination: source).font(.caption) }
+                    Spacer()
+                    Button("Cancel") { reset() }
+                    Button("Save to Keychain", action: save).disabled(value.isEmpty || saving)
+                }
+                .controlSize(.small)
+            } else {
+                HStack {
+                    if let source = secret.source, !secret.set { Link("Get a key…", destination: source).font(.caption) }
+                    Spacer()
+                    if secret.set {
+                        Button("Remove", role: .destructive) { confirmRemove = true }
+                    }
+                    Button(secret.set ? "Replace…" : "Add…") { entering = true; focused = true }
+                }
+                .controlSize(.small)
+            }
+        }
+        .confirmationDialog("Remove the \(secret.label) from the Keychain?", isPresented: $confirmRemove) {
+            Button("Remove", role: .destructive) { Task { await store.removeSecret(secret.name) } }
+        }
+    }
+
+    private func save() {
+        guard !value.isEmpty, !saving else { return }
+        saving = true
+        Task {
+            error = await store.saveSecret(secret.name, value: value)
+            saving = false
+            if error == nil { reset() }
+        }
+    }
+
+    private func reset() {
+        value = ""  // the key doesn't linger in the view
+        error = nil
+        entering = false
     }
 }
 

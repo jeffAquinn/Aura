@@ -35,7 +35,9 @@ from pydantic import BaseModel, Field
 from aura.brain import Aura, Changed, Event, Status, Text
 from aura.config import Settings
 from aura.governor.continuous import DEEP
+from aura.developer.workflow import DeveloperError
 from aura.governor.workshop import WorkshopError
+from aura.secrets import SecretError
 from aura.skills import SkillError
 from aura.speech import Kokoro, SpeechUnavailable
 from aura.tools.sandbox import find_docker
@@ -233,8 +235,26 @@ class ToggleIn(BaseModel):
     enabled: bool
 
 
+class EditedApproval(BaseModel):
+    """Approve with edits (the Specification Approval card): only fields the tool allows."""
+
+    approve: bool
+    args: dict[str, str] = Field(max_length=4)
+
+
 class ApprovalsIn(BaseModel):
-    approvals: list[bool]
+    approvals: list[bool | EditedApproval]
+
+
+class SecretIn(BaseModel):
+    value: str = Field(min_length=1, max_length=512)
+
+
+class BuildIn(BaseModel):
+    skill: str = Field(min_length=2, max_length=40)
+    specification: str = Field(min_length=1, max_length=12_000)
+    engine: str = "claude"
+    improve: bool = False
 
 
 def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kokoro | None = None) -> FastAPI:
@@ -294,7 +314,7 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
             return busy()
         app.state.last_active = time.monotonic()
         try:
-            events = aura.resume(body.approvals)
+            events = aura.resume([a.model_dump() if isinstance(a, EditedApproval) else a for a in body.approvals])
         except RuntimeError as e:  # nothing pending
             turn.release()
             return _error(409, str(e))
@@ -410,10 +430,76 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
             return _error(404, f"'{name}' has no alert.")
         return JSONResponse(next(s.public() for s in skills.scan() if s.name == name))
 
+    # ── keys (the Keychain) and the Developer (Sprint 6) ───────────────────────────────────────
+
+    secrets, developer = aura.toolbox.secrets, aura.toolbox.developer
+
+    @app.get("/v1/secrets")
+    def list_secrets() -> list[dict]:
+        return secrets.listing()  # names and masked hints only, never values
+
+    @app.put("/v1/secrets/{name}")
+    def set_secret(name: str, body: SecretIn) -> Response:
+        try:
+            secrets.set(name, body.value)
+        except SecretError as e:
+            return _error(422, str(e))
+        if name == "tavily_api_key":
+            aura.toolbox.search.set_key(secrets.get(name))
+        return JSONResponse(next(s for s in secrets.listing() if s["name"] == name))
+
+    @app.delete("/v1/secrets/{name}")
+    def delete_secret(name: str) -> Response:
+        try:
+            secrets.delete(name)
+        except SecretError as e:
+            return _error(404, str(e))
+        if name == "tavily_api_key":
+            aura.toolbox.search.set_key(aura.settings.tavily_api_key)  # back to .env's, if any
+        return Response(status_code=204)
+
+    @app.get("/v1/developer")
+    def developer_state() -> dict:
+        builds = sorted(developer.builds.values(), key=lambda b: b.created, reverse=True)
+        return {"engines": developer.engines_status(), "builds": [b.public(workshop) for b in builds],
+                "budget_usd": developer.budget_usd, "repair_rounds": developer.repair_rounds,
+                "timeout_minutes": int(developer.timeout // 60)}  # fmt: skip
+
+    @app.post("/v1/builds", status_code=202)
+    def start_build(body: BuildIn) -> Response:
+        """From the Workshop's New Skill sheet: the user's click, with the specification and the
+        limits in view, is the approval."""
+        try:
+            build = developer.start(body.skill, body.specification, body.engine, body.improve)
+        except DeveloperError as e:
+            return _error(409, str(e))
+        aura.toolbox.audit.record("approval", tool="develop_skill", args={"name": body.skill, "engine": body.engine},
+                                  decision="approved in the Workshop")  # fmt: skip
+        return JSONResponse(build.public(workshop), status_code=202)
+
+    @app.get("/v1/builds/{build_id}")
+    def get_build(build_id: str) -> Response:
+        build = developer.builds.get(build_id)
+        if build is None:
+            return _error(404, "No such build.")
+        return JSONResponse(build.public(workshop))
+
+    @app.post("/v1/builds/{build_id}/stop")
+    def stop_build(build_id: str) -> Response:
+        try:
+            return JSONResponse(developer.stop(build_id).public(workshop))
+        except DeveloperError as e:
+            return _error(404, str(e))
+
     @app.get("/v1/alerts")
     def alerts() -> dict:
-        """Cheap enough for the menu bar to poll: Continuous Audit alerts and its clock."""
-        return {"alerts": aura.toolbox.continuous.alerts(), "continuous_audit": aura.toolbox.continuous.state()}
+        """Cheap enough for the menu bar to poll: Continuous Audit alerts and its clock, and the
+        Developer's builds that are running or ready for the user's review."""
+        builds = [b.public(workshop) for b in developer.builds.values()]
+        current = [{k: b[k] for k in ("id", "skill", "stage", "message")} for b in builds
+                   if b["stage"] in ("queued", "developing", "auditing", "repairing", "ready")]  # fmt: skip
+        return {"alerts": aura.toolbox.continuous.alerts(), "continuous_audit": aura.toolbox.continuous.state(),
+                "builds": current}  # fmt: skip
 
     @app.post("/v1/audit", status_code=202)
     def audit_now() -> Response:

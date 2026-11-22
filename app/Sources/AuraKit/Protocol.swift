@@ -4,10 +4,88 @@ import Foundation
 public struct PendingAction: Codable, Sendable, Equatable {
     public let tool: String
     public let description: String
+    /// The tool call's arguments (the Specification Approval card shows and edits some of them).
+    public let args: [String: JSONValue]?
 
-    public init(tool: String, description: String) {
+    public init(tool: String, description: String, args: [String: JSONValue]? = nil) {
         self.tool = tool
         self.description = description
+        self.args = args
+    }
+
+    /// A Developer build Aura is asking to start (a develop_skill call), if this is one.
+    public var build: BuildProposal? { BuildProposal(self) }
+}
+
+/// Any JSON value (tool arguments arrive untyped).
+public enum JSONValue: Codable, Sendable, Equatable {
+    case string(String), number(Double), bool(Bool), array([JSONValue]), object([String: JSONValue]), null
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.singleValueContainer()
+        if c.decodeNil() { self = .null }
+        else if let b = try? c.decode(Bool.self) { self = .bool(b) }
+        else if let n = try? c.decode(Double.self) { self = .number(n) }
+        else if let s = try? c.decode(String.self) { self = .string(s) }
+        else if let a = try? c.decode([JSONValue].self) { self = .array(a) }
+        else { self = .object(try c.decode([String: JSONValue].self)) }
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.singleValueContainer()
+        switch self {
+        case let .string(s): try c.encode(s)
+        case let .number(n): try c.encode(n)
+        case let .bool(b): try c.encode(b)
+        case let .array(a): try c.encode(a)
+        case let .object(o): try c.encode(o)
+        case .null: try c.encodeNil()
+        }
+    }
+
+    public var string: String? { if case let .string(s) = self { s } else { nil } }
+    public var bool: Bool? { if case let .bool(b) = self { b } else { nil } }
+}
+
+/// The Specification Approval card's subject: who would build what, from which specification.
+public struct BuildProposal: Sendable, Equatable {
+    public let skill: String
+    public let specification: String
+    public let engine: String  // "claude" | "codex"
+    public let improve: Bool
+    /// The server's card text above the specification: the limits, and exactly what leaves this Mac.
+    public let summary: String
+    public let notes: [String]
+
+    public init?(_ action: PendingAction) {
+        guard action.tool == "develop_skill" else { return nil }
+        let args = action.args ?? [:]
+        skill = args["name"]?.string ?? ""
+        specification = (args["specification"]?.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        engine = args["engine"]?.string ?? "claude"
+        improve = args["improve"]?.bool ?? false
+        let lines = action.description.components(separatedBy: "\n").filter { !$0.hasPrefix("    │") }
+        summary = lines.first ?? ""
+        notes = lines.dropFirst().map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+    }
+}
+
+/// The user's answer to one action on an approval card.
+public enum ApprovalDecision: Sendable, Equatable, Encodable {
+    case allow, deny
+    /// Approve with some arguments changed (only the ones the tool allows, e.g. a specification).
+    case allowEdited([String: String])
+
+    public var approved: Bool { self != .deny }
+
+    public func encode(to encoder: Encoder) throws {
+        switch self {
+        case .allow: var c = encoder.singleValueContainer(); try c.encode(true)
+        case .deny: var c = encoder.singleValueContainer(); try c.encode(false)
+        case let .allowEdited(args):
+            struct Edited: Encodable { let approve = true; let args: [String: String] }
+            try Edited(args: args).encode(to: encoder)
+        }
     }
 }
 
@@ -25,6 +103,8 @@ public enum AuraEvent: Sendable, Equatable {
     case persona(name: String)
     /// Aura proposed a skill: its audit has started (review it in the Workshop).
     case task(id: String, skill: String)
+    /// A Developer build started (after the Specification Approval card); it continues in the Workshop.
+    case build(id: String, skill: String)
     case done
 }
 
@@ -147,8 +227,10 @@ public struct SSEParser: Sendable {
         case "error": return (try? json.decode(ErrorBody.self, from: data)).map { .error($0.message) }
         case "voice": return (try? json.decode(VoiceProfile.self, from: data)).map { .voice($0) }
         case "task":
-            struct TaskBody: Decodable { let id: String; let skill: String }
-            return (try? json.decode(TaskBody.self, from: data)).map { .task(id: $0.id, skill: $0.skill) }
+            struct TaskBody: Decodable { let id: String; let skill: String; let kind: String? }
+            return (try? json.decode(TaskBody.self, from: data)).map {
+                $0.kind == "build" ? .build(id: $0.id, skill: $0.skill) : .task(id: $0.id, skill: $0.skill)
+            }
         case "persona":
             struct PersonaBody: Decodable { let name: String }
             return (try? json.decode(PersonaBody.self, from: data)).map { .persona(name: $0.name) }

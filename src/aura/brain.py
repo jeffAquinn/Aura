@@ -32,7 +32,8 @@ from langgraph.types import Command, Interrupt
 from aura.config import Settings
 from aura.middleware import REJECTION_NOTE, DenialMiddleware, ToolStatusMiddleware
 from aura.persona import MEMORY_PROMPT, system_prompt
-from aura.tools import NEEDS_APPROVAL, Toolbox
+from aura.developer.workflow import describe_build
+from aura.tools import EDITABLE, NEEDS_APPROVAL, Toolbox
 from aura.tools.sandbox import describe_run
 
 TOOL_CALLS_PER_TURN = 8
@@ -81,7 +82,8 @@ class ApprovalNeeded:
 
 @dataclass(frozen=True)
 class Changed:
-    """A setting changed during the turn: kind "voice" (the new profile) or "persona" (name)."""
+    """Something the app shows changed during the turn: kind "voice" (the new profile), "persona"
+    (the name) or "task" (an audit or a build started; see the Workshop)."""
 
     kind: str
     data: dict[str, Any]
@@ -135,9 +137,13 @@ class Aura:
                 )  # fmt: skip
             if tool_call["name"] == "run_python":
                 return describe_run(str(args.get("code", "")), self.toolbox.sandbox.timeout)
+            if tool_call["name"] == "develop_skill":
+                return describe_build(args, self.toolbox.developer)
             return vault.describe_change(tool_call["name"], args)
 
         approval = InterruptOnConfig(allowed_decisions=["approve", "reject"], description=describe)
+        # The Specification Approval card: the user may also edit the specification before approving.
+        editable = InterruptOnConfig(allowed_decisions=["approve", "edit", "reject"], description=describe)
         # Conversation memory (and paused approvals): checkpointed per thread_id. Kept across
         # agent rebuilds, so deploying a skill doesn't forget the conversation.
         self._checkpointer = InMemorySaver()
@@ -164,7 +170,8 @@ class Aura:
                     ),
                     ToolCallLimitMiddleware(run_limit=TOOL_CALLS_PER_TURN),
                     ToolStatusMiddleware(),
-                    HumanInTheLoopMiddleware(interrupt_on={name: approval for name in NEEDS_APPROVAL}),
+                    HumanInTheLoopMiddleware(interrupt_on={
+                        name: editable if name in EDITABLE else approval for name in NEEDS_APPROVAL}),
                 ],
                 checkpointer=self._checkpointer,
             )
@@ -204,24 +211,34 @@ class Aura:
         self._turn_notices: set[str] = set()  # each notice is said once per turn
         return self._run({"messages": [{"role": "user", "content": text}]})
 
-    def resume(self, approvals: Sequence[bool]) -> Iterator[Event]:
-        """Answer the pending ApprovalNeeded, one bool per action, and continue the run."""
+    def resume(self, approvals: Sequence[bool | dict[str, Any]]) -> Iterator[Event]:
+        """Answer the pending ApprovalNeeded, one decision per action, and continue the run. A
+        decision is True/False, or {"approve": true, "args": {...}} to approve with edited
+        arguments (only the fields EDITABLE allows, e.g. a build's specification)."""
         pending = self._pending
         if pending is None:
             raise RuntimeError("Nothing is waiting for approval.")
         actions = pending.value["action_requests"]
         if len(approvals) != len(actions):
             raise ValueError(f"Expected {len(actions)} decisions, got {len(approvals)}.")
+        edits = [a.get("args") if isinstance(a, dict) else None for a in approvals]
+        for action, edit in zip(actions, edits):
+            if edit is not None and (not isinstance(edit, dict) or not set(edit) <= set(EDITABLE.get(action["name"], ()))):
+                raise ValueError(f"{action['name']} can't be edited that way.")
         self._pending = None  # only once the answer is known to be valid
         decisions = []
-        for action, ok in zip(actions, approvals):
+        for action, answer, edit in zip(actions, approvals, edits):
+            ok = bool(answer.get("approve")) if isinstance(answer, dict) else bool(answer)
             self.toolbox.audit.record(
                 "approval",
                 tool=action["name"],
-                args=_brief(action["args"]),
-                decision="approved" if ok else "denied",
+                args=_brief({**action["args"], **(edit or {})}),
+                decision=("approved with edits" if edit else "approved") if ok else "denied",
             )
-            decisions.append({"type": "approve"} if ok else {"type": "reject", "message": REJECTION_NOTE})
+            if ok and edit:
+                decisions.append({"type": "edit", "edited_action": {"name": action["name"], "args": {**action["args"], **edit}}})
+            else:
+                decisions.append({"type": "approve"} if ok else {"type": "reject", "message": REJECTION_NOTE})
         return self._run(Command(resume={pending.id: {"decisions": decisions}}))
 
     def chat(self, text: str, approve: Callable[[Action], bool] = lambda _: False) -> str:
@@ -255,6 +272,8 @@ class Aura:
                     yield Changed("voice", data["voice"])
                 elif "persona" in data:
                     yield Changed("persona", data["persona"])
+                elif "task" in data:  # an audit or a build started: the chat shows a card for it
+                    yield Changed("task", data["task"])
                 continue
             chunk, meta = data
             # Only the agent's own model node; skips e.g. the summarizer's internal LLM call.

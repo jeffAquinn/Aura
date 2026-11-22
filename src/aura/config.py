@@ -34,6 +34,8 @@ class Settings:
     data_dir: Path = Path("~/Library/Application Support/Aura").expanduser()
     # The repository Aura runs from: skills/ lives here, and staging worktrees under .aura-staging/.
     project_dir: Path = PROJECT_DIR
+    # The Developer's scratch workspaces: outside the repository, so an engine never sees Aura's code.
+    dev_dir: Path = Path("~/Library/Caches/Aura/dev").expanduser()
     # Append-only record of approvals, file changes, code runs and blocked paths. Kept
     # outside the vault so Aura's own tools cannot alter it.
     audit_log: Path = Path("~/Library/Logs/Aura/actions.jsonl").expanduser()
@@ -55,6 +57,7 @@ class Settings:
             sandbox_timeout=float(env("AURA_SANDBOX_TIMEOUT", d.sandbox_timeout)),
             data_dir=Path(env("AURA_DATA_DIR", str(d.data_dir))).expanduser(),
             project_dir=Path(env("AURA_PROJECT_DIR", str(d.project_dir))).expanduser(),
+            dev_dir=Path(env("AURA_DEV_DIR", str(d.dev_dir))).expanduser(),
             audit_log=Path(env("AURA_AUDIT_LOG", str(d.audit_log))).expanduser(),
         )
 

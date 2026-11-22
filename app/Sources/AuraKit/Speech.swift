@@ -51,6 +51,12 @@ public struct SpeechPlanner: Sendable {
         if actions.allSatisfy({ $0.tool == "run_python" }) {
             return "I'm preparing to run a Python script in the sandbox, and I need your approval."
         }
+        if actions.count == 1, let build = actions[0].build {
+            let engine = EngineInfo.named(build.engine)
+            let skill = build.skill.replacingOccurrences(of: "_", with: " ")
+            return "I'd like \(engine?.label ?? "a Developer") to \(build.improve ? "improve" : "build") the \(skill) skill. "
+                + "Only the specification on the card goes to \(engine?.vendor ?? "the vendor"). I need your approval."
+        }
         let what = actions.map { action in
             var line = action.description.components(separatedBy: "\n").first ?? ""
             line = line.replacingOccurrences(of: #"\s*\([^)]*\)"#, with: "", options: .regularExpression)  // "(6 B)"

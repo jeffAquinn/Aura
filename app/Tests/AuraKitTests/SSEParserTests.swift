@@ -22,7 +22,7 @@ struct SSEParserTests {
             .thinking, .waking,
             .status("[Tool: File_System_Tool] Reading 'notes.txt'..."),
             .text("Hello"),
-            .approval([PendingAction(tool: "create_folder", description: "create folder 'X/'")]),
+            .approval([PendingAction(tool: "create_folder", description: "create folder 'X/'", args: ["path": .string("X")])]),
             .error("Can't reach the model."),
             .done,
         ])

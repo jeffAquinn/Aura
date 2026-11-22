@@ -84,6 +84,10 @@ class WebSearch:
         self._duckduckgo = duckduckgo
         self.audit = audit
 
+    def set_key(self, tavily_api_key: str | None) -> None:
+        """A Tavily key saved (or removed) in Settings → Keys takes effect at once."""
+        self._tavily = tavily_backend(tavily_api_key) if tavily_api_key else None
+
     @property
     def mode(self) -> str:
         return "Tavily (DuckDuckGo fallback)" if self._tavily else "DuckDuckGo (fallback mode: no Tavily key)"

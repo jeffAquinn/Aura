@@ -279,7 +279,11 @@ struct ItemView: View {
         case .status:
             ToolStatusView(text: item.text)
         case .approval:
-            ApprovalCard(item: item, store: store)
+            if item.actions.count == 1, let build = item.actions[0].build {
+                SpecificationApprovalCard(item: item, proposal: build, store: store)
+            } else {
+                ApprovalCard(item: item, store: store)
+            }
         case .error:
             Label(item.text, systemImage: "exclamationmark.triangle.fill")
                 .font(.callout)
@@ -287,23 +291,28 @@ struct ItemView: View {
                 .padding(.leading, 32)
         case .task:
             TaskCard(skill: item.text, taskID: item.actions.first?.description)
+        case .build:
+            TaskCard(skill: item.text, taskID: item.actions.first?.description, building: true)
         }
     }
 }
 
-/// A skill audit started from the chat: it continues in the Workshop.
+/// A skill audit (or a Developer build) started from the chat: it continues in the Workshop.
 struct TaskCard: View {
     let skill: String
     let taskID: String?
+    var building = false
     @Environment(\.openWorkshop) private var openWorkshop
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: "hammer.fill").foregroundStyle(.secondary)
+            Image(systemName: building ? "wrench.and.screwdriver.fill" : "hammer.fill").foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 2) {
-                Text("Auditing the **\(skill)** skill").font(.callout)
-                Text("Checks run in a shadow project; you decide in the Workshop.")
+                Text(building ? "Building the **\(skill)** skill" : "Auditing the **\(skill)** skill").font(.callout)
+                Text(building ? "In an isolated container, then the Security Governor. Follow it live in the Workshop."
+                    : "Checks run in a shadow project; you decide in the Workshop.")
                     .font(.caption).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             Spacer(minLength: 8)
             Button("Open Workshop") { openWorkshop(taskID) }.controlSize(.small)

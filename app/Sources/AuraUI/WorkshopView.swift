@@ -4,6 +4,7 @@ import SwiftUI
 /// The Workshop: where the user, as Chief Auditor, reviews and decides on new skills.
 public struct WorkshopView: View {
     let store: WorkshopStore
+    @State private var sheet: BuildSheetRequest?
 
     public init(store: WorkshopStore) {
         self.store = store
@@ -11,17 +12,27 @@ public struct WorkshopView: View {
 
     public var body: some View {
         NavigationSplitView {
-            WorkshopSidebar(store: store)
-                .navigationSplitViewColumnWidth(min: 240, ideal: 270)
+            WorkshopSidebar(store: store, onBuild: { sheet = BuildSheetRequest(improve: $0) })
+                .navigationSplitViewColumnWidth(min: 240, ideal: 280)
         } detail: {
             Group {
-                if let task = store.selected {
+                if let build = store.selectedBuild {
+                    BuildView(build: build,
+                              onStop: { Task { await store.stopBuild(build.id) } },
+                              onReview: { store.review(build) })
+                } else if let task = store.selected {
                     AuditCardView(task: task, onDecide: { approve in Task { await store.decide(approve: approve) } })
                 } else {
                     ContentUnavailableView(
-                        "No audit selected",
+                        "Nothing selected",
                         systemImage: "checkmark.shield",
-                        description: Text("Propose a skill from the Skills Inbox, or ask Aura to add one."))
+                        description: Text("Have a Developer build a new skill, propose one from the Skills Inbox, or ask Aura."))
+                }
+            }
+            .toolbar {
+                ToolbarItem {
+                    Button { sheet = BuildSheetRequest(improve: nil) } label: { Label("New Skill", systemImage: "plus") }
+                        .help("Have Claude Code or Codex build a new skill")
                 }
             }
             .safeAreaInset(edge: .top, spacing: 0) {
@@ -39,18 +50,37 @@ public struct WorkshopView: View {
                 }
             }
         }
+        .sheet(item: $sheet) { request in NewBuildSheet(store: store, improve: request.improve) }
         .task { await store.refresh() }
     }
 }
 
 struct WorkshopSidebar: View {
     let store: WorkshopStore
+    let onBuild: (String?) -> Void  // nil: a new skill; a name: improve that installed skill
+
+    private var selection: Binding<String?> {
+        Binding(get: { store.selectedBuildID ?? store.selectedTaskID },
+                set: { id in
+                    if let id { store.select(id) } else { store.selectedBuildID = nil; store.selectedTaskID = nil }
+                })
+    }
 
     var body: some View {
-        List(selection: Binding(get: { store.selectedTaskID }, set: { store.selectedTaskID = $0 })) {
+        List(selection: selection) {
+            Section {
+                if store.builds.isEmpty { Text("None yet").foregroundStyle(.secondary) }
+                ForEach(store.builds) { build in BuildRow(build: build).tag(Optional(build.id)) }
+            } header: {
+                HStack {
+                    Text("Builds")
+                    Spacer()
+                    Button("New Skill…") { onBuild(nil) }.buttonStyle(.link).font(.caption)
+                }
+            }
             Section("Audits") {
-                if store.tasks.isEmpty { Text("None yet").foregroundStyle(.secondary) }
-                ForEach(store.tasks) { task in
+                if store.visibleTasks.isEmpty { Text("None yet").foregroundStyle(.secondary) }
+                ForEach(store.visibleTasks) { task in
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(task.skill).font(.body.weight(.medium))
@@ -102,6 +132,10 @@ struct WorkshopSidebar: View {
                             }
                         }
                         .disabled(skill.status != "approved")
+                        .contextMenu {
+                            Button("Improve with a Developer…") { onBuild(skill.name) }
+                                .disabled(skill.status != "approved")
+                        }
                     }
                 }
             }
@@ -225,6 +259,7 @@ struct AuditCardView: View {
             Divider()
             ScrollView {
                 VStack(alignment: .leading, spacing: 18) {
+                    if let origin = task.origin { BuiltByCard(origin: origin) }
                     if let report = task.report {
                         AuditFindings(report: report)
                         if let diff = task.diff, !diff.isEmpty {

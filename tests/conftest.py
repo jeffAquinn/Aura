@@ -20,17 +20,44 @@ from aura.tools import Toolbox
 from aura.tools.web import Hit, WebSearch
 
 
+class MemoryKeyring:
+    """Stands in for the macOS Keychain: tests never read or write the real one."""
+
+    def __init__(self):
+        self.items: dict[tuple[str, str], str] = {}
+
+    def get_password(self, service, name):
+        return self.items.get((service, name))
+
+    def set_password(self, service, name, value):
+        self.items[(service, name)] = value
+
+    def delete_password(self, service, name):
+        if (service, name) not in self.items:
+            raise KeyError(name)
+        del self.items[(service, name)]
+
+
+@pytest.fixture(autouse=True)
+def _isolate_from_real_keychain(monkeypatch):
+    import keyring
+
+    monkeypatch.setattr(keyring, "get_keyring", lambda: MemoryKeyring())
+
+
 @pytest.fixture(autouse=True)
 def _isolate_from_real_vault(tmp_path, monkeypatch):
     # Settings.from_env() (used by live tests) must never resolve to the real vault or log.
     monkeypatch.setenv("AURA_VAULT_DIR", str(tmp_path / "vault"))
     monkeypatch.setenv("AURA_AUDIT_LOG", str(tmp_path / "audit.jsonl"))
     monkeypatch.setenv("AURA_DATA_DIR", str(tmp_path / "data"))
+    monkeypatch.setenv("AURA_DEV_DIR", str(tmp_path / "dev"))
 
 
 @pytest.fixture
 def settings(tmp_path) -> Settings:
-    return Settings(vault_dir=tmp_path / "vault", audit_log=tmp_path / "audit.jsonl", data_dir=tmp_path / "data")
+    return Settings(vault_dir=tmp_path / "vault", audit_log=tmp_path / "audit.jsonl", data_dir=tmp_path / "data",
+                    dev_dir=tmp_path / "dev")
 
 
 def call(name: str, **args: Any) -> dict:
