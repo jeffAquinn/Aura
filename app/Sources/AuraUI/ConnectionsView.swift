@@ -129,6 +129,10 @@ struct GoogleSetupView: View {
                             Text(!s.granted ? "Not connected" : check?.detail ?? "Connected")
                                 .font(.caption).foregroundStyle(check?.ok == false ? .red : .secondary)
                                 .textSelection(.enabled)
+                                .fixedSize(horizontal: false, vertical: true)
+                            if let fix = check?.fix {
+                                Link("Enable it in Google Cloud ↗", destination: fix).font(.caption.weight(.semibold))
+                            }
                         }
                     }
                 }

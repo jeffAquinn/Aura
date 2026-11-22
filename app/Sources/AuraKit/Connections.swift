@@ -21,11 +21,20 @@ public struct ConnectionCheck: Codable, Sendable, Equatable {
     public let service: String
     public let ok: Bool
     public let detail: String
+    public let fixUrl: String?  // the Google Cloud page that fixes it (e.g. enable an API)
 
-    public init(service: String, ok: Bool, detail: String) {
+    public init(service: String, ok: Bool, detail: String, fixUrl: String? = nil) {
         self.service = service
         self.ok = ok
         self.detail = detail
+        self.fixUrl = fixUrl
+    }
+
+    /// Only ever a Google Cloud console page (the server checks too).
+    public var fix: URL? {
+        guard let fixUrl, let url = URL(string: fixUrl), url.scheme == "https",
+              ["console.developers.google.com", "console.cloud.google.com"].contains(url.host() ?? "") else { return nil }
+        return url
     }
 }
 

@@ -224,13 +224,14 @@ class GoogleConnection:
         for s in status["services"]:
             if not s["granted"]:
                 continue
+            fix_url = None
             try:
                 r = self.http.get(SERVICES[s["id"]].check_url, headers={"Authorization": f"Bearer {token}"})
                 ok = r.status_code == 200
-                detail = "Working." if ok else _error(r)
+                detail, fix_url = ("Working.", None) if ok else _diagnose(r)
             except httpx.HTTPError as e:
                 ok, detail = False, f"Couldn't reach Google ({type(e).__name__})."
-            checks[s["id"]] = {"service": s["id"], "ok": ok, "detail": detail, "at": int(self.clock())}
+            checks[s["id"]] = {"service": s["id"], "ok": ok, "detail": detail, "fix_url": fix_url, "at": int(self.clock())}
         self._checks, self._problem = checks, None
         self.audit.record("connection_checked", connection=self.id, results={k: v["ok"] for k, v in checks.items()})
         return self.status()
@@ -271,12 +272,38 @@ def _email(id_token: str) -> str | None:
 
 
 def _error(r: httpx.Response) -> str:
+    """Google's own explanation, whole: never cut mid-sentence (a cut once broke an "Enable it"
+    link in the middle of the project number, which sent the user to someone else's project)."""
     try:
         body = r.json()
-        err = body.get("error")
-        if isinstance(err, dict):
-            return str(err.get("message") or err.get("status") or r.status_code)[:200]
-        return str(body.get("error_description") or err or r.status_code)[:200]
     except ValueError:
         return f"HTTP {r.status_code}"
+    err = body.get("error")
+    if isinstance(err, dict):
+        return _shorten(str(err.get("message") or err.get("status") or r.status_code))
+    return _shorten(str(body.get("error_description") or err or r.status_code))
+
+
+def _shorten(text: str, limit: int = 1000) -> str:
+    return text if len(text) <= limit else text[: text.rfind(" ", 0, limit)] + " …"
+
+
+CONSOLE = ("https://console.developers.google.com/", "https://console.cloud.google.com/")
+
+
+def _diagnose(r: httpx.Response) -> tuple[str, str | None]:
+    """A failed check, in plain words, plus the Google Cloud page that fixes it when Google names
+    one (only ever a Google Cloud console link)."""
+    try:
+        details = (r.json().get("error") or {}).get("details") or []
+    except (ValueError, AttributeError):
+        details = []
+    for d in details:
+        meta = d.get("metadata") or {}
+        if d.get("reason") == "SERVICE_DISABLED":
+            title = meta.get("serviceTitle") or meta.get("service") or "This API"
+            url = str(meta.get("activationUrl") or "")
+            return (f"The {title} isn't enabled in your Google Cloud project yet. Enable it, wait a minute, "
+                    "then check again.", url if url.startswith(CONSOLE) else None)  # fmt: skip
+    return _error(r), None
 

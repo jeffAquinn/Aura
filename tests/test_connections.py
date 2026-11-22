@@ -23,6 +23,20 @@ from aura.secrets import SecretError, Secrets
 CLIENT_ID = "123456789012-abcdefghijklmnopqrstuvwxyz012345.apps.googleusercontent.com"
 CLIENT_SECRET = "GOCSPX-" + "abcdefghijklmnopqrstuvwx"
 REFRESH, ACCESS = "1//refresh-token-SECRET-value", "ya29.access-token-SECRET-value"
+ENABLE = "https://console.developers.google.com/apis/api/drive.googleapis.com/overview?project=781294236515"
+# Google's real answer when an API isn't enabled in the project (shape as of 2026-11).
+SERVICE_DISABLED = {"error": {
+    "code": 403, "status": "PERMISSION_DENIED",
+    "message": f"Google Drive API has not been used in project 781294236515 before or it is disabled. Enable it by "
+               f"visiting {ENABLE} then retry. If you enabled this API recently, wait a few minutes for the action "
+               "to propagate to our systems and retry.",
+    "details": [
+        {"@type": "type.googleapis.com/google.rpc.ErrorInfo", "reason": "SERVICE_DISABLED", "domain": "googleapis.com",
+         "metadata": {"service": "drive.googleapis.com", "consumer": "projects/781294236515",
+                      "serviceTitle": "Google Drive API", "activationUrl": ENABLE}},
+        {"@type": "type.googleapis.com/google.rpc.Help", "links": [{"description": "Google developers console API activation", "url": ENABLE}]},
+    ],
+}}
 
 
 def id_token(email: str = "me@gmail.com", iss: str = "https://accounts.google.com") -> str:
@@ -59,7 +73,8 @@ class FakeGoogle:
             return httpx.Response(200)
         for s in SERVICES.values():
             if url == s.check_url:
-                return httpx.Response(self.check_status.get(s.id, 200), json={"error": {"message": "Gmail API has not been used in project 1234 before or it is disabled."}} if self.check_status.get(s.id, 200) != 200 else {})
+                status = self.check_status.get(s.id, 200)
+                return httpx.Response(status, json=SERVICE_DISABLED if status == 403 else {})
         return httpx.Response(404)
 
 
@@ -230,7 +245,18 @@ def test_check_reads_each_granted_service(google):
     checks = {c["service"]: c for c in conn.check()["checks"]}
     assert set(checks) == {"gmail", "drive"}  # only what was granted
     assert checks["gmail"]["ok"] and not checks["drive"]["ok"]
-    assert "has not been used in project" in checks["drive"]["detail"]  # Google's own explanation
+    assert checks["drive"]["detail"].startswith("The Google Drive API isn't enabled in your Google Cloud project yet.")
+    assert checks["drive"]["fix_url"] == ENABLE  # whole: the project number intact (a cut once broke it)
+    assert checks["gmail"]["fix_url"] is None
+
+
+def test_googles_explanations_are_never_cut_mid_link():
+    from aura.connections.google import _diagnose, _error
+
+    r = httpx.Response(403, json={"error": {"message": SERVICE_DISABLED["error"]["message"]}})  # no details
+    assert ENABLE in _error(r) and _diagnose(r) == (_error(r), None)
+    forged = {"error": {"details": [{"reason": "SERVICE_DISABLED", "metadata": {"activationUrl": "https://evil.example/x"}}]}}
+    assert _diagnose(httpx.Response(403, json=forged))[1] is None  # only ever a Google Cloud console link
 
 
 def test_disconnect_revokes_at_google_and_forgets(google):

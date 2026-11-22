@@ -389,7 +389,9 @@ struct SnapshotTests {
             credentials: [SecretInfo(name: "google_client_id", label: "Google OAuth client ID", set: true, hint: "123456…apps.googleusercontent.com"),
                           SecretInfo(name: "google_client_secret", label: "Google OAuth client secret", set: true, hint: "GOCSPX-…uvwx")],
             checks: [ConnectionCheck(service: "gmail", ok: true, detail: "Working."),
-                     ConnectionCheck(service: "calendar", ok: false, detail: "Google Calendar API has not been used in project 1234 before or it is disabled.")])
+                     ConnectionCheck(service: "calendar", ok: false,
+                                     detail: "The Google Calendar API isn't enabled in your Google Cloud project yet. Enable it, wait a minute, then check again.",
+                                     fixUrl: "https://console.developers.google.com/apis/api/calendar-json.googleapis.com/overview?project=781294236515")])
         try renderWide("26-google-connected", width: 720, dark: true,
                        GoogleSetupView(store: ConnectionsStore(connections: [connected]), connection: connected))
     }

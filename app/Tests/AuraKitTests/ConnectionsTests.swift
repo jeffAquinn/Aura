@@ -83,6 +83,13 @@ struct ConnectionsTests {
         #expect(store.selected?.isConnected == true && fake.checks == 1)  // checked as soon as it connected
     }
 
+    @Test func aFixLinkIsOnlyEverAGoogleCloudPage() {
+        let enable = "https://console.developers.google.com/apis/api/drive.googleapis.com/overview?project=781294236515"
+        #expect(ConnectionCheck(service: "drive", ok: false, detail: "", fixUrl: enable).fix?.absoluteString == enable)
+        #expect(ConnectionCheck(service: "drive", ok: false, detail: "", fixUrl: "https://evil.example/enable").fix == nil)
+        #expect(ConnectionCheck(service: "drive", ok: false, detail: "", fixUrl: "http://console.cloud.google.com/x").fix == nil)
+    }
+
     @Test func onlyAnHttpsSignInPageIsEverOpened() async {
         let fake = FakeConnections()
         fake.state = "ready"
