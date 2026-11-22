@@ -88,6 +88,8 @@ struct ConnectionsTests {
         #expect(ConnectionCheck(service: "drive", ok: false, detail: "", fixUrl: enable).fix?.absoluteString == enable)
         #expect(ConnectionCheck(service: "drive", ok: false, detail: "", fixUrl: "https://evil.example/enable").fix == nil)
         #expect(ConnectionCheck(service: "drive", ok: false, detail: "", fixUrl: "http://console.cloud.google.com/x").fix == nil)
+        #expect(ConnectionCheck.trusted("https://discord.com/oauth2/authorize?client_id=1&scope=bot&permissions=68608") != nil)
+        #expect(ConnectionCheck.trusted("https://discord.com.evil.example/x") == nil)
     }
 
     @Test func onlyAnHttpsSignInPageIsEverOpened() async {

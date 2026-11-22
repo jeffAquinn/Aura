@@ -127,7 +127,11 @@ your accounts, one at a time. **Google** (Gmail, Calendar, Drive) is first:
 Aura asks Google only for the services you choose. Its access to Gmail is read plus drafts; it
 never sends mail. Everything is stored in the Keychain: never in the project folder, a file, a log or
 the chat. No tool of Aura's can reach a connection yet: that arrives with the Permissions screen.
-Slack and Discord come next.
+**Slack:** you create your own internal Slack app from Aura's manifest (one paste: the permissions,
+PKCE and Aura's return address `http://localhost:47615/slack/callback`) and give Aura only its Client ID:
+with PKCE there's no client secret. **Discord:** your own private bot. Aura checks its token with Discord
+before saving it, refuses a personal account's token, and builds an invite link with the least
+permissions it needs (View Channels, Send Messages, Read Message History).
 
 ## Layout
 
@@ -144,7 +148,7 @@ Slack and Discord come next.
 | `src/aura/governor/` | Security Governor: `scan.py` (static), `provenance.py` (PyPI/OSV), `workshop.py` (staging, audit, deploy, uninstall), `continuous.py` (re-checks of installed skills) |
 | `src/aura/developer/` | The Developer: `engines.py` (Claude Code, Codex), `container.py` + `egress.py` (the isolated container and its egress allowlist), `workspace.py` (the scratch workspace), `workflow.py` (specification → build → audit → repair → review) |
 | `src/aura/secrets.py` | Keys and connection credentials in the macOS Keychain |
-| `src/aura/connections/` | Settings → Connections: `oauth.py` (browser sign-in, PKCE, loopback), `google.py` (Gmail, Calendar, Drive) |
+| `src/aura/connections/` | Settings → Connections: `oauth.py` (browser sign-in, PKCE, loopback), `google.py`, `slack.py`, `discord.py` |
 | `src/aura/main.py` | Terminal interface |
 | `src/aura/server.py` | Local HTTP + SSE server for the app (auth, streaming, Smart-Warm) |
 | `app/` | SwiftUI menu bar app: `AuraKit` (client, SSE, state, speech) + `AuraUI` (chat, settings, Workshop) + `Aura` (app shell) + `aura-smoke` |

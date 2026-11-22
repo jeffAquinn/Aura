@@ -45,6 +45,10 @@ KEYS = {
         KeySpec("slack_client_id", "Slack app Client ID", min_length=10, group="slack", pattern=r"\d{6,20}\.\d{6,20}",
                 example="1234567890123.1234567890123"),
         KeySpec("slack_tokens", "Slack sign-in", group="slack", user_settable=False),
+        KeySpec("discord_bot_token", "Discord bot token", min_length=50, group="discord",
+                pattern=r"[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{20,}",
+                example="three parts joined by dots (MTA1…·Gh7…·kX9…)"),
+        KeySpec("discord_profile", "Discord bot details", group="discord", user_settable=False),
     )
 }
 
@@ -73,6 +77,12 @@ class Secrets:
 
     def set(self, name: str, value: str) -> None:
         """A value the user pasted (an API key, a connection's credential): checked first."""
+        value = self.spec_check(name, value)
+        self.backend.set_password(SERVICE, name, value)
+        self.record("secret_set", name=name)  # the name only, never the value
+
+    def spec_check(self, name: str, value: str) -> str:
+        """Whether a pasted value has the right shape (without storing it); returns it trimmed."""
         spec = self._spec(name)
         if not spec.user_settable:
             raise SecretError(f"{spec.label} is written only by Aura's sign-in, not by hand.")
@@ -84,8 +94,7 @@ class Secrets:
             should = (f"look like {spec.example}" if spec.example else f"start with '{spec.prefix}'" if spec.prefix
                       else f"end with '{spec.suffix}'")  # fmt: skip
             raise SecretError(f"That doesn't look like {article} {what} (it should {should}).")
-        self.backend.set_password(SERVICE, name, value)
-        self.record("secret_set", name=name)  # the name only, never the value
+        return value
 
     def store(self, name: str, value: str) -> None:
         """A value only the server produces (sign-in tokens, as JSON)."""

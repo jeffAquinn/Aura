@@ -19,11 +19,6 @@ public struct ConnectionsView: View {
                                       connected: c.isConnected)  // fmt: skip
                             .tag(Optional(c.id))
                     }
-                    if !store.connections.contains(where: { $0.id == "discord" }) {
-                        ConnectionRow(icon: ProviderGuide.of("discord").icon, title: "Discord", subtitle: "Coming next",
-                                      connected: false)  // fmt: skip
-                            .foregroundStyle(.secondary).selectionDisabled()
-                    }
                 }
             }
             .listStyle(.sidebar)
@@ -75,15 +70,16 @@ struct ProviderGuide {
 
     let icon: String
     let subtitle: String
-    let fields: [Field]  // client ID, then client secret when there is one
-    let signIn: String
+    let fields: [Field]  // client ID, then client secret when there is one (Discord: the bot token)
+    let signIn: String?  // nil: no browser sign-in (Discord: the token is verified as it's saved)
+    var save = "Save to Keychain"
     let steps: (ConnectionInfo) -> [StepInfo]
 
     static func of(_ id: String) -> ProviderGuide {
         switch id {
         case "google": google
         case "slack": slack
-        default: ProviderGuide(icon: "bubble.left.and.bubble.right", subtitle: "", fields: [], signIn: "Sign In…", steps: { _ in [] })
+        default: discord
         }
     }
 
@@ -122,6 +118,22 @@ struct ProviderGuide {
         ] }) }
 }
 
+extension ProviderGuide {
+    static var discord: ProviderGuide { ProviderGuide(
+        icon: "bubble.left.and.bubble.right",
+        subtitle: "Your servers, through your own private Discord bot.",
+        fields: [Field(placeholder: "Bot token (three parts joined by dots)", secure: true)],
+        signIn: nil,
+        save: "Verify & Save to Keychain",
+        steps: { c in [
+            StepInfo(text: "Open the Discord Developer Portal → **New Application** → name it “Aura” → Create.",
+                     links: [("Developer Portal", "https://discord.com/developers/applications")]),
+            StepInfo(text: "Open the **Bot** page. Turn **off** “Public Bot” (so only you can add it to a server). Under Privileged Gateway Intents, turn **on** “Message Content Intent” (without it Discord hides message text from bots). Save Changes.",
+                     links: c.setup?.portalUrl.map { [("This bot's page", $0)] } ?? []),
+            StepInfo(text: "On the same page, under Token, click **Reset Token** and copy it. Discord shows it only once. Paste it below: Aura checks it with Discord before saving, and refuses a personal account's token (Discord forbids automating user accounts)."),
+        ] }) }
+}
+
 // MARK: - the setup page
 
 /// One service: the guide, the Keychain fields, the services and the sign-in, then the status.
@@ -151,8 +163,8 @@ struct ConnectionSetupView: View {
                 if connection.isConnected { status }
                 steps
                 credentials
-                signIn
-                SecurityNote(service: connection.label)
+                if guide.signIn != nil { signIn } else { invite }
+                SecurityNote(service: connection.label, revoke: guide.signIn != nil)
             }
             .padding(24)
             .frame(maxWidth: 720, alignment: .leading)
@@ -184,16 +196,18 @@ struct ConnectionSetupView: View {
                 ForEach(connection.services) { s in
                     let check = connection.checks.first { $0.service == s.id }
                     HStack(alignment: .firstTextBaseline) {
-                        Image(systemName: !s.granted ? "minus.circle" : check?.ok == false ? "xmark.circle.fill" : "checkmark.circle.fill")
-                            .foregroundStyle(!s.granted ? Color.secondary : check?.ok == false ? .red : .green)
+                        // A check's own explanation wins: it says why, and how to fix it.
+                        let ok = check?.ok ?? s.granted
+                        Image(systemName: check == nil && !s.granted ? "minus.circle" : ok ? "checkmark.circle.fill" : "xmark.circle.fill")
+                            .foregroundStyle(check == nil && !s.granted ? Color.secondary : ok ? .green : .red)
                         VStack(alignment: .leading, spacing: 1) {
                             Text(s.label).font(.callout.weight(.medium))
-                            Text(!s.granted ? "Not connected" : check?.detail ?? "Connected")
+                            Text(check?.detail ?? (s.granted ? "Connected" : "Not connected"))
                                 .font(.caption).foregroundStyle(check?.ok == false ? .red : .secondary)
                                 .textSelection(.enabled)
                                 .fixedSize(horizontal: false, vertical: true)
                             if let fix = check?.fix {
-                                Link("Enable it in Google Cloud ↗", destination: fix).font(.caption.weight(.semibold))
+                                Link("\(check?.fixLabel ?? "Fix it") ↗", destination: fix).font(.caption.weight(.semibold))
                             }
                         }
                     }
@@ -207,7 +221,7 @@ struct ConnectionSetupView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         } title: {
-            Label(connection.account.map { "Signed in as \($0)" } ?? "Signed in", systemImage: "person.crop.circle.badge.checkmark")
+            Label(connection.account.map { "Connected as \($0)" } ?? "Connected", systemImage: "person.crop.circle.badge.checkmark")
                 .font(.headline)
         }
     }
@@ -249,7 +263,7 @@ struct ConnectionSetupView: View {
                     HStack {
                         Spacer()
                         if replacing { Button("Cancel") { reset() } }
-                        Button("Save to Keychain") { save() }
+                        Button(guide.save) { save() }
                             .disabled(values.prefix(guide.fields.count).contains(where: \.isEmpty) || store.busy)
                     }
                 }
@@ -280,7 +294,7 @@ struct ConnectionSetupView: View {
                         Text("Finish signing in in your browser…").foregroundStyle(.secondary)
                     }
                     Spacer()
-                    Button(connection.isConnected ? "Sign In Again…" : guide.signIn) {
+                    Button(connection.isConnected ? "Sign In Again…" : guide.signIn ?? "Sign In…") {
                         Task {
                             error = await store.signIn(connection.id,
                                                        services: connection.services.map(\.id).filter(selected.contains))  // fmt: skip
@@ -292,6 +306,30 @@ struct ConnectionSetupView: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         } title: {
             Label("3. Choose what to connect and sign in", systemImage: "person.badge.key").font(.headline)
+        }
+    }
+
+    /// Discord: add the bot to a server with the invite link Aura builds (the least permissions it needs).
+    private var invite: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("The invite asks only for View Channels, Send Messages and Read Message History. Pick your server and Authorize. Aura can read only the servers and channels you invite the bot to, and sending will always ask you first.")
+                    .font(.callout).fixedSize(horizontal: false, vertical: true)
+                HStack {
+                    if let link = ConnectionCheck.trusted(connection.setup?.inviteUrl) {
+                        Link("Invite the bot to your server ↗", destination: link)
+                    } else {
+                        Text("Save the bot token first.").foregroundStyle(.secondary)
+                    }
+                    Spacer()
+                    if connection.isConnected {
+                        Button("Check Connection") { Task { await store.check(connection.id) } }.disabled(store.busy)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } title: {
+            Label("3. Invite the bot to your server", systemImage: "person.badge.plus").font(.headline)
         }
     }
 
@@ -341,10 +379,13 @@ struct Step: View {
 
 struct SecurityNote: View {
     var service = "Google"
+    var revoke = true
 
     var body: some View {
         Label {
-            Text("Your app's details and your sign-in are kept in this Mac's Keychain: never in the project folder, a file, a log or the chat, so they can't reach git. Aura's AI and its tools can't read them. Disconnecting revokes Aura's access at \(service).")
+            Text("Your app's details and your sign-in are kept in this Mac's Keychain: never in the project folder, a file, a log or the chat, so they can't reach git. Aura's AI and its tools can't read them. "
+                 + (revoke ? "Disconnecting revokes Aura's access at \(service)."
+                    : "Disconnecting forgets the token; Reset Token in the Developer Portal makes it useless to anyone."))
                 .fixedSize(horizontal: false, vertical: true)
         } icon: {
             Image(systemName: "lock.shield")
@@ -387,9 +428,6 @@ struct ConnectionsSection: View {
             }
             if connections.isEmpty {
                 Text(store.transport == nil ? "Aura is offline." : "Loading…").foregroundStyle(.secondary)
-            }
-            if !connections.contains(where: { $0.id == "discord" }) {
-                Text("Discord comes next.").font(.caption).foregroundStyle(.secondary)
             }
         }
         .task { connections = (try? await store.transport?.connections()) ?? [] }

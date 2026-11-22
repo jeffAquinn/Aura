@@ -432,3 +432,89 @@ def test_slack_over_the_api_needs_no_secret_and_shows_its_manifest(env):  # noqa
     assert saved.status_code == 200 and saved.json()["state"] == "ready"
     google = client.put("/v1/connections/google/credentials", json={"client_id": CLIENT_ID}, headers=auth)
     assert google.status_code == 422  # Google's client does need its secret
+
+
+# ── Discord ─────────────────────────────────────────────────────────────────────────────────
+
+from aura.connections import discord as discord_mod  # noqa: E402
+from aura.connections.discord import DiscordConnection  # noqa: E402
+
+BOT_TOKEN = ".".join(("MTA1NTk5OTk5OTk5OTk5OTk5OQ", "GhSECRET", "kX9SECRETSECRETSECRETSECRETSECRETSECRE"))
+USER_TOKEN = ".".join(("MTIzNDU2Nzg5MDEyMzQ1Njc4OQ", "GuSERX", "uSERTOKENuSERTOKENuSERTOKENuSERTOKENu"))
+
+
+class FakeDiscord:
+    def __init__(self) -> None:
+        self.flags = 1 << 19  # Message Content intent (under 100 servers)
+        self.guilds = [{"id": "1", "name": "Aura HQ"}]
+        self.public = False
+        self.calls: list[tuple[str, dict]] = []
+
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        path = str(request.url).removeprefix(discord_mod.API)
+        self.calls.append((path, dict(request.headers)))
+        auth = request.headers.get("authorization", "")
+        if auth not in (f"Bot {BOT_TOKEN}", f"Bot {USER_TOKEN}"):
+            return httpx.Response(401, json={"message": "401: Unauthorized", "code": 0})
+        if path == "users/@me":
+            return httpx.Response(200, json={"id": "1055", "username": "Aura", "bot": True} if BOT_TOKEN in auth
+                                  else {"id": "42", "username": "jeff"})  # fmt: skip
+        if path == "oauth2/applications/@me":
+            return httpx.Response(200, json={"id": "1055", "name": "Aura", "flags": self.flags, "bot_public": self.public})
+        if path == "users/@me/guilds":
+            return httpx.Response(200, json=self.guilds)
+        return httpx.Response(404)
+
+
+@pytest.fixture
+def discord(tmp_path):
+    fake = FakeDiscord()
+    conn = DiscordConnection(Secrets(), AuditLog(tmp_path / "audit.jsonl"), http=httpx.Client(transport=httpx.MockTransport(fake)))
+    return conn, fake
+
+
+def test_a_discord_token_is_verified_before_it_is_saved(discord, tmp_path):
+    conn, fake = discord
+    with pytest.raises(SecretError, match="three parts joined by dots"):
+        conn.set_credentials("not-a-token")
+    assert fake.calls == []  # a malformed paste never reaches Discord
+    with pytest.raises(ConnectionsError, match="isn't valid"):
+        conn.set_credentials(BOT_TOKEN.replace("SECRET", "WRONGG"))
+    with pytest.raises(ConnectionsError, match="personal account's token"):
+        conn.set_credentials(USER_TOKEN)  # self-bots are against Discord's terms
+    assert conn.secrets.get("discord_bot_token") is None and conn.status()["state"] == "not_set_up"
+    conn.set_credentials(f"Bot {BOT_TOKEN}\n")  # pasted with the header's prefix: still fine
+    status = conn.status()
+    assert status["state"] == "connected" and status["account"] == "Aura"
+    assert {s["id"]: s["granted"] for s in status["services"]} == {"read": True, "send": True}
+    assert status["setup"]["invite_url"] == "https://discord.com/oauth2/authorize?client_id=1055&scope=bot&permissions=68608"
+    sent = fake.calls[-1][1]
+    assert sent["authorization"] == f"Bot {BOT_TOKEN}" and sent["user-agent"].startswith("DiscordBot (")
+    shown = json.dumps(status) + (tmp_path / "audit.jsonl").read_text()
+    assert "SECRET" not in shown and "kX9" not in shown
+
+
+def test_discord_check_explains_the_intent_and_the_invite(discord):
+    conn, fake = discord
+    fake.flags, fake.guilds = 0, []
+    conn.set_credentials(BOT_TOKEN)
+    checks = {c["service"]: c for c in conn.check()["checks"]}
+    assert not checks["read"]["ok"] and "Message Content intent is off" in checks["read"]["detail"]
+    assert checks["read"]["fix_url"] == "https://discord.com/developers/applications/1055/bot"
+    assert not checks["send"]["ok"] and checks["send"]["fix_url"].endswith("permissions=68608")
+    fake.flags, fake.guilds, fake.public = 1 << 18, [{"name": "Aura HQ"}, {"name": "Friends"}], True
+    status = conn.check()
+    checks = {c["service"]: c for c in status["checks"]}
+    assert checks["read"]["ok"] and checks["send"]["ok"] and "In 2 servers: Aura HQ, Friends" in checks["send"]["detail"]
+    assert "Public" in status["problem"]  # anyone with the invite link could add it
+
+
+def test_discord_disconnect_forgets_and_says_how_to_kill_the_token(discord):
+    conn, _ = discord
+    conn.set_credentials(BOT_TOKEN)
+    conn.disconnect()
+    status = conn.status()
+    assert status["state"] == "not_set_up" and conn.secrets.get("discord_bot_token") is None
+    assert "Reset Token" in status["problem"]
+    with pytest.raises(ConnectionsError, match="no sign-in"):
+        conn.begin(["read"])

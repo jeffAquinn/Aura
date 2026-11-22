@@ -21,19 +21,26 @@ public struct ConnectionCheck: Codable, Sendable, Equatable {
     public let service: String
     public let ok: Bool
     public let detail: String
-    public let fixUrl: String?  // the Google Cloud page that fixes it (e.g. enable an API)
+    public let fixUrl: String?  // the page that fixes it (enable an API, turn on an intent, invite a bot)
+    public let fixLabel: String?
 
-    public init(service: String, ok: Bool, detail: String, fixUrl: String? = nil) {
+    public init(service: String, ok: Bool, detail: String, fixUrl: String? = nil, fixLabel: String? = nil) {
         self.service = service
         self.ok = ok
         self.detail = detail
         self.fixUrl = fixUrl
+        self.fixLabel = fixLabel
     }
 
-    /// Only ever a Google Cloud console page (the server checks too).
-    public var fix: URL? {
-        guard let fixUrl, let url = URL(string: fixUrl), url.scheme == "https",
-              ["console.developers.google.com", "console.cloud.google.com"].contains(url.host() ?? "") else { return nil }
+    /// Only ever the service's own console (Google Cloud, Discord's Developer Portal).
+    public var fix: URL? { ConnectionCheck.trusted(fixUrl) }
+
+    public static let trustedHosts: Set<String> = ["console.developers.google.com", "console.cloud.google.com", "discord.com"]
+
+    public static func trusted(_ link: String?) -> URL? {
+        guard let link, let url = URL(string: link), url.scheme == "https", trustedHosts.contains(url.host() ?? "") else {
+            return nil
+        }
         return url
     }
 }
@@ -42,10 +49,14 @@ public struct ConnectionCheck: Codable, Sendable, Equatable {
 public struct ConnectionSetup: Codable, Sendable, Equatable {
     public let redirectUrl: String?
     public let manifest: String?
+    public let inviteUrl: String?  // Discord: add the bot to a server
+    public let portalUrl: String?  // Discord: the bot's page in the Developer Portal
 
-    public init(redirectUrl: String? = nil, manifest: String? = nil) {
+    public init(redirectUrl: String? = nil, manifest: String? = nil, inviteUrl: String? = nil, portalUrl: String? = nil) {
         self.redirectUrl = redirectUrl
         self.manifest = manifest
+        self.inviteUrl = inviteUrl
+        self.portalUrl = portalUrl
     }
 }
 
@@ -152,9 +163,13 @@ public final class ConnectionsStore {
 
     /// Returns why the server refused them (nil: saved to the Keychain).
     public func saveCredentials(_ id: String, clientId: String, clientSecret: String) async -> String? {
-        await perform { try await $0.saveConnectionCredentials(id, ConnectionCredentials(
+        let refused = await perform { try await $0.saveConnectionCredentials(id, ConnectionCredentials(
             clientId: clientId.trimmingCharacters(in: .whitespacesAndNewlines),
             clientSecret: clientSecret.trimmingCharacters(in: .whitespacesAndNewlines))) }
+        if refused == nil, connections.first(where: { $0.id == id })?.isConnected == true {
+            await check(id)  // connected on saving (Discord's bot token): show what works straight away
+        }
+        return refused
     }
 
     public func removeCredentials(_ id: String) async {

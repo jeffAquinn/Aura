@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from langchain_core.tools import BaseTool
 
 from aura.connections import Connections
+from aura.connections.discord import DiscordConnection
 from aura.connections.google import GoogleConnection
 from aura.connections.slack import SlackConnection
 from aura.audit import AuditLog
@@ -146,6 +147,7 @@ class Toolbox:
         continuous = ContinuousAudit(skills, audit, settings.data_dir / "continuous_audit.json")
         developer = Developer(settings, workshop, container or DevContainer(sandbox, secrets, audit), secrets, audit)
         tools += workshop_tools(workshop, developer)
-        connections = Connections(GoogleConnection(secrets, audit), SlackConnection(secrets, audit))
+        connections = Connections(GoogleConnection(secrets, audit), SlackConnection(secrets, audit),
+                                  DiscordConnection(secrets, audit))
         return cls(audit, vault, search, sandbox, identity, voice, skills, workshop, continuous, secrets, developer,
                    connections, tools)  # fmt: skip

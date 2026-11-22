@@ -400,6 +400,17 @@ struct SnapshotTests {
                        ConnectionService(id: "send", label: "Send messages", purpose: "Post messages as you. Aura always shows you the exact message and asks first.")],
             setup: ConnectionSetup(redirectUrl: "http://localhost:47615/slack/callback", manifest: "{}"))
         try renderWide("27-slack-setup", width: 720, ConnectionSetupView(store: ConnectionsStore(connections: [slack]), connection: slack))
+        let discord = ConnectionInfo(
+            id: "discord", label: "Discord", state: "connected", configured: true, account: "Aura",
+            services: [ConnectionService(id: "read", label: "Read messages", purpose: "Read the channels and messages in the servers you invite the bot to.", granted: false),
+                       ConnectionService(id: "send", label: "Send messages", purpose: "Post as the bot. Aura always shows you the exact message and asks first.", granted: true)],
+            credentials: [SecretInfo(name: "discord_bot_token", label: "Discord bot token", set: true, hint: "MTA1…SECR")],
+            checks: [ConnectionCheck(service: "read", ok: false, detail: "Message Content intent is off, so Discord hides message text from the bot. Turn it on under Privileged Gateway Intents, then check again.",
+                                     fixUrl: "https://discord.com/developers/applications/1055/bot", fixLabel: "Open the Bot page"),
+                     ConnectionCheck(service: "send", ok: true, detail: "In 1 server: Aura HQ. Aura will ask before every message.")],
+            setup: ConnectionSetup(inviteUrl: "https://discord.com/oauth2/authorize?client_id=1055&scope=bot&permissions=68608",
+                                   portalUrl: "https://discord.com/developers/applications/1055/bot"))
+        try renderWide("28-discord-connected", width: 720, ConnectionSetupView(store: ConnectionsStore(connections: [discord]), connection: discord))
     }
 
     @Test func toolStatusReadsLikeASentence() {

@@ -231,7 +231,8 @@ class GoogleConnection:
                 detail, fix_url = ("Working.", None) if ok else _diagnose(r)
             except httpx.HTTPError as e:
                 ok, detail = False, f"Couldn't reach Google ({type(e).__name__})."
-            checks[s["id"]] = {"service": s["id"], "ok": ok, "detail": detail, "fix_url": fix_url, "at": int(self.clock())}
+            checks[s["id"]] = {"service": s["id"], "ok": ok, "detail": detail, "fix_url": fix_url,
+                               "fix_label": "Enable it in Google Cloud", "at": int(self.clock())}  # fmt: skip
         self._checks, self._problem = checks, None
         self.audit.record("connection_checked", connection=self.id, results={k: v["ok"] for k, v in checks.items()})
         return self.status()
