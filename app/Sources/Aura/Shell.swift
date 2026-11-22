@@ -43,6 +43,25 @@ final class StatusItemController: NSObject {
     /// The icon's frame in screen coordinates, to hang the panel beneath it.
     var buttonFrame: NSRect? { item.button?.window?.frame }
 
+    /// The Continuous Audit's high-priority alert: a red warning sign replaces the sparkle until
+    /// the user answers it in the Workshop.
+    func setAlert(_ tooltip: String?) {
+        guard let button = item.button else { return }
+        if let tooltip {
+            let config = NSImage.SymbolConfiguration(paletteColors: [.white, .systemRed])
+            let glyph = NSImage(systemSymbolName: "exclamationmark.triangle.fill", accessibilityDescription: tooltip)?
+                .withSymbolConfiguration(config)
+            glyph?.isTemplate = false  // keep the red: this one must stand out
+            button.image = glyph
+            button.toolTip = tooltip
+        } else {
+            let glyph = NSImage(systemSymbolName: "sparkle", accessibilityDescription: "Aura")
+            glyph?.isTemplate = true
+            button.image = glyph
+            button.toolTip = "Aura"
+        }
+    }
+
     /// Whether macOS is actually showing the icon (a crowded menu bar can hide it).
     var diagnostics: String {
         let window = item.button?.window

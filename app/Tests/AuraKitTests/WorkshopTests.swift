@@ -7,6 +7,11 @@ final class FakeWorkshop: AuraTransport, @unchecked Sendable {
     var taskList: [TaskInfo] = []
     var decisions: [(String, Bool)] = []
     var running = false
+    var actions: [String] = []
+
+    func uninstall(_ skill: String) async throws { actions.append("uninstall \(skill)") }
+    func keepFlagged(_ skill: String) async throws { actions.append("keep \(skill)") }
+    func auditNow() async throws { actions.append("audit") }
 
     func chat(_ text: String) -> AsyncThrowingStream<AuraEvent, Error> { AsyncThrowingStream { $0.finish() } }
     func approve(_ approvals: [Bool]) -> AsyncThrowingStream<AuraEvent, Error> { AsyncThrowingStream { $0.finish() } }
@@ -88,4 +93,42 @@ struct WorkshopStoreTests {
         chat.apply(events[0])
         #expect(chat.items.last?.role == .task && chat.items.last?.text == "pdf_text")
     }
+
+    @Test func continuousAuditAlertsDecodeAndOnlyUnansweredOnesArePending() throws {
+        let d = JSONDecoder()
+        d.keyDecodingStrategy = .convertFromSnakeCase
+        let info = try d.decode(AlertsInfo.self, from: Data("""
+        {"alerts": [
+          {"skill": "pdf_text", "message": "Warning: The pdf_text skill has been flagged with a new vulnerability. Would you like to uninstall it?",
+           "findings": [{"check": "provenance", "severity": "red", "message": "1 known vulnerabilities in pypdf 7.1.1", "detail": "GHSA-1"}],
+           "since": "2026-11-22T07:00:00+00:00", "acknowledged": false},
+          {"skill": "old_tool", "message": "Warning: ...", "findings": [], "since": "2026-11-20T07:00:00+00:00", "acknowledged": true}],
+         "continuous_audit": {"last_quick": "2026-11-22T07:00:00+00:00", "last_deep": "2026-11-21T03:00:00+00:00",
+                              "last_error": null, "running": false}}
+        """.utf8))
+        #expect(SkillAlert.pending(info.alerts).map(\.skill) == ["pdf_text"])
+        #expect(info.alerts[0].menuTitle == "⚠︎ pdf_text: new security problem. Review…")
+        #expect(info.continuousAudit.lastChecked == ISO8601DateFormatter().date(from: "2026-11-22T07:00:00Z"))
+
+        let skill = try d.decode(SkillInfo.self, from: Data("""
+        {"name": "pdf_text", "status": "approved", "enabled": true, "loaded": false, "error": null,
+         "flag": {"since": "2026-11-22T07:00:00+00:00", "kind": "quick", "acknowledged": false,
+                  "findings": [{"check": "provenance", "severity": "red", "message": "1 known vulnerabilities", "detail": "GHSA-1"}]},
+         "version": "1.0.0", "purpose": "Extract PDF text.", "permissions": {"network": false, "vault": "read"}, "dependencies": []}
+        """.utf8))
+        #expect(skill.enabled && skill.loaded == false && skill.flag?.findings.first?.detail == "GHSA-1")
+    }
+
+    @Test func answeringAnAlertCallsTheServerAndUpdatesTheMenuBar() async {
+        let fake = FakeWorkshop()
+        let store = WorkshopStore { fake }
+        var menuBarUpdates = 0
+        store.onAlertsChanged = { menuBarUpdates += 1 }
+        await store.keep("pdf_text")
+        await store.uninstall("pdf_text")
+        await store.checkNow()
+        #expect(fake.actions == ["keep pdf_text", "uninstall pdf_text", "audit"])
+        #expect(menuBarUpdates >= 3)
+    }
 }
+

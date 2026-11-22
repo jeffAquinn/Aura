@@ -19,6 +19,7 @@ from aura.tools.web import WebSearch, web_tools
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # imported lazily in from_settings (they import this package themselves)
+    from aura.governor.continuous import ContinuousAudit
     from aura.governor.workshop import Workshop
     from aura.skills import SkillManager
 from aura import speech
@@ -83,6 +84,7 @@ class Toolbox:
     voice: VoiceStore
     skills: SkillManager
     workshop: Workshop
+    continuous: ContinuousAudit
     tools: list[BaseTool] = field(default_factory=list)
 
     def all_tools(self) -> list[BaseTool]:
@@ -113,11 +115,13 @@ class Toolbox:
             *voice_tools(voice),
             *identity_tools(identity),
         ]
+        from aura.governor.continuous import ContinuousAudit
         from aura.governor.workshop import Workshop
         from aura.skills import SkillManager
         from aura.tools.workshop import workshop_tools
 
         skills = SkillManager(settings.skills_dir, settings.data_dir, sandbox, audit)
         workshop = Workshop(settings, skills, sandbox, audit, run_suite=run_suite)
+        continuous = ContinuousAudit(skills, audit, settings.data_dir / "continuous_audit.json")
         tools += workshop_tools(workshop)
-        return cls(audit, vault, search, sandbox, identity, voice, skills, workshop, tools)
+        return cls(audit, vault, search, sandbox, identity, voice, skills, workshop, continuous, tools)

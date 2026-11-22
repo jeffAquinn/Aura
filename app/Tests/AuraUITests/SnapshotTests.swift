@@ -204,6 +204,30 @@ struct SnapshotTests {
         #expect(image.width == 1520)
     }
 
+    @Test func continuousAuditAlert() throws {
+        let alert = SkillAlert(
+            skill: "pdf_text",
+            message: "Warning: The pdf_text skill has been flagged with a new vulnerability. Would you like to uninstall it?",
+            findings: [Finding(check: "provenance", severity: "red", message: "4 known vulnerabilities in pyyaml 5.3",
+                               detail: "GHSA-6757-jp84-gxfx, GHSA-8q59-q68h-6hv4, PYSEC-2020-96, PYSEC-2021-142")])
+        let view = VStack(alignment: .leading, spacing: 16) {
+            AlertBanner(alert: alert, onKeep: {}, onUninstall: {})
+            SecurityCheckRow(clock: AuditClock(lastQuick: ISO8601DateFormatter().string(from: .now.addingTimeInterval(-300))), onCheck: {})
+                .font(.callout).frame(width: 260)
+            SecurityCheckRow(clock: AuditClock(lastError: "ConnectError: no network"), onCheck: {})
+                .font(.callout).frame(width: 260)
+        }
+        .padding(20)
+        .frame(width: 760)
+        .background(.background)
+        let renderer = ImageRenderer(content: view)
+        renderer.scale = 2
+        let image = try #require(renderer.cgImage)
+        let png = try #require(NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]))
+        try png.write(to: Self.outDir.appending(path: "13-continuous-audit-alert.png"))
+        #expect(image.width == 1520)
+    }
+
     @Test func toolStatusReadsLikeASentence() {
         #expect(ToolStatusView.readable("[Tool: File_System_Tool] Reading 'budget.csv'...") == "Reading 'budget.csv'…")
         #expect(ToolStatusView.readable("Plain status") == "Plain status")

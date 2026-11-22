@@ -12,7 +12,9 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import os
 import re
+import threading
 import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -133,12 +135,19 @@ class Skill:
     status: str  # "approved" | "changed" (edited since approval) | "unapproved" | "invalid"
     manifest: dict[str, Any] | None = None
     digest: str = ""
-    enabled: bool = False
+    enabled: bool = False  # the user's switch
     error: str | None = None
+    flag: dict[str, Any] | None = None  # set by the Continuous Audit when the skill turns red
+
+    @property
+    def loaded(self) -> bool:
+        """Available to Aura: approved, unchanged, switched on, and not flagged."""
+        return self.status == "approved" and self.enabled and not self.flag
 
     def public(self) -> dict[str, Any]:
         m = self.manifest or {}
-        return {"name": self.name, "status": self.status, "enabled": self.enabled, "error": self.error,
+        return {"name": self.name, "status": self.status, "enabled": self.enabled, "loaded": self.loaded,
+                "error": self.error, "flag": self.flag,
                 "version": m.get("version", ""), "purpose": m.get("purpose", ""),
                 "permissions": m.get("permissions", {}), "dependencies": m.get("dependencies", [])}  # fmt: skip
 
@@ -149,6 +158,7 @@ class SkillManager:
         self.approvals_path = data_dir / "skills.json"
         self.sandbox = sandbox
         self.audit = audit
+        self._lock = threading.RLock()  # the server and the Continuous Audit both update approvals
 
     # ── approvals (outside the repository) ─────────────────────────────────────────────────
 
@@ -160,23 +170,64 @@ class SkillManager:
 
     def _save(self, approvals: dict[str, dict[str, Any]]) -> None:
         self.approvals_path.parent.mkdir(parents=True, exist_ok=True)
-        self.approvals_path.write_text(json.dumps(approvals, indent=2) + "\n", encoding="utf-8")
+        tmp = self.approvals_path.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(approvals, indent=2) + "\n", encoding="utf-8")
+        os.replace(tmp, self.approvals_path)  # atomic: never a half-written approvals file
 
-    def approve(self, name: str, digest: str, version: str, image: str) -> None:
-        approvals = self.approvals()
-        approvals[name] = {"digest": digest, "version": version, "image": image, "enabled": True,
-                           "approved_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}  # fmt: skip
-        self._save(approvals)
+    def _update(self, name: str, change: Callable[[dict[str, Any]], None]) -> bool:
+        with self._lock:
+            approvals = self.approvals()
+            if name not in approvals:
+                return False
+            change(approvals[name])
+            self._save(approvals)
+            return True
+
+    def approve(self, name: str, digest: str, version: str, image: str,
+                packages: list[tuple[str, str]] | None = None) -> None:  # fmt: skip
+        """Record the user's approval of this exact content, and the exact packages in its image
+        (direct and indirect), which the Continuous Audit re-checks."""
+        with self._lock:
+            approvals = self.approvals()
+            approvals[name] = {"digest": digest, "version": version, "image": image, "enabled": True,
+                               "packages": [list(p) for p in packages or []],
+                               "approved_at": datetime.now(timezone.utc).isoformat(timespec="seconds")}  # fmt: skip
+            self._save(approvals)
         self.audit.record("skill_approved", skill=name, version=version, digest=digest[:12])
 
     def set_enabled(self, name: str, enabled: bool) -> bool:
-        approvals = self.approvals()
-        if name not in approvals:
+        if enabled and (self.approvals().get(name) or {}).get("flag"):
+            raise SkillError(f"'{name}' was flagged by the Continuous Audit and can't be switched on")
+        if not self._update(name, lambda a: a.update(enabled=enabled)):
             return False
-        approvals[name]["enabled"] = enabled
-        self._save(approvals)
         self.audit.record("skill_enabled" if enabled else "skill_disabled", skill=name)
         return True
+
+    def flag(self, name: str, kind: str, findings: list[dict[str, Any]]) -> None:
+        """Red at a re-check: unloaded at once (red blocks, no override) until it's cleared or removed."""
+        since = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+        def change(a: dict[str, Any]) -> None:
+            old = a.get("flag") or {}
+            a["flag"] = {"since": old.get("since", since), "kind": kind, "findings": findings,
+                         "acknowledged": old.get("acknowledged", False) and old.get("findings") == findings}  # fmt: skip
+
+        self._update(name, change)
+
+    def clear_flag(self, name: str) -> None:
+        self._update(name, lambda a: a.pop("flag", None))
+
+    def acknowledge(self, name: str) -> bool:
+        """The user chose to keep a flagged skill (disabled): stop alerting about it."""
+        if not (self.approvals().get(name) or {}).get("flag"):
+            return False
+        return self._update(name, lambda a: a["flag"].update(acknowledged=True))
+
+    def forget(self, name: str) -> None:
+        with self._lock:
+            approvals = self.approvals()
+            if approvals.pop(name, None) is not None:
+                self._save(approvals)
 
     # ── discovery ──────────────────────────────────────────────────────────────────────────
 
@@ -198,11 +249,12 @@ class SkillManager:
             else:
                 status = "approved"
             skills.append(Skill(folder.name, folder, status, manifest, digest,
-                                enabled=status == "approved" and approved.get("enabled", True)))  # fmt: skip
+                                enabled=status == "approved" and approved.get("enabled", True),
+                                flag=(approved or {}).get("flag")))  # fmt: skip
         return skills
 
     def tools(self, emit_status: Callable[[str], None] = lambda s: None) -> list[BaseTool]:
-        return [self._tool(s, emit_status) for s in self.scan() if s.status == "approved" and s.enabled]
+        return [self._tool(s, emit_status) for s in self.scan() if s.loaded]
 
     # ── running inside the sandbox ─────────────────────────────────────────────────────────
 
@@ -213,6 +265,8 @@ class SkillManager:
         image = self.approvals()[skill.name]["image"]
 
         def call(**kwargs: Any) -> str:
+            if (self.approvals().get(skill.name) or {}).get("flag"):  # flagged mid-turn: never run
+                return f"The {skill.name} skill was disabled by the Continuous Audit (a new security problem). It didn't run."
             try:
                 result = self.sandbox.run(CALL.format(args=json.dumps(kwargs)), image=image,
                                           mounts=((skill.path, "/skill"),), vault=m["permissions"]["vault"] == "read")  # fmt: skip

@@ -18,6 +18,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var panel: AuraPanel!
     private var hotKey: HotKey?
     private var warmTimer: Timer?
+    private var alertTimer: Timer?
+    private var menu: NSMenu!
+    private var shownAlerts: [String] = []
     private lazy var workshop = WorkshopStore { [weak self] in self?.store.transport }
     private var workshopWindow: NSWindow?
 
@@ -41,7 +44,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.togglePanel()
         }
         AppLog.write(hotKey == nil ? "hotkey ⌥Space: taken by another app" : "hotkey ⌥Space: registered")
-        statusItem = StatusItemController(menu: makeMenu()) { [weak self] in self?.togglePanel() }
+        menu = makeMenu()
+        statusItem = StatusItemController(menu: menu) { [weak self] in self?.togglePanel() }
+        workshop.onAlertsChanged = { [weak self] in self?.checkAlerts() }
         startServer()
         // Opening Aura should visibly open it: show the panel once the menu bar icon is placed.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
@@ -109,6 +114,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let server else { return }
             store.transport = AuraClient(port: port, token: server.token)
             if panel.isVisible { warm() }
+            alertTimer?.invalidate()  // the Continuous Audit runs in the server; show its alerts here
+            alertTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+                MainActor.assumeIsolated { self?.checkAlerts() }
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 15) { [weak self] in self?.checkAlerts() }  // after the startup check
             Task {
                 // Tell the server which voices this Mac has, then mirror voice + persona settings.
                 await store.registerVoices(SystemSpeechEngine.catalog())
@@ -149,6 +159,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let transport = store.transport else { return }
         Task { try? await transport.warmup() }
     }
+
+    // MARK: - Continuous Audit alerts
+
+    private func checkAlerts() {
+        guard let transport = store.transport else { return }
+        Task {
+            guard let info = try? await transport.alerts() else { return }
+            showAlerts(SkillAlert.pending(info.alerts))
+        }
+    }
+
+    private func showAlerts(_ pending: [SkillAlert]) {
+        let names = pending.map(\.skill)
+        guard names != shownAlerts else { return }
+        if !names.isEmpty { AppLog.write("continuous audit alert: \(names.joined(separator: ", "))") }
+        shownAlerts = names
+        statusItem.setAlert(pending.first?.message)
+        for item in menu.items where item.tag == Self.alertTag { menu.removeItem(item) }
+        guard !pending.isEmpty else { return }
+        let separator = NSMenuItem.separator()
+        separator.tag = Self.alertTag
+        menu.insertItem(separator, at: 0)
+        for alert in pending.reversed() {
+            let item = NSMenuItem(title: alert.menuTitle, action: #selector(openWorkshopFromMenu), keyEquivalent: "")
+            item.target = self
+            item.tag = Self.alertTag
+            item.toolTip = alert.message
+            menu.insertItem(item, at: 0)
+        }
+    }
+
+    private static let alertTag = 900
 
     // MARK: - menu
 

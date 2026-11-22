@@ -20,6 +20,10 @@ public protocol AuraTransport: Sendable {
     func task(_ id: String) async throws -> TaskInfo
     func decide(_ id: String, approve: Bool) async throws -> TaskInfo
     func status() async throws -> SystemStatus
+    func alerts() async throws -> AlertsInfo
+    func uninstall(_ skill: String) async throws
+    func keepFlagged(_ skill: String) async throws
+    func auditNow() async throws
 }
 
 /// Defaults so test fakes only implement what they exercise.
@@ -37,6 +41,10 @@ extension AuraTransport {
     public func task(_ id: String) async throws -> TaskInfo { throw AuraClientError.badResponse }
     public func decide(_ id: String, approve: Bool) async throws -> TaskInfo { throw AuraClientError.badResponse }
     public func status() async throws -> SystemStatus { throw AuraClientError.badResponse }
+    public func alerts() async throws -> AlertsInfo { AlertsInfo(alerts: [], continuousAudit: AuditClock()) }
+    public func uninstall(_ skill: String) async throws {}
+    public func keepFlagged(_ skill: String) async throws {}
+    public func auditNow() async throws {}
 }
 
 public enum AuraClientError: Error, LocalizedError, Equatable {
@@ -145,6 +153,26 @@ public final class AuraClient: AuraTransport {
 
     public func status() async throws -> SystemStatus {
         try Self.decoder.decode(SystemStatus.self, from: await send(request("/v1/status")))
+    }
+
+    // MARK: - the Continuous Audit
+
+    public func alerts() async throws -> AlertsInfo {
+        try Self.decoder.decode(AlertsInfo.self, from: await send(request("/v1/alerts")))
+    }
+
+    public func uninstall(_ skill: String) async throws {
+        var r = request("/v1/skills/\(skill)")
+        r.httpMethod = "DELETE"
+        _ = try await send(r)
+    }
+
+    public func keepFlagged(_ skill: String) async throws {
+        _ = try await send(request("/v1/skills/\(skill)/acknowledge", body: [String: String]()))
+    }
+
+    public func auditNow() async throws {
+        _ = try await send(request("/v1/audit", body: [String: String]()))
     }
 
     private static var decoder: JSONDecoder {

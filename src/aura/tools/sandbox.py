@@ -119,6 +119,15 @@ class Sandbox:
         if build.returncode != 0:
             raise SandboxUnavailable(f"couldn't build {tag}: {build.stderr[-600:]}")
 
+    def remove_image(self, tag: str) -> None:
+        """Best effort: delete an uninstalled skill's image. Only ever Aura's own skill images."""
+        if not tag.startswith("aura-skill-"):
+            return
+        try:
+            subprocess.run([find_docker(), "image", "rm", tag], capture_output=True, timeout=60)
+        except (OSError, subprocess.SubprocessError, SandboxUnavailable):
+            pass  # Docker is down: the image is unused and harmless; it can be pruned later
+
     def run(
         self, code: str, on_status: Callable[[str], None] = lambda _: None, image: str | None = None,
         mounts: tuple[tuple[Path, str], ...] = (), vault: bool = True,

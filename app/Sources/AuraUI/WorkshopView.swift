@@ -14,13 +14,29 @@ public struct WorkshopView: View {
             WorkshopSidebar(store: store)
                 .navigationSplitViewColumnWidth(min: 240, ideal: 270)
         } detail: {
-            if let task = store.selected {
-                AuditCardView(task: task, onDecide: { approve in Task { await store.decide(approve: approve) } })
-            } else {
-                ContentUnavailableView(
-                    "No audit selected",
-                    systemImage: "checkmark.shield",
-                    description: Text("Propose a skill from the Skills Inbox, or ask Aura to add one."))
+            Group {
+                if let task = store.selected {
+                    AuditCardView(task: task, onDecide: { approve in Task { await store.decide(approve: approve) } })
+                } else {
+                    ContentUnavailableView(
+                        "No audit selected",
+                        systemImage: "checkmark.shield",
+                        description: Text("Propose a skill from the Skills Inbox, or ask Aura to add one."))
+                }
+            }
+            .safeAreaInset(edge: .top, spacing: 0) {
+                let pending = SkillAlert.pending(store.alerts)
+                if !pending.isEmpty {
+                    VStack(spacing: 8) {
+                        ForEach(pending) { alert in
+                            AlertBanner(alert: alert,
+                                        onKeep: { Task { await store.keep(alert.skill) } },
+                                        onUninstall: { Task { await store.uninstall(alert.skill) } })
+                        }
+                    }
+                    .padding(12)
+                    .background(.bar)
+                }
             }
         }
         .task { await store.refresh() }
@@ -65,14 +81,28 @@ struct WorkshopSidebar: View {
             Section("Installed skills") {
                 if store.skills.isEmpty { Text("None").foregroundStyle(.secondary) }
                 ForEach(store.skills) { skill in
-                    Toggle(isOn: Binding(get: { skill.enabled }, set: { on in Task { await store.setEnabled(skill.name, on) } })) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("\(skill.name) \(skill.version)")
-                            Text(skill.status == "approved" ? skill.purpose : "Not loaded: \(skill.status)")
-                                .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                    if let flag = skill.flag {
+                        HStack {
+                            Image(systemName: "exclamationmark.shield.fill").foregroundStyle(.red)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("\(skill.name) \(skill.version)")
+                                Text("Switched off: \(flag.findings.first?.message ?? "flagged by the Continuous Audit")")
+                                    .font(.caption).foregroundStyle(.red).lineLimit(2)
+                            }
+                            Spacer()
+                            Button("Uninstall", role: .destructive) { Task { await store.uninstall(skill.name) } }
+                                .controlSize(.small)
                         }
+                    } else {
+                        Toggle(isOn: Binding(get: { skill.enabled }, set: { on in Task { await store.setEnabled(skill.name, on) } })) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("\(skill.name) \(skill.version)")
+                                Text(skill.status == "approved" ? skill.purpose : "Not loaded: \(skill.status)")
+                                    .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                            }
+                        }
+                        .disabled(skill.status != "approved")
                     }
-                    .disabled(skill.status != "approved")
                 }
             }
             if let s = store.status {
@@ -81,6 +111,9 @@ struct WorkshopSidebar: View {
                     LabeledContent("Server memory", value: "\(s.serverMemoryMb) MB")
                     LabeledContent("Sandbox (Docker)", value: s.docker ? "running" : "not running")
                     LabeledContent("Skills", value: "\(s.skills.enabled) of \(s.skills.installed) on")
+                    if let clock = s.continuousAudit {
+                        SecurityCheckRow(clock: clock) { Task { await store.checkNow() } }
+                    }
                 }
                 .font(.callout)
             }
@@ -99,6 +132,64 @@ struct WorkshopSidebar: View {
         case "deployed": "Deployed"
         case "rejected": "Rejected"
         default: "Couldn't finish"
+        }
+    }
+}
+
+/// The Continuous Audit's question, when an installed skill turns red.
+struct AlertBanner: View {
+    let alert: SkillAlert
+    let onKeep: () -> Void
+    let onUninstall: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            Image(systemName: "exclamationmark.shield.fill").font(.title2).foregroundStyle(.red)
+            VStack(alignment: .leading, spacing: 4) {
+                Text(alert.message).font(.callout.weight(.semibold)).fixedSize(horizontal: false, vertical: true)
+                ForEach(alert.findings, id: \.self) { f in
+                    Text(f.detail.isEmpty ? f.message : "\(f.message): \(f.detail)")
+                        .font(.caption).foregroundStyle(.secondary).textSelection(.enabled)
+                }
+                Text("It's switched off until you decide.").font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 12)
+            Button("Keep Disabled", action: onKeep)
+            Button("Uninstall", role: .destructive, action: onUninstall)
+        }
+        .padding(12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.red.opacity(0.10), in: .rect(cornerRadius: 10))
+    }
+}
+
+/// When installed skills were last re-checked against PyPI and OSV, and a way to check now.
+struct SecurityCheckRow: View {
+    let clock: AuditClock
+    let onCheck: () -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text("Security check")
+                Spacer()
+                if clock.running {
+                    ProgressView().controlSize(.small)
+                } else {
+                    Button("Check now", action: onCheck).controlSize(.small)
+                }
+            }
+            Group {
+                if let date = clock.lastChecked {
+                    Text("Last checked \(date, format: .relative(presentation: .named))")
+                } else {
+                    Text("Not checked yet")
+                }
+            }
+            .font(.caption).foregroundStyle(.secondary)
+            if let error = clock.lastError {
+                Text("Couldn't check: \(error)").font(.caption).foregroundStyle(.orange).lineLimit(2)
+            }
         }
     }
 }

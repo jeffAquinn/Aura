@@ -172,6 +172,7 @@ class Aura:
         self._build = build
         self._agent = build(self.toolbox.all_tools())
         self.toolbox.workshop.on_deployed = self.reload_tools
+        self.toolbox.continuous.on_change = self.reload_tools  # the server wraps this in its turn lock
         self.new_conversation()
 
     def reload_tools(self) -> None:

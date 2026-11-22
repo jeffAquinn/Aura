@@ -12,12 +12,71 @@ public struct SkillInfo: Codable, Sendable, Equatable, Identifiable {
     public var id: String { name }
     public let name: String
     public let status: String  // approved | changed | unapproved | invalid
-    public let enabled: Bool
+    public let enabled: Bool  // the user's switch
+    public let loaded: Bool?  // available to Aura: approved, switched on, not flagged
+    public let flag: SkillFlag?  // set by the Continuous Audit
     public let error: String?
     public let version: String
     public let purpose: String
     public let permissions: Permissions?
     public let dependencies: [String]?
+}
+
+/// The Continuous Audit found a red problem in an installed skill; it is unloaded until cleared.
+public struct SkillFlag: Codable, Sendable, Equatable {
+    public let since: String
+    public let kind: String  // quick | deep
+    public let findings: [Finding]
+    public let acknowledged: Bool
+}
+
+/// "Warning: The pdf_text skill has been flagged with a new vulnerability. Would you like to uninstall it?"
+public struct SkillAlert: Codable, Sendable, Equatable, Identifiable {
+    public var id: String { skill }
+    public let skill: String
+    public let message: String
+    public let findings: [Finding]
+    public let since: String
+    public let acknowledged: Bool
+
+    public init(skill: String, message: String, findings: [Finding], since: String = "", acknowledged: Bool = false) {
+        self.skill = skill
+        self.message = message
+        self.findings = findings
+        self.since = since
+        self.acknowledged = acknowledged
+    }
+
+    /// The alerts that still need the user: those they haven't chosen to keep.
+    public static func pending(_ alerts: [SkillAlert]) -> [SkillAlert] { alerts.filter { !$0.acknowledged } }
+
+    public var menuTitle: String { "⚠︎ \(skill): new security problem. Review…" }
+}
+
+/// When installed skills were last re-checked (quick: at startup; deep: daily).
+public struct AuditClock: Codable, Sendable, Equatable {
+    public let lastQuick: String?
+    public let lastDeep: String?
+    public let lastError: String?
+    public let running: Bool
+
+    public init(lastQuick: String? = nil, lastDeep: String? = nil, lastError: String? = nil, running: Bool = false) {
+        self.lastQuick = lastQuick
+        self.lastDeep = lastDeep
+        self.lastError = lastError
+        self.running = running
+    }
+
+    /// The most recent successful check of either kind.
+    public var lastChecked: Date? {
+        let f = ISO8601DateFormatter()
+        return [lastQuick, lastDeep].compactMap { $0.flatMap(f.date(from:)) }.max()
+    }
+}
+
+public struct AlertsInfo: Codable, Sendable, Equatable {
+    public let alerts: [SkillAlert]
+    public let continuousAudit: AuditClock
 }
 
 public struct InboxItem: Codable, Sendable, Equatable, Identifiable {
@@ -157,6 +216,8 @@ public struct SystemStatus: Codable, Sendable, Equatable {
     public let docker: Bool
     public let skills: Skills
     public let tasksRunning: Int
+    public let alerts: [SkillAlert]?
+    public let continuousAudit: AuditClock?
 }
 
 // MARK: - state
@@ -174,6 +235,10 @@ public final class WorkshopStore {
     }
     public private(set) var selected: TaskInfo?
     public private(set) var lastError: String?
+    /// Called after anything that can change alerts (so the menu bar updates at once).
+    @ObservationIgnored public var onAlertsChanged: () -> Void = {}
+
+    public var alerts: [SkillAlert] { status?.alerts ?? [] }
 
     @ObservationIgnored private let transport: () -> (any AuraTransport)?
     @ObservationIgnored private var polling: Task<Void, Never>?
@@ -237,6 +302,37 @@ public final class WorkshopStore {
         do {
             try await t.toggleSkill(skill, enabled: enabled)
             await refresh()
+        } catch {
+            lastError = FriendlyMessage.describe(error)
+        }
+    }
+
+    /// Gemma's alert, answered: remove the skill (a local commit) ...
+    public func uninstall(_ skill: String) async {
+        await act { try await $0.uninstall(skill) }
+    }
+
+    /// ... or keep it, switched off, and stop the alert.
+    public func keep(_ skill: String) async {
+        await act { try await $0.keepFlagged(skill) }
+    }
+
+    /// Re-check every installed skill against PyPI and OSV now, then show the result.
+    public func checkNow() async {
+        await act { try await $0.auditNow() }
+        for _ in 0..<60 where status?.continuousAudit?.running == true {
+            try? await Task.sleep(for: .seconds(1))
+            await refresh()
+        }
+        onAlertsChanged()
+    }
+
+    private func act(_ action: (any AuraTransport) async throws -> Void) async {
+        guard let t = transport() else { return }
+        do {
+            try await action(t)
+            await refresh()
+            onAlertsChanged()
         } catch {
             lastError = FriendlyMessage.describe(error)
         }

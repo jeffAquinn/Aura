@@ -51,6 +51,7 @@ class Task:
     branch: str = ""
     base: str = ""
     digest: str = ""
+    pins: list[tuple[str, str]] = field(default_factory=list)  # every package in the image
 
     def public(self) -> dict[str, Any]:
         r = self.report
@@ -173,6 +174,7 @@ class Workshop:
         except (ValueError, OSError, subprocess.SubprocessError) as e:
             add(Finding("provenance", "red", "dependencies could not be resolved from ready-built packages", str(e)[:300]))
             return report
+        task.pins = pins
         if not pins:
             add(Finding("provenance", "pass", "no third-party packages"))
         for pkg, version in pins:
@@ -252,7 +254,7 @@ class Workshop:
         message = (f"skill: add {name} {task.report.version} (approved via the Audit Card)\n\n"
                    f"Risk: {task.report.risk}. Audit task {task.id}.")  # fmt: skip
         git(repo, "commit", "-q", "-m", message, "--", f"skills/{name}")
-        self.manager.approve(name, task.digest, task.report.version, task.report.image)
+        self.manager.approve(name, task.digest, task.report.version, task.report.image, packages=task.pins)
         self._cleanup(task)
         self.on_deployed()  # hot reload: the new tool is available on the next turn
         checks = self.manager.run_tests(live, task.report.image, vault=True)
@@ -264,6 +266,25 @@ class Workshop:
             self.manager.set_enabled(name, False)
             self.on_deployed()
         self.audit.record("skill_deployed", skill=name, task=task.id, verified=ok)
+
+    def uninstall(self, name: str) -> None:
+        """The user's decision (e.g. after a Continuous Audit alert): remove the skill, record the
+        removal as a local commit, forget its approval and reload Aura's tools."""
+        live = self.settings.skills_dir / name
+        if not live.is_dir() or name.startswith((".", "_")) or live.parent != self.settings.skills_dir:
+            raise WorkshopError(f"'{name}' is not an installed skill")
+        image = (self.manager.approvals().get(name) or {}).get("image")
+        repo = self.settings.project_dir
+        shutil.rmtree(live)
+        git(repo, "add", "-A", f"skills/{name}")
+        if git(repo, "status", "--porcelain", "--", f"skills/{name}"):
+            git(repo, "commit", "-q", "-m", f"skill: remove {name} (uninstalled by the user in the Workshop)",
+                "--", f"skills/{name}")  # fmt: skip
+        self.manager.forget(name)
+        if image:
+            self.sandbox.remove_image(image)
+        self.audit.record("skill_uninstalled", skill=name)
+        self.on_deployed()
 
     def _cleanup(self, task: Task) -> None:
         repo = self.settings.project_dir

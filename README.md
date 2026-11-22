@@ -74,6 +74,12 @@ purpose, inputs, pinned dependencies, permissions), `skill.py` (`run(args)`) and
 Skills always run in their own offline container, with the vault read-only if the manifest asks
 for it. Network-enabled skills aren't accepted yet.
 
+**Continuous Audit.** A package that was safe at install can be found vulnerable later, so the
+server re-checks the exact packages in every installed skill's image: against OSV at each start,
+and against every provenance rule (PyPI and OSV) once a day while Aura is idle. A skill that turns
+red is switched off at once; the menu bar icon turns into a red warning and the Workshop asks
+whether to uninstall it or keep it disabled. If the check can't reach PyPI or OSV, nothing changes.
+
 ## Layout
 
 | Path | Role |
@@ -86,7 +92,7 @@ for it. Network-enabled skills aren't accepted yet.
 | `src/aura/tools/` | `vault.py` (whitelist + file tools), `web.py` (search), `sandbox.py` (Docker runner), `workshop.py` (skill tools) |
 | `src/aura/identity.py`, `voice.py`, `speech.py` | Persona store, voice settings, Kokoro neural speech |
 | `src/aura/skills.py` | Skill manifests, the registry and approvals, skill tools |
-| `src/aura/governor/` | Security Governor: `scan.py` (static), `provenance.py` (PyPI/OSV), `workshop.py` (staging, audit, deploy) |
+| `src/aura/governor/` | Security Governor: `scan.py` (static), `provenance.py` (PyPI/OSV), `workshop.py` (staging, audit, deploy, uninstall), `continuous.py` (re-checks of installed skills) |
 | `src/aura/main.py` | Terminal interface |
 | `src/aura/server.py` | Local HTTP + SSE server for the app (auth, streaming, Smart-Warm) |
 | `app/` | SwiftUI menu bar app: `AuraKit` (client, SSE, state, speech) + `AuraUI` (chat, settings, Workshop) + `Aura` (app shell) + `aura-smoke` |
@@ -98,8 +104,9 @@ for it. Network-enabled skills aren't accepted yet.
 - [x] Sprint 2: Tools (vault with whitelist + approvals, Tavily search with DuckDuckGo fallback, Docker sandbox) and high-fidelity memory retention
 - [x] Sprint 3: SwiftUI menu bar app + FastAPI local "Aura Server", visual polish
 - [x] Sprint 4: Voice and identity (TTS, voice tool, Tri-Layer persona)
-- [ ] Sprint 5: Skill registry, Security Governor, Workshop and staging, pending Gemma's review
+- [x] Sprint 5: Skill registry, Security Governor, Workshop and staging (+ Continuous Audit)
 - [ ] Sprint 6: Claude Code and Codex as developer engines
+- [ ] Sprint 7: The Librarian (knowledge ingestion, secret vault, index)
 
 ## License
 

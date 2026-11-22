@@ -18,6 +18,7 @@ import socket
 import subprocess
 import sys
 import threading
+import time
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import asdict
 from pathlib import Path
@@ -33,7 +34,9 @@ from pydantic import BaseModel, Field
 
 from aura.brain import Aura, Changed, Event, Status, Text
 from aura.config import Settings
+from aura.governor.continuous import DEEP
 from aura.governor.workshop import WorkshopError
+from aura.skills import SkillError
 from aura.speech import Kokoro, SpeechUnavailable
 from aura.tools.sandbox import find_docker
 from aura.voice import VoiceError
@@ -242,6 +245,20 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
     app.add_middleware(Guard, token=token)
     turn = threading.Lock()  # one turn at a time: Aura has a single user and conversation
     app.state.turn = turn
+    app.state.last_active = 0.0  # time.monotonic() of the last chat or approval
+
+    def idle(quiet_for: float = 300) -> bool:
+        """Low activity: no turn running, no audit in progress, and nothing asked for a while."""
+        return (not turn.locked() and time.monotonic() - app.state.last_active >= quiet_for
+                and not any(t.stage in ("staging", "auditing") for t in aura.toolbox.workshop.tasks.values()))  # fmt: skip
+
+    app.state.idle = idle
+
+    def reload_between_turns() -> None:
+        with turn:  # waits for a running turn to end (a flagged skill already refuses to run)
+            aura.reload_tools()
+
+    aura.toolbox.continuous.on_change = reload_between_turns
 
     def busy() -> JSONResponse:
         return _error(409, "Aura is busy with another turn.")
@@ -263,6 +280,7 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
     def chat(body: ChatIn) -> Response:
         if not turn.acquire(blocking=False):
             return busy()
+        app.state.last_active = time.monotonic()
         try:
             events = aura.stream(body.text)
         except RuntimeError as e:  # an approval is pending
@@ -274,6 +292,7 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
     def approvals(body: ApprovalsIn) -> Response:
         if not turn.acquire(blocking=False):
             return busy()
+        app.state.last_active = time.monotonic()
         try:
             events = aura.resume(body.approvals)
         except RuntimeError as e:  # nothing pending
@@ -364,9 +383,46 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
             if not skills.set_enabled(name, body.enabled):
                 return _error(404, f"'{name}' is not an installed skill.")
             aura.reload_tools()
+        except SkillError as e:  # flagged by the Continuous Audit: red blocks, no override
+            return _error(409, str(e))
         finally:
             turn.release()
         return JSONResponse(next(s.public() for s in skills.scan() if s.name == name))
+
+    @app.delete("/v1/skills/{name}")
+    def uninstall_skill(name: str) -> Response:
+        if not any(s.name == name for s in skills.scan()):
+            return _error(404, f"'{name}' is not an installed skill.")
+        if not turn.acquire(blocking=False):  # uninstalling swaps the agent's tools between turns
+            return busy()
+        try:
+            workshop.uninstall(name)
+        except WorkshopError as e:
+            return _error(409, str(e))
+        finally:
+            turn.release()
+        return Response(status_code=204)
+
+    @app.post("/v1/skills/{name}/acknowledge")
+    def acknowledge(name: str) -> Response:
+        """Keep a flagged skill (it stays disabled); stop alerting about it."""
+        if not skills.acknowledge(name):
+            return _error(404, f"'{name}' has no alert.")
+        return JSONResponse(next(s.public() for s in skills.scan() if s.name == name))
+
+    @app.get("/v1/alerts")
+    def alerts() -> dict:
+        """Cheap enough for the menu bar to poll: Continuous Audit alerts and its clock."""
+        return {"alerts": aura.toolbox.continuous.alerts(), "continuous_audit": aura.toolbox.continuous.state()}
+
+    @app.post("/v1/audit", status_code=202)
+    def audit_now() -> Response:
+        """Run the Continuous Audit's deep pass now (the Workshop's "Check now")."""
+        continuous = aura.toolbox.continuous
+        if continuous.state()["running"]:
+            return _error(409, "A check is already running.")
+        threading.Thread(target=continuous.run, args=(DEEP,), daemon=True).start()
+        return JSONResponse({**continuous.state(), "running": True}, status_code=202)
 
     @app.post("/v1/tasks", status_code=202)
     def propose(body: ProposeIn) -> Response:
@@ -412,8 +468,10 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
             "model_loaded": keeper.loaded(),
             "server_memory_mb": round(int(rss or 0) / 1024),
             "docker": docker,
-            "skills": {"enabled": sum(s.enabled for s in installed), "installed": len(installed)},
+            "skills": {"enabled": sum(s.loaded for s in installed), "installed": len(installed)},
             "tasks_running": sum(t.stage in ("staging", "auditing") for t in workshop.tasks.values()),
+            "alerts": aura.toolbox.continuous.alerts(),
+            "continuous_audit": aura.toolbox.continuous.state(),
         }
 
     @app.post("/v1/warmup", status_code=202)
@@ -477,6 +535,7 @@ def main() -> None:
     profile = aura.toolbox.voice.load()
     if profile.speak and profile.voice:
         app.state.kokoro.warm(profile.voice)  # ready before the first reply is spoken
+    aura.toolbox.continuous.start(idle=app.state.idle)  # quick pass now; deep pass daily, when idle
     log.info("listening on 127.0.0.1:%d", sock.getsockname()[1])
     print(f"AURA_READY port={sock.getsockname()[1]}", flush=True)
     server.run(sockets=[sock])

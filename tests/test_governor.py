@@ -58,8 +58,12 @@ class FakeSandbox:
 
     def __init__(self):
         self.built: list[str] = []
+        self.removed: list[str] = []
         self.tests_pass = True
         self.calls: list[str] = []
+
+    def remove_image(self, tag):
+        self.removed.append(tag)
 
     def image_exists(self, tag):
         return tag in self.built
@@ -450,3 +454,230 @@ def test_the_shadow_suite_gate_is_offline(monkeypatch, tmp_path):
     argv = seen["argv"]
     assert argv[argv.index("-m") + 1] == "not live" and "tests/test_live.py" in argv
     assert seen["cwd"] == tmp_path and result["failed"] == 0 and result["passed"] == 12
+
+
+# ── the Continuous Audit (Gemma's mandate after Sprint 5) ──────────────────────────────────
+
+
+def deployed(env):
+    settings, workshop, manager, sandbox = env
+    task = workshop.propose("pdf_text", wait=True)
+    workshop.decide(task.id, approve=True)
+    return manager
+
+
+def osv(vulns_for: dict[str, list[str]] | Exception):
+    """A fake OSV batch endpoint: the IDs listed per package name, or a network failure."""
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if isinstance(vulns_for, Exception):
+            raise vulns_for
+        queries = json.loads(request.content)["queries"]
+        seen.append(queries)
+        return httpx.Response(200, json={"results": [
+            {"vulns": [{"id": i} for i in vulns_for.get(q["package"]["name"], [])]} if vulns_for.get(q["package"]["name"]) else {}
+            for q in queries]})  # fmt: skip
+
+    return (lambda: httpx.Client(transport=httpx.MockTransport(handler))), seen
+
+
+def continuous(env, client, clock=None):
+    import time
+
+    from aura.governor.continuous import ContinuousAudit
+
+    settings, workshop, manager, _ = env
+    c = ContinuousAudit(manager, workshop.audit, settings.data_dir / "continuous_audit.json", client=client,
+                        clock=clock or time.time)  # fmt: skip
+    c.changes = 0
+
+    def on_change():
+        c.changes += 1
+
+    c.on_change = on_change
+    return c
+
+
+def test_deploy_records_the_exact_packages_in_the_image(env):
+    manager = deployed(env)
+    assert manager.approvals()["pdf_text"]["packages"] == [["pypdf", "7.1.1"]]
+
+
+def test_a_newly_vulnerable_skill_is_unloaded_at_once_and_the_user_is_asked(env):
+    from aura.governor.continuous import QUICK
+
+    manager = deployed(env)
+    sandbox = env[3]
+    tool = manager.tools()[0]  # an agent built before the alert still holds this tool
+    client, seen = osv({"pypdf": ["GHSA-aaaa-bbbb-cccc", "PYSEC-2026-1"]})
+    c = continuous(env, client)
+    state = c.run(QUICK)
+
+    assert seen == [[{"package": {"name": "pypdf", "ecosystem": "PyPI"}, "version": "7.1.1"}]]  # one batch request
+    assert state["last_quick"] and state["last_error"] is None and c.changes == 1
+    [skill] = manager.scan()
+    assert skill.flag and not skill.loaded and skill.enabled  # unloaded; the user's switch is untouched
+    assert manager.tools() == []
+    [alert] = c.alerts()
+    assert alert["message"] == ("Warning: The pdf_text skill has been flagged with a new vulnerability. "
+                                "Would you like to uninstall it?")  # fmt: skip
+    assert alert["findings"][0]["detail"] == "GHSA-aaaa-bbbb-cccc, PYSEC-2026-1" and not alert["acknowledged"]
+    runs = len(sandbox.calls)
+    assert "disabled by the Continuous Audit" in tool.invoke({"path": "a.pdf"})
+    assert len(sandbox.calls) == runs  # it never ran
+    with pytest.raises(SkillError, match="flagged"):
+        manager.set_enabled("pdf_text", True)  # red blocks, no override
+    assert [e["event"] for e in env[1].audit.entries()][-2:] == ["skill_flagged", "continuous_audit"]
+
+    c.run(QUICK)  # the same findings again: no new alert, no reload
+    assert c.changes == 1
+
+
+def test_unknown_never_flags_or_clears(env):
+    from aura.governor.continuous import DEEP, QUICK
+
+    manager = deployed(env)
+    offline, _ = osv(httpx.ConnectError("no network"))
+    state = continuous(env, offline).run(QUICK)
+    assert "ConnectError" in state["last_error"] and state["last_quick"] is None
+    assert manager.scan()[0].loaded
+
+    manager.flag("pdf_text", QUICK, [{"check": "provenance", "severity": "red", "message": "1 known vulnerabilities", "detail": ""}])
+    continuous(env, offline).run(DEEP)
+    assert manager.scan()[0].flag  # still flagged: an outage proves nothing
+
+
+def test_a_quick_pass_clears_only_what_a_quick_pass_raised(env, monkeypatch):
+    from aura.governor import continuous as cont
+
+    manager = deployed(env)
+    yanked = [{"check": "provenance", "severity": "red", "message": "pypdf 7.1.1 was withdrawn (yanked)", "detail": ""}]
+    manager.flag("pdf_text", cont.DEEP, yanked)
+    clean, _ = osv({})
+    continuous(env, clean).run(cont.QUICK)
+    assert manager.scan()[0].flag  # OSV can't see a yank, so it can't clear it
+
+    monkeypatch.setattr(cont, "check_package", lambda n, v, client: prov.PackageReport(
+        n, v, [Finding("provenance", "pass", f"{n}=={v}: fine")]))
+    c = continuous(env, clean)
+    c.run(cont.DEEP)
+    assert manager.scan()[0].loaded and c.changes == 1
+    assert "skill_flag_cleared" in [e["event"] for e in env[1].audit.entries()]
+
+
+def test_keeping_a_flagged_skill_silences_the_alert_until_something_new_appears(env):
+    from aura.governor.continuous import QUICK
+
+    manager = deployed(env)
+    client, _ = osv({"pypdf": ["GHSA-1"]})
+    c = continuous(env, client)
+    c.run(QUICK)
+    assert manager.acknowledge("pdf_text")
+    assert c.alerts()[0]["acknowledged"] and not manager.scan()[0].loaded  # kept, still disabled
+
+    client2, _ = osv({"pypdf": ["GHSA-1", "GHSA-2"]})
+    continuous(env, client2).run(QUICK)
+    assert not c.alerts()[0]["acknowledged"]  # a new vulnerability alerts again
+    assert not manager.acknowledge("nope")
+
+
+def test_the_deep_pass_is_due_once_a_day(env):
+    from aura.governor.continuous import DAY, DEEP
+
+    now = [1_800_000_000.0]
+    client, _ = osv({})
+    c = continuous(env, client, clock=lambda: now[0])
+    assert c.deep_due()  # never run
+    c.run(DEEP)
+    assert not c.deep_due()
+    now[0] += DAY - 60
+    assert not c.deep_due()
+    now[0] += 120
+    assert c.deep_due()
+
+
+def test_uninstall_removes_the_skill_records_it_and_forgets_the_approval(env):
+    settings, workshop, manager, sandbox = env
+    deployed(env)
+    image = manager.approvals()["pdf_text"]["image"]
+    reloads = []
+    workshop.on_deployed = lambda: reloads.append(1)
+    workshop.uninstall("pdf_text")
+    assert not (settings.skills_dir / "pdf_text").exists()
+    assert sh(settings.project_dir, "log", "-1", "--format=%s").strip() == "skill: remove pdf_text (uninstalled by the user in the Workshop)"
+    assert sh(settings.project_dir, "status", "--porcelain").strip() == ""
+    assert "pdf_text" not in manager.approvals() and manager.scan() == []
+    assert sandbox.removed == [image] and reloads == [1]
+    with pytest.raises(WorkshopError, match="not an installed skill"):
+        workshop.uninstall("pdf_text")
+    with pytest.raises(WorkshopError):
+        workshop.uninstall("../src")
+
+
+def test_continuous_audit_api(env):
+    from aura.governor.continuous import QUICK
+
+    client, auth, aura = workshop_client(env)
+    deployed((env[0], aura.toolbox.workshop, aura.toolbox.skills, env[3]))
+    skills = aura.toolbox.skills
+    assert client.post("/v1/skills/pdf_text/acknowledge", json={}, headers=auth).status_code == 404  # no alert
+
+    fake, _ = osv({"pypdf": ["GHSA-1"]})
+    aura.toolbox.continuous.client = fake
+    aura.toolbox.continuous.run(QUICK)
+    status = client.get("/v1/status", headers=auth).json()
+    assert status["alerts"][0]["skill"] == "pdf_text" and status["skills"] == {"enabled": 0, "installed": 1}
+    assert status["continuous_audit"]["last_quick"] and status["continuous_audit"]["running"] is False
+    assert "skill_pdf_text" not in [t.name for t in aura.toolbox.all_tools()]  # reloaded
+    assert client.patch("/v1/skills/pdf_text", json={"enabled": True}, headers=auth).status_code == 409
+
+    polled = client.get("/v1/alerts", headers=auth).json()
+    assert [a["skill"] for a in polled["alerts"]] == ["pdf_text"] and polled["continuous_audit"]["last_quick"]
+    assert client.get("/v1/alerts").status_code == 401
+
+    kept = client.post("/v1/skills/pdf_text/acknowledge", json={}, headers=auth)
+    assert kept.status_code == 200 and kept.json()["flag"]["acknowledged"] is True
+    assert client.post("/v1/audit", json={}, headers=auth).status_code == 202
+
+    assert client.delete("/v1/skills/pdf_text").status_code == 401
+    assert client.delete("/v1/skills/pdf_text", headers=auth).status_code == 204
+    assert client.delete("/v1/skills/pdf_text", headers=auth).status_code == 404
+    assert client.get("/v1/status", headers=auth).json()["alerts"] == [] and skills.scan() == []
+
+
+def test_the_server_waits_for_low_activity(env):
+    import time
+
+    client, _, _ = workshop_client(env)
+    state = client.app.state
+    assert state.idle()
+    state.last_active = time.monotonic()
+    assert not state.idle()  # someone just spoke to Aura
+    state.last_active = time.monotonic() - 600
+    state.turn.acquire()
+    try:
+        assert not state.idle()  # a turn is running
+    finally:
+        state.turn.release()
+    assert state.idle()
+
+
+@pytest.mark.live
+def test_live_continuous_audit_flags_a_really_vulnerable_package(env):
+    # Real OSV and PyPI: pyyaml 5.3 has published advisories (e.g. GHSA-6757-jp84-gxfx).
+    from aura.governor import continuous as cont
+
+    manager = deployed(env)
+    c = continuous(env, lambda: httpx.Client(timeout=20))
+    c.run(cont.QUICK)
+    assert manager.scan()[0].loaded, "pypdf 7.1.1 should be clean today"
+
+    manager._update("pdf_text", lambda a: a.update(packages=[["pypdf", "7.1.1"], ["pyyaml", "5.3"]]))
+    state = c.run(cont.QUICK)
+    [alert] = c.alerts()
+    print(alert)
+    assert state["last_error"] is None and "GHSA-6757-jp84-gxfx" in alert["findings"][0]["detail"]
+    assert "new vulnerability" in alert["message"] and not manager.scan()[0].loaded
+    state = c.run(cont.DEEP)  # every rule again, against real PyPI too: still red
+    assert state["last_error"] is None and manager.scan()[0].flag
