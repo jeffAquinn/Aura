@@ -154,10 +154,10 @@ def stream_turn(
                 while (ev := await anyio.to_thread.run_sync(next, events, _END)) is not _END:
                     yield encode(ev)
             except openai.APIConnectionError:
-                yield sse("error", {"message": "Can't reach the model. Is Ollama running?"})
+                yield sse("error", {"message": "Aura can't reach its language model. Make sure Ollama is running, then try again."})
             except Exception as e:
-                log.exception("turn failed")
-                yield sse("error", {"message": f"Something went wrong: {e}"})
+                log.exception("turn failed: %s", e)  # the detail stays in server.log
+                yield sse("error", {"message": "Something went wrong while Aura was working. Please try again."})
             turn.release()
             released = True
             yield sse("done")

@@ -20,6 +20,13 @@ public final class ChatStore {
         public var text: String
         public var actions: [PendingAction] = []
         public var decisions: [Bool]?  // approval cards: nil until the user answers
+
+        public init(role: Role, text: String, actions: [PendingAction] = [], decisions: [Bool]? = nil) {
+            self.role = role
+            self.text = text
+            self.actions = actions
+            self.decisions = decisions
+        }
     }
 
     public private(set) var items: [Item] = []
@@ -36,6 +43,13 @@ public final class ChatStore {
     @ObservationIgnored public private(set) var turnTask: Task<Void, Never>?
 
     public init() {}
+
+    /// A store frozen in a given state: for previews and UI snapshot tests.
+    public init(items: [Item], phase: Phase = .idle, connection: Connection = .connected) {
+        self.items = items
+        self.phase = phase
+        self.connection = connection
+    }
 
     public var canSend: Bool { phase == .idle && transport != nil }
     public var isBusy: Bool { phase == .thinking || phase == .waking || phase == .streaming }
@@ -93,7 +107,7 @@ public final class ChatStore {
             } catch is CancellationError {
             } catch let error as URLError where error.code == .cancelled {
             } catch {
-                self?.apply(.error(error.localizedDescription))
+                self?.apply(.error(FriendlyMessage.turnFailed(error)))
             }
             self?.endTurn()
         }

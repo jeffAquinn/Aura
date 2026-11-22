@@ -1,0 +1,421 @@
+import AuraKit
+import SwiftUI
+
+/// The panel's content. It draws no background of its own: the panel provides native glass
+/// (NSGlassEffectView), so the system material shows through.
+public struct ChatView: View {
+    let store: ChatStore
+    let avatar: Image?
+    let onRestart: () -> Void
+
+    public init(store: ChatStore, avatar: Image?, onRestart: @escaping () -> Void) {
+        self.store = store
+        self.avatar = avatar
+        self.onRestart = onRestart
+    }
+
+    public var body: some View {
+        VStack(spacing: 0) {
+            HeaderView(store: store, avatar: avatar)
+            if case let .offline(message) = store.connection {
+                OfflineBanner(message: message, onRestart: onRestart)
+            }
+            if store.items.isEmpty, store.phase == .idle {
+                WelcomeView(avatar: avatar)
+            } else {
+                TranscriptView(store: store, avatar: avatar)
+            }
+            InputBar(store: store)
+        }
+        .frame(minWidth: 360, minHeight: 440)
+    }
+}
+
+// MARK: - header
+
+struct AvatarView: View {
+    let image: Image?
+    let size: CGFloat
+    var pulsing = false
+    @State private var bright = false
+
+    var body: some View {
+        Group {
+            if let image {
+                image.resizable().scaledToFill()
+            } else {
+                Image(systemName: "sparkle").resizable().scaledToFit().padding(size * 0.22)
+            }
+        }
+        .frame(width: size, height: size)
+        .clipShape(Circle())
+        .overlay(Circle().strokeBorder(.white.opacity(0.5), lineWidth: 0.75))
+        .shadow(color: .cyan.opacity(pulsing ? (bright ? 0.9 : 0.15) : 0), radius: pulsing ? size / 3 : 0)
+        .scaleEffect(pulsing && bright ? 1.06 : 1)
+        .onChange(of: pulsing, initial: true) { _, isPulsing in
+            if isPulsing {
+                withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) { bright = true }
+            } else {
+                withAnimation(.default) { bright = false }
+            }
+        }
+        .accessibilityLabel("Aura")
+    }
+}
+
+struct HeaderView: View {
+    let store: ChatStore
+    let avatar: Image?
+
+    var body: some View {
+        HStack(spacing: 10) {
+            AvatarView(image: avatar, size: 30, pulsing: store.phase == .waking || store.connection == .starting)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Aura").font(.headline)
+                HStack(spacing: 5) {
+                    Circle().fill(dotColor).frame(width: 6, height: 6)
+                    Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                }
+            }
+            Spacer()
+            Button {
+                Task { await store.newConversation() }
+            } label: {
+                Image(systemName: "square.and.pencil")
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("New conversation")
+            .disabled(store.isBusy || store.transport == nil || store.items.isEmpty)
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 16)
+        .padding(.bottom, 10)
+    }
+
+    private var subtitle: String {
+        switch store.connection {
+        case .starting: "Starting…"
+        case .offline: "Offline"
+        case .connected:
+            switch store.phase {
+            case .idle: "Ready"
+            case .thinking: "Thinking…"
+            case .waking: "Waking up…"
+            case .streaming: "Typing…"
+            case .awaitingApproval: "Needs your approval"
+            }
+        }
+    }
+
+    private var dotColor: Color {
+        switch store.connection {
+        case .starting: .orange
+        case .offline: .red
+        case .connected:
+            switch store.phase {
+            case .idle: .green
+            case .waking, .awaitingApproval: .orange
+            case .thinking, .streaming: .accentColor
+            }
+        }
+    }
+}
+
+struct OfflineBanner: View {
+    let message: String
+    let onRestart: () -> Void
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "bolt.horizontal.circle").font(.title3).foregroundStyle(.red)
+            Text(message).font(.callout).fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 4)
+            Button("Restart Aura", action: onRestart).controlSize(.small)
+        }
+        .padding(10)
+        .background(.red.opacity(0.10), in: .rect(cornerRadius: 12))
+        .padding(.horizontal, 12)
+        .padding(.bottom, 6)
+    }
+}
+
+// MARK: - transcript
+
+struct WelcomeView: View {
+    let avatar: Image?
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Spacer()
+            AvatarView(image: avatar, size: 64)
+            Text("Hi, I'm Aura.").font(.title3.weight(.semibold))
+            Text("Ask me anything, search the web, run some Python,\nor have me work in your vault.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+            Text("⌥Space shows or hides this panel")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .padding(.top, 4)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity)
+        .padding(20)
+    }
+}
+
+struct TranscriptView: View {
+    let store: ChatStore
+    let avatar: Image?
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                TranscriptContent(store: store, avatar: avatar, lazy: true)
+                Color.clear.frame(height: 1).id("bottom")
+            }
+            .scrollIndicators(.automatic)
+            .onChange(of: store.items.last?.text) { proxy.scrollTo("bottom", anchor: .bottom) }
+            .onChange(of: store.items.count) { proxy.scrollTo("bottom", anchor: .bottom) }
+            .onChange(of: store.phase) { proxy.scrollTo("bottom", anchor: .bottom) }
+        }
+    }
+}
+
+/// The messages themselves (separate from the scroll view so snapshot tests can render them).
+struct TranscriptContent: View {
+    let store: ChatStore
+    let avatar: Image?
+    var lazy = true
+
+    var body: some View {
+        let rows = Group {
+            ForEach(Array(store.items.enumerated()), id: \.element.id) { index, item in
+                ItemView(item: item, store: store, avatar: avatar)
+                    .padding(.top, spacing(before: index))
+            }
+            if store.phase == .thinking || store.phase == .waking {
+                TypingIndicator(waking: store.phase == .waking, avatar: avatar).padding(.top, 10)
+            }
+        }
+        Group {
+            if lazy { LazyVStack(alignment: .leading, spacing: 0) { rows } } else { VStack(alignment: .leading, spacing: 0) { rows } }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 8)
+    }
+
+    /// Generous space between turns, tight space between a tool line and what it belongs to.
+    private func spacing(before index: Int) -> CGFloat {
+        guard index > 0 else { return 0 }
+        let (previous, current) = (store.items[index - 1].role, store.items[index].role)
+        if current == .status || previous == .status { return 6 }
+        if previous == .user || current == .user { return 16 }
+        return 10
+    }
+}
+
+struct ItemView: View {
+    let item: ChatStore.Item
+    let store: ChatStore
+    let avatar: Image?
+
+    var body: some View {
+        switch item.role {
+        case .user:
+            HStack {
+                Spacer(minLength: 56)
+                Text(item.text)
+                    .textSelection(.enabled)
+                    .lineSpacing(2)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 8)
+                    .foregroundStyle(.white)
+                    .background(Color.accentColor, in: .rect(cornerRadius: 16))
+            }
+        case .aura:
+            HStack(alignment: .top, spacing: 10) {
+                AvatarView(image: avatar, size: 22)
+                MarkdownView(item.text)
+                Spacer(minLength: 12)
+            }
+        case .status:
+            ToolStatusView(text: item.text)
+        case .approval:
+            ApprovalCard(item: item, store: store)
+        case .error:
+            Label(item.text, systemImage: "exclamationmark.triangle.fill")
+                .font(.callout)
+                .foregroundStyle(.orange)
+                .padding(.leading, 32)
+        }
+    }
+}
+
+/// Tool activity: smaller and quieter than Aura's speech.
+struct ToolStatusView: View {
+    let text: String
+
+    var body: some View {
+        Label {
+            Text(Self.readable(text))
+        } icon: {
+            Image(systemName: icon)
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .lineLimit(2)
+        .padding(.leading, 32)
+    }
+
+    private var icon: String {
+        if text.contains("Web_Search_Tool") { return "globe" }
+        if text.contains("Code_Interpreter_Tool") { return "terminal" }
+        return "folder"
+    }
+
+    /// "[Tool: File_System_Tool] Reading 'a.csv'..." -> "Reading 'a.csv'…" (the icon names the tool).
+    static func readable(_ status: String) -> String {
+        var s = status
+        if s.hasPrefix("[Tool:"), let end = s.firstIndex(of: "]") {
+            s = String(s[s.index(after: end)...]).trimmingCharacters(in: .whitespaces)
+        }
+        if s.hasSuffix("...") { s = String(s.dropLast(3)) + "…" }
+        return s
+    }
+}
+
+/// Safety first: Deny is the default button (Return); allowing takes a deliberate click.
+struct ApprovalCard: View {
+    let item: ChatStore.Item
+    let store: ChatStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Aura wants to:", systemImage: "hand.raised.fill")
+                .font(.subheadline.weight(.semibold))
+            ForEach(Array(item.actions.enumerated()), id: \.offset) { _, action in
+                Text(action.description)
+                    .font(.system(.callout, design: .monospaced))
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if let decisions = item.decisions {
+                Label(Self.outcome(decisions), systemImage: decisions.contains(true) ? "checkmark.circle" : "xmark.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                HStack(spacing: 8) {
+                    Spacer()
+                    Button("Allow") { store.decide(Array(repeating: true, count: item.actions.count)) }
+                    Button("Deny") { store.decide(Array(repeating: false, count: item.actions.count)) }
+                        .keyboardShortcut(.defaultAction)
+                }
+                .controlSize(.regular)
+            }
+        }
+        .padding(12)
+        .background(.orange.opacity(0.10), in: .rect(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.orange.opacity(0.4), lineWidth: 0.75))
+        .padding(.leading, 32)
+    }
+
+    static func outcome(_ decisions: [Bool]) -> String {
+        if decisions.isEmpty { return "Expired: Aura restarted before you answered" }
+        if decisions.allSatisfy({ $0 }) { return "Allowed" }
+        return decisions.contains(true) ? "Partly allowed" : "Denied"
+    }
+}
+
+/// "Thinking…" / "Waking up…": quieter than speech, with a gentle pulse.
+struct TypingIndicator: View {
+    let waking: Bool
+    let avatar: Image?
+    @State private var animating = false
+
+    var body: some View {
+        HStack(spacing: 10) {
+            AvatarView(image: avatar, size: 22, pulsing: waking)
+            Text(waking ? "Waking up…" : "Thinking")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+            if !waking {
+                HStack(spacing: 3) {
+                    ForEach(0..<3, id: \.self) { i in
+                        Circle()
+                            .frame(width: 4, height: 4)
+                            .opacity(animating ? 0.9 : 0.25)
+                            .animation(.easeInOut(duration: 0.6).repeatForever().delay(Double(i) * 0.2), value: animating)
+                    }
+                }
+                .foregroundStyle(.tertiary)
+            }
+        }
+        .onAppear { animating = true }
+    }
+}
+
+// MARK: - input
+
+struct InputBar: View {
+    let store: ChatStore
+    @State private var draft = ""
+    @FocusState private var focused: Bool
+
+    var body: some View {
+        HStack(alignment: .bottom, spacing: 8) {
+            TextField(placeholder, text: $draft, axis: .vertical)
+                .textFieldStyle(.plain)
+                .lineLimit(1...8)
+                .focused($focused)
+                .onSubmit(send)
+                .disabled(store.transport == nil || store.phase == .awaitingApproval)
+                .padding(.vertical, 4)
+            if store.isBusy {
+                RoundButton(symbol: "stop.fill", enabled: true, action: store.stop).help("Stop")
+            } else {
+                RoundButton(symbol: "arrow.up", enabled: canSend, action: send).help("Send")
+            }
+        }
+        .padding(.leading, 14)
+        .padding(.trailing, 6)
+        .padding(.vertical, 6)
+        .background(Color.primary.opacity(0.06), in: .rect(cornerRadius: 18))
+        .padding(12)
+        .onChange(of: store.focusRequests) { focused = true }
+    }
+
+    private var canSend: Bool {
+        store.canSend && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var placeholder: String {
+        if store.transport == nil { return "Aura is offline" }
+        return store.phase == .awaitingApproval ? "Answer the approval request first" : "Ask Aura…"
+    }
+
+    private func send() {
+        guard canSend else { return }
+        store.send(draft)
+        draft = ""
+    }
+}
+
+struct RoundButton: View {
+    let symbol: String
+    let enabled: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.system(size: 12, weight: .bold))
+                .frame(width: 26, height: 26)
+                .foregroundStyle(.white)
+                .background(Circle().fill(enabled ? Color.accentColor : Color.secondary.opacity(0.35)))
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+    }
+}

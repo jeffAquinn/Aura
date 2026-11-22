@@ -68,26 +68,30 @@ final class AuraPanel: NSPanel {
     var onHide: (() -> Void)?
 
     init(rootView: some View) {
+        // Borderless + native glass: a rounded sheet of system glass, like Spotlight.
         super.init(
             contentRect: NSRect(x: 0, y: 0, width: 420, height: 620),
-            styleMask: [.titled, .closable, .resizable, .fullSizeContentView, .nonactivatingPanel],
+            styleMask: [.borderless, .nonactivatingPanel, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
-        titleVisibility = .hidden
-        titlebarAppearsTransparent = true
-        isMovableByWindowBackground = true
         isFloatingPanel = true
         level = .floating
         hidesOnDeactivate = false
         isReleasedWhenClosed = false
+        isMovableByWindowBackground = true
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        for button in [NSWindow.ButtonType.closeButton, .miniaturizeButton, .zoomButton] {
-            standardWindowButton(button)?.isHidden = true
-        }
-        minSize = NSSize(width: 360, height: 420)
+        backgroundColor = .clear
+        isOpaque = false
+        hasShadow = true
+        minSize = NSSize(width: 360, height: 440)
         setFrameAutosaveName("AuraPanel")  // remembers its size
-        contentView = NSHostingView(rootView: rootView)
+
+        let glass = NSGlassEffectView()
+        glass.style = .regular
+        glass.cornerRadius = 20
+        glass.contentView = NSHostingView(rootView: rootView)
+        contentView = glass
     }
 
     override var canBecomeKey: Bool { true }
@@ -106,6 +110,7 @@ final class AuraPanel: NSPanel {
             setFrameOrigin(NSPoint(x: x, y: visible.maxY - size.height - 6))
         }
         makeKeyAndOrderFront(nil)
+        invalidateShadow()  // the shadow follows the glass's rounded shape
     }
 
     func hide() {

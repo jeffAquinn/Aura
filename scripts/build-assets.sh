@@ -8,11 +8,12 @@ mkdir -p "$OUT"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
-# Face-centred square crop of the 2752x1536 portrait (validated in the Sprint 3 design).
+# Face-and-hair square crop of the 2752x1536 portrait (validated in the Sprint 3 design): app icon.
 sips -s format png -c 1100 1100 --cropOffset 60 935 "$ROOT/assets/Aura.jpeg" --out "$TMP/square.png" >/dev/null
 
-# Avatar: 256 px covers the 32 pt header avatar at 2x with room to spare.
-sips -Z 256 "$TMP/square.png" --out "$OUT/Avatar.png" >/dev/null
+# Avatar: a tighter crop so the face stays recognisable in 22-30 pt circles; 256 px = 2x+.
+sips -s format png -c 760 760 --cropOffset 215 1085 "$ROOT/assets/Aura.jpeg" --out "$TMP/face.png" >/dev/null
+sips -Z 256 "$TMP/face.png" --out "$OUT/Avatar.png" >/dev/null
 
 # App icon (Finder, permission prompts, Activity Monitor).
 ICONSET="$TMP/AppIcon.iconset"

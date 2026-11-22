@@ -1,5 +1,6 @@
 import AppKit
 import AuraKit
+import AuraUI
 import Carbon.HIToolbox
 import SwiftUI
 
@@ -21,7 +22,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         let avatar = Bundle.main.image(forResource: "Avatar").map { Image(nsImage: $0) }
-        panel = AuraPanel(rootView: ChatView(store: store, avatar: avatar))
+        panel = AuraPanel(rootView: ChatView(store: store, avatar: avatar) { [weak self] in
+            self?.restartServer()
+        })
         panel.onHide = { [weak self] in self?.panelHidden() }
         hotKey = HotKey(keyCode: UInt32(kVK_Space), modifiers: UInt32(optionKey)) { [weak self] in
             self?.togglePanel()
@@ -60,16 +63,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func startServer() {
         guard let projectDir else {
-            store.connection = .offline("Aura doesn't know where its project folder is.")
+            AppLog.write("no AuraProjectDir in Info.plist")
+            store.connection = .offline("Aura can't find its files. Please rebuild Aura.")
             return
         }
         do {
             let server = try ServerManager(projectDir: projectDir)
             self.server = server
             server.onStateChange = { [weak self] state in self?.serverChanged(state) }
-            Task { try? await server.start() }
+            launch(server)
         } catch {
-            store.connection = .offline(error.localizedDescription)
+            AppLog.write("server manager: \(error)")
+            store.connection = .offline(FriendlyMessage.describe(error))
+        }
+    }
+
+    private func launch(_ server: ServerManager) {
+        Task {
+            do {
+                try await server.start()
+            } catch {
+                AppLog.write("server start failed: \(error)")
+                store.connectionLost(FriendlyMessage.describe(error))
+            }
         }
     }
 
@@ -82,10 +98,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let server else { return }
             store.transport = AuraClient(port: port, token: server.token)
             if panel.isVisible { warm() }
-        case let .failed(reason):
-            store.connectionLost(reason)
+        case .failed:  // technical reason is in app.log; the server restarts itself
+            store.connectionLost(FriendlyMessage.reconnecting)
         case .stopped:
-            store.connectionLost("Aura Server stopped.")
+            store.connectionLost(FriendlyMessage.offline)
         }
     }
 
@@ -159,7 +175,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         guard let server else { return startServer() }
         Task {
             await server.stop()
-            _ = try? await server.start()
+            launch(server)
         }
     }
 }

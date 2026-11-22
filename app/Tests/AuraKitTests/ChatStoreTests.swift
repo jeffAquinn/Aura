@@ -117,7 +117,8 @@ struct ChatStoreTests {
         s.send("Hi")
         await s.turnTask?.value
         #expect(roles(s) == [.user, .error])
-        #expect(s.items.last?.text.contains("401") == true)
+        #expect(s.items.last?.text == FriendlyMessage.turnFailed(fake.failChat!))  // plain language
+        #expect(s.items.last?.text.contains("401") == false)
         #expect(s.phase == .idle)
     }
 
