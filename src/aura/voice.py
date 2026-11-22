@@ -14,7 +14,7 @@ from typing import Any
 from aura.audit import AuditLog
 
 RANGES = {"speed": (0.5, 2.0), "pitch": (0.5, 2.0), "volume": (0.1, 1.0)}
-QUALITY_RANK = {"premium": 0, "enhanced": 1, "default": 2}
+QUALITY_RANK = {"neural": 0, "premium": 1, "enhanced": 2, "default": 3}
 
 
 @dataclass(frozen=True)
@@ -31,10 +31,15 @@ class VoiceError(ValueError):
 
 
 class VoiceStore:
-    def __init__(self, data_dir: Path, audit: AuditLog):
+    def __init__(self, data_dir: Path, audit: AuditLog, neural: list[dict[str, Any]] | None = None):
         self.path = data_dir / "voice.json"
         self.audit = audit
-        self.catalog: list[dict[str, Any]] = []  # registered by the app when it connects
+        self.neural = neural or []  # Aura's own voices (Kokoro), spoken via the server
+        self.system: list[dict[str, Any]] = []  # macOS voices, registered by the app
+
+    @property
+    def catalog(self) -> list[dict[str, Any]]:
+        return [*self.neural, *self.system]
 
     def load(self) -> VoiceProfile:
         try:
@@ -44,13 +49,14 @@ class VoiceStore:
             return VoiceProfile()
 
     def register(self, voices: list[dict[str, Any]]) -> int:
-        self.catalog = [v for v in voices if v.get("id") and v.get("name")]
-        return len(self.catalog)
+        self.system = [v for v in voices if v.get("id") and v.get("name")]
+        return len(self.system)
 
     def listing(self, language: str = "") -> list[dict[str, Any]]:
         """Speakable voices, best quality first; novelty voices (Bells, Bubbles…) left out."""
         voices = [v for v in self.catalog if not v.get("novelty") and v.get("language", "").startswith(language)]
-        return sorted(voices, key=lambda v: (QUALITY_RANK.get(v.get("quality", "default"), 3), v["name"]))
+        order = {v["id"]: i for i, v in enumerate(self.neural)}  # neural voices keep their curated order
+        return sorted(voices, key=lambda v: (QUALITY_RANK.get(v.get("quality", "default"), 4), order.get(v["id"], 0), v["name"]))
 
     def find(self, wanted: str) -> dict[str, Any] | None:
         """A voice by id, then exact name, then partial name; best quality wins ties."""

@@ -10,10 +10,12 @@ from conftest import ScriptedModel, call, make_aura, tool_turn
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.messages.utils import count_tokens_approximately
 
+from aura.audit import AuditLog
+from aura.tools import Toolbox
 from aura.brain import ApprovalNeeded, Aura, Event, Status, Text
 from aura.config import Settings
 from aura.middleware import DENIAL
-from aura.tools.web import FALLBACK_NOTICE, Hit
+from aura.tools.web import FALLBACK_NOTICE, Hit, WebSearch
 
 
 def said(events: list[Event]) -> str:
@@ -355,3 +357,53 @@ def test_primary_search_has_no_fallback_notice(settings):
     )
 
     assert said(list(aura.stream("Weather in London?"))) == "11°C."
+
+
+# ── Gemma's Sprint 4 mandate: code execution needs a formal approval card ──────────────────
+
+
+class FakeSandbox:
+    timeout = 30.0
+
+    def __init__(self):
+        self.runs: list[str] = []
+
+    def run(self, code: str, on_status=lambda s: None):
+        from aura.tools.sandbox import RunResult
+
+        self.runs.append(code)
+        return RunResult("832040\n", "", 0, False, 0.4, "aura-run-fake")
+
+
+def make_code_aura(settings, *script):
+    from conftest import fake_ddg
+
+    sandbox = FakeSandbox()
+    search = WebSearch(None, AuditLog(settings.audit_log), duckduckgo=fake_ddg)
+    toolbox = Toolbox.from_settings(settings, search=search, sandbox=sandbox)
+    return Aura(settings=settings, model=ScriptedModel(script=list(script)), toolbox=toolbox), sandbox
+
+
+FIB = "a, b = 0, 1\nfor _ in range(30):\n    a, b = b, a + b\nprint(a)"
+
+
+def test_code_runs_wait_for_an_approval_card_showing_the_code(settings):
+    aura, sandbox = make_code_aura(settings, tool_turn(call("run_python", code=FIB)), AIMessage("832040."))
+    events = list(aura.stream("Compute the 30th Fibonacci number with Python."))
+    assert isinstance(events[-1], ApprovalNeeded)
+    card = events[-1].actions[0].description
+    assert card.startswith("run Python in the sandbox (no internet, vault read-only, 30-second limit):")
+    assert "    │ for _ in range(30):" in card
+    assert sandbox.runs == []  # nothing runs before Allow
+
+    events = list(aura.resume([True]))
+    assert sandbox.runs == [FIB]
+    assert "[Tool: Code_Interpreter_Tool] Running Python in the sandbox..." in statuses(events)
+    assert said(events) == "832040."
+
+
+def test_denied_code_never_runs(settings):
+    aura, sandbox = make_code_aura(settings, tool_turn(call("run_python", code="print(1)")))
+    list(aura.stream("Run some code."))
+    events = list(aura.resume([False]))
+    assert said(events) == DENIAL and sandbox.runs == []

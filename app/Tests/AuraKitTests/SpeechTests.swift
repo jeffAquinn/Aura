@@ -68,6 +68,12 @@ struct SpeechPlannerTests {
         #expect(SpeechPlanner.approvalSentence(actions) ==
             "I need your approval to delete file old-draft.txt, and to rename Aura → Nova.")
     }
+
+    @Test func codeRunsGetASpokenStatusUpdate() {
+        let card = PendingAction(tool: "run_python", description: "run Python in the sandbox (no internet, vault read-only, 30-second limit):\n    │ print(1)")
+        #expect(SpeechPlanner.approvalSentence([card]) ==
+            "I'm preparing to run a Python script in the sandbox, and I need your approval.")
+    }
 }
 
 @MainActor

@@ -32,6 +32,7 @@ from pydantic import BaseModel, Field
 
 from aura.brain import Aura, Changed, Event, Status, Text
 from aura.config import Settings
+from aura.speech import Kokoro, SpeechUnavailable
 from aura.voice import VoiceError
 
 KEEP_ALIVE = "30m"
@@ -208,11 +209,17 @@ class VoicesIn(BaseModel):
     voices: list[VoiceInfo] = Field(max_length=1000)
 
 
+class SpeechIn(BaseModel):
+    text: str = Field(min_length=1, max_length=1000)
+    voice: str = Field(min_length=1, max_length=100)
+    speed: float = Field(default=1.0, ge=0.5, le=2.0)
+
+
 class ApprovalsIn(BaseModel):
     approvals: list[bool]
 
 
-def create_app(aura: Aura, token: str, keeper: Keeper | None = None) -> FastAPI:
+def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kokoro | None = None) -> FastAPI:
     if len(token) < MIN_TOKEN_CHARS:
         raise ValueError(f"token must be at least {MIN_TOKEN_CHARS} characters")
     keeper = keeper or ModelKeeper(aura.settings.base_url, aura.settings.model)
@@ -275,6 +282,8 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None) -> FastAPI:
     # ── voice and persona (the user acting directly: no approval needed) ──────────────────────
 
     voice, identity = aura.toolbox.voice, aura.toolbox.identity
+    kokoro = voices or Kokoro()
+    app.state.kokoro = kokoro
 
     def persona_state() -> dict:
         persona = identity.load()
@@ -282,11 +291,28 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None) -> FastAPI:
 
     @app.get("/v1/settings")
     def settings() -> dict:
-        return {"voice": asdict(voice.load()), "persona": persona_state(), "voices_registered": len(voice.catalog)}
+        return {"voice": asdict(voice.load()), "persona": persona_state(),
+                "voices_registered": len(voice.system), "neural_voices": len(voice.neural)}
 
     @app.post("/v1/voices")
     def register_voices(body: VoicesIn) -> dict:
         return {"registered": voice.register([v.model_dump() for v in body.voices])}
+
+    @app.get("/v1/voices")
+    def list_voices() -> list[dict]:
+        """Every voice Aura can speak with: its own neural voices first, then macOS voices."""
+        return voice.listing()
+
+    @app.post("/v1/speech")
+    async def speak(body: SpeechIn) -> Response:
+        """One sentence of audio in one of Aura's neural voices (WAV)."""
+        if not kokoro.knows(body.voice):
+            return _error(422, f"'{body.voice}' is not one of Aura's neural voices.")
+        try:
+            wav = await kokoro.synthesize_async(body.text, body.voice, body.speed)
+        except SpeechUnavailable as e:
+            return _error(503, str(e))
+        return Response(wav, media_type="audio/wav")
 
     @app.put("/v1/voice")
     def set_voice(body: VoiceIn) -> Response:
@@ -294,6 +320,8 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None) -> FastAPI:
             profile = voice.update(by="user", **body.model_dump())
         except VoiceError as e:
             return _error(422, str(e))
+        if profile.speak and profile.voice:
+            kokoro.warm(profile.voice)  # spoken replies just got turned on or re-voiced
         return JSONResponse(asdict(profile))
 
     @app.get("/v1/persona")
@@ -344,9 +372,10 @@ def main() -> None:
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.bind(("127.0.0.1", int(os.environ.get("AURA_SERVER_PORT", "0"))))
     sock.listen(64)  # accept connections (queued) before announcing readiness
+    app = create_app(aura, token)
     server = uvicorn.Server(
         uvicorn.Config(
-            create_app(aura, token),
+            app,
             log_level="warning",
             access_log=False,  # request bodies are private conversation
             lifespan="off",
@@ -362,6 +391,9 @@ def main() -> None:
 
         threading.Thread(target=exit_with_app, daemon=True).start()
 
+    profile = aura.toolbox.voice.load()
+    if profile.speak and profile.voice:
+        app.state.kokoro.warm(profile.voice)  # ready before the first reply is spoken
     log.info("listening on 127.0.0.1:%d", sock.getsockname()[1])
     print(f"AURA_READY port={sock.getsockname()[1]}", flush=True)
     server.run(sockets=[sock])

@@ -18,8 +18,9 @@ from typing import Any
 from aura.audit import AuditLog
 
 # Editable fields: kind and maximum characters per value.
+NAME = "Aura"  # part of the Soul directive: not an editable field
+
 FIELDS: dict[str, tuple[str, int]] = {
-    "name": ("text", 40),
     "tone": ("text", 400),
     "brevity": ("text", 300),
     "formality": ("text", 300),
@@ -69,22 +70,20 @@ class Persona:
         return "\n".join(lines)
 
     def public(self) -> dict[str, Any]:
-        return {k: self.data[k] for k in ("name", *[f for f in FIELDS if f != "name"])}
+        return {"name": self.data["name"], **{k: self.data[k] for k in FIELDS}}
 
 
 def validate(raw: Any) -> dict[str, Any]:
     """Return a clean manifest, or raise PersonaError explaining what's wrong."""
     if not isinstance(raw, dict):
         raise PersonaError("the persona must be a JSON object")
-    data: dict[str, Any] = {"schema": 1}
+    data: dict[str, Any] = {"schema": 1, "name": NAME}  # the name is constitutional, never from the file
     for field, (kind, limit) in FIELDS.items():
         value = raw.get(field, DEFAULT[field])
         if kind == "text":
             if not isinstance(value, str):
                 raise PersonaError(f"'{field}' must be text")
             value = value.strip()
-            if field == "name" and not value:
-                raise PersonaError("the name can't be empty")
             if len(value) > limit:
                 raise PersonaError(f"'{field}' is longer than {limit} characters")
         else:
@@ -96,7 +95,7 @@ def validate(raw: Any) -> dict[str, Any]:
             if any(len(v) > limit for v in value):
                 raise PersonaError(f"each '{field}' item must be at most {limit} characters")
         data[field] = value
-    total = sum(len(v) if isinstance(v, str) else sum(map(len, v)) for k, v in data.items() if k != "schema")
+    total = sum(len(v) if isinstance(v, str) else sum(map(len, v)) for k, v in data.items() if k in FIELDS)
     if total > MAX_TOTAL_CHARS:
         raise PersonaError(f"the persona would be {total} characters; the limit is {MAX_TOTAL_CHARS}")
     if "updated" in raw and isinstance(raw["updated"], dict):
@@ -132,6 +131,8 @@ class IdentityStore:
 
     def proposed(self, field: str, change: str, value: str) -> dict[str, Any]:
         """The manifest as it would be after the change; raises PersonaError if not allowed."""
+        if field == "name":
+            raise PersonaError(f"the name {NAME} is part of the constitution and can't be changed")
         if field not in FIELDS:
             raise PersonaError(f"'{field}' is not an editable field ({', '.join(FIELDS)})")
         kind = FIELDS[field][0]
@@ -164,15 +165,11 @@ class IdentityStore:
             new = self.proposed(field, change, value)
         except PersonaError as e:
             return f"change {current['name']}'s {field}, which will be refused: {e}"
-        if field == "name":
-            head = f"rename {current['name']} → {new['name']}"
-            body: list[str] = []
-        else:
-            head = f"change {current['name']}'s {field}:"
-            old_items = current[field] if isinstance(current[field], list) else [current[field]]
-            new_items = new[field] if isinstance(new[field], list) else [new[field]]
-            body = [f"    − {v}" for v in old_items if v and v not in new_items]
-            body += [f"    + {v}" for v in new_items if v and v not in old_items]
+        head = f"change {current['name']}'s {field}:"
+        old_items = current[field] if isinstance(current[field], list) else [current[field]]
+        new_items = new[field] if isinstance(new[field], list) else [new[field]]
+        body = [f"    − {v}" for v in old_items if v and v not in new_items]
+        body += [f"    + {v}" for v in new_items if v and v not in old_items]
         if reason.strip():
             body.append(f"    reason: {reason.strip()}")
         return "\n".join([head, *body])

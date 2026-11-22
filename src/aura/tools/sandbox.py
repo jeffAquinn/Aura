@@ -130,6 +130,16 @@ class Sandbox:
         return result
 
 
+def describe_run(code: str, timeout: float, preview_lines: int = 8) -> str:
+    """Approval-card text for a code run: what will run, and the sandbox it runs in."""
+    lines = code.strip().splitlines() or ["(empty)"]
+    shown = [f"    │ {line[:100]}" for line in lines[:preview_lines]]
+    if len(lines) > preview_lines:
+        shown.append(f"    │ ... ({len(lines) - preview_lines} more lines)")
+    head = f"run Python in the sandbox (no internet, vault read-only, {timeout:.0f}-second limit):"
+    return "\n".join([head, *shown])
+
+
 def _text(b: bytes | str | None) -> str:
     if b is None:
         return ""

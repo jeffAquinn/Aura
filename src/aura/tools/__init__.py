@@ -16,12 +16,14 @@ from aura.tools.sandbox import Sandbox, sandbox_tools
 from aura.tools.vault import Vault, vault_tools
 from aura.tools.voice import voice_tools
 from aura.tools.web import WebSearch, web_tools
+from aura import speech
 from aura.voice import VoiceStore
 
 __all__ = ["NEEDS_APPROVAL", "Toolbox", "emit", "status_line"]
 
-# Tools that change the vault or Aura's persona: each pauses for the user's approval first.
-NEEDS_APPROVAL = ("write_file", "create_folder", "delete_path", "update_persona")
+# Tools that run code, change the vault, or change Aura's persona: each pauses for the user's
+# approval first (code execution was added by Gemma's Sprint 4 review).
+NEEDS_APPROVAL = ("write_file", "create_folder", "delete_path", "update_persona", "run_python")
 
 GROUP = {
     "list_vault": "File_System_Tool",
@@ -83,7 +85,7 @@ class Toolbox:
             settings.sandbox_image, settings.vault_dir, settings.sandbox_timeout, audit
         )
         identity = IdentityStore(settings.data_dir, audit)
-        voice = VoiceStore(settings.data_dir, audit)
+        voice = VoiceStore(settings.data_dir, audit, neural=speech.catalog())
         tools = [
             *vault_tools(vault),
             *web_tools(search),

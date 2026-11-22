@@ -84,11 +84,11 @@ def test_set_voice_applies_instantly_without_approval_and_tells_the_app(settings
     assert changed == Changed("voice", asdict(VoiceProfile(volume=0.5)))
 
 
-def test_list_voices_without_the_app_says_so(settings):
+def test_aura_s_own_neural_voices_are_listed_even_without_the_app(settings):
     aura, _ = make_aura(settings, tool_turn(call("list_voices", language="en-GB")), AIMessage("ok"))
-    list(aura.stream("What voices do you have?"))
+    list(aura.stream("What British voices do you have?"))
     msgs = aura._agent.get_state(aura._config).values["messages"]
-    assert "Speech is available in the Aura app" in [m.text for m in msgs if m.type == "tool"][0]
+    assert [m.text for m in msgs if m.type == "tool"][0].startswith("Emma (en-GB, female, neural)")
 
 
 # ── HTTP: the user acting directly ──────────────────────────────────────────────────────────
@@ -115,6 +115,7 @@ def test_settings_voice_and_persona_endpoints(settings):
     assert c.post("/v1/voices", json={"voices": CATALOG}, headers=AUTH).json() == {"registered": 5}
     s = c.get("/v1/settings", headers=AUTH).json()
     assert s["voice"]["speak"] is False and s["persona"]["name"] == "Aura" and s["voices_registered"] == 5
+    assert s["neural_voices"] == 11
 
     r = c.put("/v1/voice", json={"voice": "Daniel", "speak": True}, headers=AUTH)
     assert r.status_code == 200 and r.json()["voice"] == "com.apple.voice.premium.en-GB.Daniel"

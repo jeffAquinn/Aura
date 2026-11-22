@@ -6,6 +6,7 @@
 // streams each message through AuraClient with per-event timings, answers approval cards
 // through ChatStore (Deny unless --approve), then shuts the server down.
 
+import AVFoundation
 import AuraKit
 import Foundation
 
@@ -63,6 +64,15 @@ func smoke() async throws {
             turnStart = Date(); sawText = false
             _ = try await show(client.approve(decision))
         }
+    }
+
+    // Aura's neural voice through the app's own client: a real sentence, checked, never played.
+    let started = Date()
+    if let wav = try? await client.speech("Good evening. This is Heart, one of Aura's voices.", voice: "kokoro:af_heart", speed: 1.0),
+       let player = try? AVAudioPlayer(data: wav) {
+        log("neural voice: \(String(format: "%.1f", player.duration)) s of audio in \(Int(Date().timeIntervalSince(started) * 1000)) ms (\(wav.count / 1024) KB WAV)")
+    } else {
+        log("!! neural voice failed")
     }
 
     // ChatStore end to end against the real server: one turn, then its transcript.

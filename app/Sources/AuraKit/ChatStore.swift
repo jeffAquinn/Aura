@@ -105,6 +105,8 @@ public final class ChatStore {
     public func registerVoices(_ catalog: [VoiceInfo]) async {
         voices = catalog
         try? await transport?.registerVoices(catalog)
+        // The server's list adds Aura's own neural voices, best first.
+        if let all = try? await transport?.voices(), !all.isEmpty { voices = all }
     }
 
     public func updateVoice(_ patch: VoicePatch) async {
@@ -186,6 +188,7 @@ public final class ChatStore {
             items.append(Item(role: .error, text: message))
         case let .voice(profile):
             setVoice(profile)
+            speech?.warmUp()  // e.g. "talk to me" just switched spoken replies on
         case let .persona(name):
             persona.name = name
         case .done:

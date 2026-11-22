@@ -11,6 +11,8 @@ public protocol AuraTransport: Sendable {
     func registerVoices(_ voices: [VoiceInfo]) async throws
     func updateVoice(_ patch: VoicePatch) async throws -> VoiceProfile
     func resetPersona() async throws -> PersonaInfo
+    func voices() async throws -> [VoiceInfo]
+    func speech(_ text: String, voice: String, speed: Double) async throws -> Data
 }
 
 /// Defaults so test fakes only implement what they exercise.
@@ -19,6 +21,8 @@ extension AuraTransport {
     public func registerVoices(_ voices: [VoiceInfo]) async throws {}
     public func updateVoice(_ patch: VoicePatch) async throws -> VoiceProfile { throw AuraClientError.badResponse }
     public func resetPersona() async throws -> PersonaInfo { throw AuraClientError.badResponse }
+    public func voices() async throws -> [VoiceInfo] { [] }
+    public func speech(_ text: String, voice: String, speed: Double) async throws -> Data { throw AuraClientError.badResponse }
 }
 
 public enum AuraClientError: Error, LocalizedError, Equatable {
@@ -85,6 +89,16 @@ public final class AuraClient: AuraTransport {
 
     public func resetPersona() async throws -> PersonaInfo {
         try Self.decoder.decode(PersonaInfo.self, from: await send(request("/v1/persona/reset", body: [String: String]())))
+    }
+
+    public func voices() async throws -> [VoiceInfo] {
+        try Self.decoder.decode([VoiceInfo].self, from: await send(request("/v1/voices")))
+    }
+
+    /// One sentence of audio (WAV) in one of Aura's neural voices.
+    public func speech(_ text: String, voice: String, speed: Double) async throws -> Data {
+        struct Body: Encodable { let text: String; let voice: String; let speed: Double }
+        return try await send(request("/v1/speech", body: Body(text: text, voice: voice, speed: speed)))
     }
 
     private static var decoder: JSONDecoder {

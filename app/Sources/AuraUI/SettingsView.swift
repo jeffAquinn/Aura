@@ -104,15 +104,19 @@ struct VoiceGroups {
     init(_ catalog: [VoiceInfo], languages: [String] = Locale.preferredLanguages) {
         let usable = catalog.filter { !$0.novelty }
         let mine = Set(languages.compactMap { $0.split(separator: "-").first.map(String.init) })
-        let recommended = usable.filter { $0.quality != "default" }.sorted(by: Self.order)
+        let aura = usable.filter { $0.quality == "neural" }  // the server's curated order
+        let recommended = usable.filter { ["premium", "enhanced"].contains($0.quality) }.sorted(by: Self.order)
         let local = usable.filter { $0.quality == "default" && mine.contains(String($0.language.prefix(2))) }
             .sorted(by: Self.order)
-        sections = [Group(title: "Recommended", voices: recommended), Group(title: "More voices", voices: local)]
-            .filter { !$0.voices.isEmpty }
+        sections = [
+            Group(title: "Aura voices", voices: aura),
+            Group(title: "macOS: recommended", voices: recommended),
+            Group(title: "macOS: more voices", voices: local),
+        ].filter { !$0.voices.isEmpty }
     }
 
     static func label(_ v: VoiceInfo) -> String {
-        let quality = v.quality == "default" ? "" : " (\(v.quality.capitalized))"
+        let quality = ["default", "neural"].contains(v.quality) ? "" : " (\(v.quality.capitalized))"
         return "\(v.name)\(quality) · \(v.language)"
     }
 

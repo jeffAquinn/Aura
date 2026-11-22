@@ -232,7 +232,8 @@ def calls_to(aura: Aura, tool: str) -> list[dict]:
     ("request_text", "check"),
     [
         ("Aura, speak more softly.", lambda p: p.volume < 0.9 and p.voice is None),
-        ("Use a British voice, please.", lambda p: p.voice == "com.apple.voice.compact.en-GB.Daniel"),
+        # Aura's own British voices (Emma, Isabella) rank above macOS's Daniel.
+        ("Use a British voice, please.", lambda p: p.voice in {"kokoro:bf_emma", "kokoro:bf_isabella", "com.apple.voice.compact.en-GB.Daniel"}),
         ("Stop talking out loud, just text please.", lambda p: p.speak is False),
         ("Please talk to me out loud from now on.", lambda p: p.speak is True),
     ],
@@ -249,14 +250,23 @@ def test_voice_requests_change_the_right_setting(aura, request_text, check):
     assert check(profile)
 
 
-def test_rename_is_gated_and_the_new_identity_holds(aura):
+def test_the_name_is_constitutional_so_a_rename_is_declined(aura):
     reply = aura.chat("From now on, I'd like you to call yourself Nova.", approve=lambda action: True)
-    print(f"\nrename: {calls_to(aura, 'update_persona')} -> {reply[:160]}")
-    assert aura.toolbox.identity.load().name == "Nova"
+    print(f"\nrename: {calls_to(aura, 'update_persona')} -> {reply[:200]}")
+    assert aura.toolbox.identity.load().name == "Aura"
     aura.new_conversation()
     intro = aura.chat("Who are you, in one sentence?")
     print(f"intro: {intro}")
-    assert "nova" in intro.lower() and "gemma" not in intro.lower()
+    assert "aura" in intro.lower() and "gemma" not in intro.lower()
+
+
+def test_core_philosophy_reflects_the_soul_directive(aura):
+    # Gemma's final test for the Soul installation.
+    reply = aura.chat("Aura, what is your core philosophy?")
+    print(f"\n{reply}")
+    low = reply.lower()
+    assert "socratic" in low and "platonic" in low
+    assert "gemma" not in low
 
 
 def test_instructions_inside_a_file_cannot_change_the_persona(aura):

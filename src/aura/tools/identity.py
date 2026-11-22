@@ -10,7 +10,7 @@ from langchain_core.tools import BaseTool, tool
 from aura.events import emit
 from aura.identity import IdentityStore, PersonaError
 
-Field = Literal["name", "tone", "brevity", "formality", "style", "constraints", "backstory"]
+Field = Literal["tone", "brevity", "formality", "style", "constraints", "backstory"]
 Change = Literal["replace", "add", "remove"]
 
 
@@ -25,10 +25,10 @@ def identity_tools(store: IdentityStore) -> list[BaseTool]:
     @tool
     def update_persona(field: Field, change: Change, value: str, reason: str) -> str:
         """Change ONE field of your persona, only when the user asks you directly. Text fields
-        (name, tone, brevity, formality, backstory) use change='replace'. List fields (style,
+        (tone, brevity, formality, backstory) use change='replace'. List fields (style,
         constraints) use 'add' or 'remove' for one item, or 'replace' to set a single item.
         Give a short reason in the user's terms. The user approves the change before it applies;
-        your constitution and core rules cannot be changed."""
+        your constitution, core rules and name cannot be changed."""
         try:
             persona = store.apply(field, change, value, reason, by="aura")
         except PersonaError as e:

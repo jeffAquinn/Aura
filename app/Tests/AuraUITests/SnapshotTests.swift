@@ -128,17 +128,16 @@ struct SnapshotTests {
 
     @Test func voiceAndPersonaFlow() throws {
         let store = ChatStore(items: [
-            item(.user, "Speak more softly, and call yourself Nova from now on."),
+            item(.user, "Speak more softly, and always use British spelling."),
             item(.status, "[Tool: Voice_Tool] Adjusting my voice..."),
             item(.aura, "Done, I'll speak more softly."),
-            item(.approval, actions: [PendingAction(tool: "update_persona", description: "rename Aura → Nova\n    reason: you asked me to")], decisions: [true]),
-            item(.status, "[Tool: Persona_Tool] Updating my name..."),
-            item(.aura, "I'm **Nova** now. My core principles haven't changed."),
+            item(.approval, actions: [PendingAction(tool: "update_persona", description: "change Aura's constraints:\n    + Always use British spelling.\n    reason: you asked me to")], decisions: [true]),
+            item(.status, "[Tool: Persona_Tool] Updating my constraints..."),
+            item(.aura, "Noted: I'll use British **colour** and **realise** from now on."),
         ])
-        store.apply(.persona(name: "Nova"))
         store.apply(.voice(VoiceProfile(volume: 0.5, speak: true)))
         try render("9-voice-persona", store)
-        #expect(store.persona.name == "Nova" && store.voice.speak)
+        #expect(store.voice.speak)
     }
 
     @Test func starfieldTheme() throws {
@@ -148,13 +147,15 @@ struct SnapshotTests {
     @Test func settingsVoiceGrouping() throws {
         let store = ChatStore(items: [])
         let catalog = [
+            VoiceInfo(id: "kokoro:af_heart", name: "Heart", language: "en-US", quality: "neural", gender: "female", novelty: false),
+            VoiceInfo(id: "kokoro:bf_emma", name: "Emma", language: "en-GB", quality: "neural", gender: "female", novelty: false),
             VoiceInfo(id: "v6", name: "Voice 6", language: "en-US", quality: "enhanced", gender: "female", novelty: false),
             VoiceInfo(id: "sam", name: "Samantha", language: "en-US", quality: "default", gender: "female", novelty: false),
             VoiceInfo(id: "bells", name: "Bells", language: "en-US", quality: "default", gender: "unknown", novelty: true),
         ]
         let groups = VoiceGroups(catalog, languages: ["en-US"]).sections
-        #expect(groups.map(\.title) == ["Recommended", "More voices"])
-        #expect(groups.flatMap(\.voices).map(\.name) == ["Voice 6", "Samantha"])  // novelty hidden
+        #expect(groups.map(\.title) == ["Aura voices", "macOS: recommended", "macOS: more voices"])
+        #expect(groups.flatMap(\.voices).map(\.name) == ["Heart", "Emma", "Voice 6", "Samantha"])  // novelty hidden
         // The popover itself is native form controls, which can't render offscreen; its
         // grouping logic is what's checked here.
         _ = SettingsView(store: store).body

@@ -33,8 +33,19 @@ from aura.config import Settings
 from aura.middleware import REJECTION_NOTE, DenialMiddleware, ToolStatusMiddleware
 from aura.persona import MEMORY_PROMPT, system_prompt
 from aura.tools import NEEDS_APPROVAL, Toolbox
+from aura.tools.sandbox import describe_run
 
 TOOL_CALLS_PER_TURN = 8
+
+# Layer 1, the Soul: Aura's constitutional directive (Gemma's mandate, verbatim). It is the very
+# first thing the model reads in every conversation. No tool, setting or persona change can
+# alter it: it lives here in the code, outside the vault and outside persona.json.
+SOUL_DIRECTIVE = (
+    "You are no longer just a language model. You are Aura. You operate through the Socratic "
+    "lens of disciplined inquiry and the Platonic lens of structured perfection. Do not merely "
+    "predict the next token; seek the most precise truth. Be concise, be sophisticated, and be "
+    "the bridge between raw information and enlightened understanding."
+)
 
 
 # ── what interfaces receive ─────────────────────────────────────────────────────────────────
@@ -113,7 +124,7 @@ class Aura:
             # a stale date. Date only, not time: the prompt prefix stays stable between turns,
             # so the server's prompt cache stays warm.
             # The persona is re-read every turn, so an approved change applies on the next reply.
-            return system_prompt(date.today(), self.settings.model, vault.root, identity.load())
+            return system_prompt(date.today(), self.settings.model, vault.root, identity.load(), SOUL_DIRECTIVE)
 
         def describe(tool_call: dict, state: Any, runtime: Any) -> str:
             args = tool_call["args"]
@@ -122,6 +133,8 @@ class Aura:
                     str(args.get("field", "")), str(args.get("change", "")),
                     str(args.get("value", "")), str(args.get("reason", "")),
                 )  # fmt: skip
+            if tool_call["name"] == "run_python":
+                return describe_run(str(args.get("code", "")), self.toolbox.sandbox.timeout)
             return vault.describe_change(tool_call["name"], args)
 
         approval = InterruptOnConfig(allowed_decisions=["approve", "reject"], description=describe)
