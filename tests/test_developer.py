@@ -16,7 +16,7 @@ import uuid
 from pathlib import Path
 
 import pytest
-from conftest import ScriptedModel, tool_turn
+from conftest import ScriptedModel, real_key, tool_turn
 from langchain_core.messages import AIMessage
 from test_governor import EXAMPLE, env, offline_provenance, workshop_client  # noqa: F401 (fixtures)
 
@@ -492,14 +492,9 @@ def _claude_secrets() -> Secrets:
     """The user's Anthropic key, read from the real macOS Keychain (where Settings → Keys put it)
     into this test's private keyring. Read here, in the test body, so offline runs and the
     Governor's suite gate never touch the Keychain."""
-    from keyring.backends.macOS import Keyring
-
     if not _docker_up():
         pytest.skip("Docker isn't running")
-    try:
-        key = Keyring().get_password("local.aura", "anthropic_api_key")
-    except Exception as e:  # noqa: BLE001
-        pytest.skip(f"couldn't read the Keychain: {e}")
+    key = real_key("anthropic_api_key")
     if not key:
         pytest.skip("no Anthropic API key in the Keychain (add it in Aura's Settings → Keys)")
     secrets = Secrets()  # the test's in-memory keyring (conftest)

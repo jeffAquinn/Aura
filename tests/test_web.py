@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import httpx
 import pytest
+from conftest import real_key
 
 from aura.audit import AuditLog
 from aura.config import Settings
@@ -113,13 +114,17 @@ def _online() -> bool:
         return False
 
 
+@pytest.mark.live
 @pytest.mark.skipif(not _online(), reason="offline")
 def test_live_duckduckgo_returns_results():
     hits = duckduckgo_backend("weather London", 3)
     assert hits and all(h.url.startswith("http") for h in hits)
 
 
-@pytest.mark.skipif(not Settings.from_env().tavily_api_key, reason="no TAVILY_API_KEY")
+@pytest.mark.live
 def test_live_tavily_returns_results():
-    hits = tavily_backend(Settings.from_env().tavily_api_key)("weather London", 3)
+    key = real_key("tavily_api_key") or Settings.from_env().tavily_api_key  # Settings → Keys, or legacy .env
+    if not key:
+        pytest.skip("no Tavily key (add it in Aura's Settings → Keys)")
+    hits = tavily_backend(key)("weather London", 3)
     assert hits and all(h.url.startswith("http") and h.content for h in hits)

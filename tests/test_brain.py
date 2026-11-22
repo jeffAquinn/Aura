@@ -64,6 +64,13 @@ def test_persona_describes_the_tools_and_their_limits(settings):
 # ── Sprint 1 · Robustness: .env configuration flows into the logic ─────────────────────────
 
 
+def test_every_model_call_has_a_length_cap():
+    from aura.brain import build_model
+
+    assert build_model(Settings()).max_tokens == 8192  # a looping model stops instead of running forever
+    assert build_model(Settings(max_reply_tokens=2048)).max_tokens == 2048
+
+
 def test_settings_come_from_env(monkeypatch: pytest.MonkeyPatch, tmp_path):
     env = {
         "AURA_BASE_URL": "http://example.local/v1",
@@ -71,6 +78,7 @@ def test_settings_come_from_env(monkeypatch: pytest.MonkeyPatch, tmp_path):
         "AURA_MODEL": "some-model",
         "AURA_REASONING_EFFORT": "",  # empty -> omit the parameter
         "AURA_CONTEXT_TOKENS": "4096",
+        "AURA_MAX_REPLY_TOKENS": "2048",
         "AURA_VAULT_DIR": str(tmp_path / "v"),
         "TAVILY_API_KEY": "tvly-x",
         "AURA_SANDBOX_IMAGE": "img:2",
@@ -88,6 +96,7 @@ def test_settings_come_from_env(monkeypatch: pytest.MonkeyPatch, tmp_path):
         model="some-model",
         reasoning_effort=None,
         context_tokens=4096,
+        max_reply_tokens=2048,
         vault_dir=tmp_path / "v",
         tavily_api_key="tvly-x",
         sandbox_image="img:2",
@@ -307,12 +316,13 @@ def test_reads_and_lists_need_no_approval(settings):
 
     events = list(aura.stream("What's in budget.csv?"))
     assert not any(isinstance(e, ApprovalNeeded) for e in events)
-    assert statuses(events) == [
+    # The two calls run concurrently, so their status lines can arrive in either order.
+    assert sorted(statuses(events)) == [
         "[Tool: File_System_Tool] Listing '.'...",
         "[Tool: File_System_Tool] Reading 'budget.csv'...",
     ]
-    tool_results = [m.text for m in history(aura) if isinstance(m, ToolMessage)]
-    assert "budget.csv" in tool_results[0] and "rent,1200" in tool_results[1]
+    results = {m.name: m.text for m in history(aura) if isinstance(m, ToolMessage)}
+    assert "budget.csv" in results["list_vault"] and "rent,1200" in results["read_file"]
 
 
 def test_runaway_tool_loops_are_capped(settings):

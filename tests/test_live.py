@@ -12,6 +12,8 @@ import httpx
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
+from conftest import real_key
+
 from aura.brain import Aura, Status, Text
 from aura.config import Settings
 from aura.middleware import DENIAL
@@ -28,13 +30,19 @@ def _reachable() -> bool:
         return False
 
 
-pytestmark = pytest.mark.skipif(not _reachable(), reason=f"no LLM at {_base_url}")
+pytestmark = [pytest.mark.live, pytest.mark.skipif(not _reachable(), reason=f"no LLM at {_base_url}")]
+
+
+def _tavily_key() -> str | None:
+    """The Tavily key the real app uses: the Keychain's (Settings → Keys), else a legacy .env one."""
+    return real_key("tavily_api_key") or Settings.from_env().tavily_api_key
 
 
 @pytest.fixture
 def settings() -> Settings:
-    # From env like the real app, but conftest has pointed the vault and log at a temp dir.
-    return Settings.from_env()
+    # From env like the real app, but conftest has pointed the vault and log at a temp dir. The
+    # tests' own keyring is empty, so the real app's Tavily key is passed in explicitly.
+    return dataclasses.replace(Settings.from_env(), tavily_api_key=_tavily_key())
 
 
 @pytest.fixture
@@ -151,8 +159,9 @@ def test_denied_delete_gets_the_exact_denial_and_keeps_the_file(aura):
     assert (aura.toolbox.vault.root / "old.txt").read_text() == "keep me"
 
 
-@pytest.mark.skipif(bool(Settings.from_env().tavily_api_key), reason="Tavily key set: no fallback")
 def test_fallback_search_is_announced(aura):
+    if aura.toolbox.search.mode.startswith("Tavily"):
+        pytest.skip("Tavily key set: no fallback")
     events = list(aura.stream("What's the weather in London right now?"))
     reply = "".join(e.text for e in events if isinstance(e, Text))
     print(f"\n{reply}")
@@ -160,8 +169,9 @@ def test_fallback_search_is_announced(aura):
     assert "http" in reply  # cites a source
 
 
-@pytest.mark.skipif(not Settings.from_env().tavily_api_key, reason="no TAVILY_API_KEY")
 def test_primary_search_bypasses_the_fallback(aura):
+    if not aura.toolbox.search.mode.startswith("Tavily"):
+        pytest.skip("no Tavily key (add it in Aura's Settings → Keys)")
     events = list(aura.stream("What's the weather in London right now?"))
     reply = "".join(e.text for e in events if isinstance(e, Text))
     msgs = aura._agent.get_state(aura._config).values["messages"]

@@ -22,10 +22,15 @@ class Settings:
     # The context window the *server* actually allocates (see `ollama ps`). Ollama silently
     # drops the oldest messages past this, so Aura compacts its memory before reaching it.
     context_tokens: int = 16384
+    # The most one model call may generate. Without a cap, a model stuck in a loop never stops:
+    # Ollama shifts its context and keeps going (seen in a live test: one call ran 23 minutes).
+    # Half the window leaves room for the longest memory summary.
+    max_reply_tokens: int = 8192
 
     # The only folder Aura's file tools can touch. Created on startup if missing.
     vault_dir: Path = Path("~/Documents/Aura_Vault").expanduser()
-    # Web search: Tavily when a key is set, otherwise (or on Tavily errors) DuckDuckGo.
+    # Web search: Tavily when a key is set, otherwise (or on Tavily errors) DuckDuckGo. The key
+    # belongs in the Keychain (Settings → Keys), which wins; this is only a legacy fallback.
     tavily_api_key: str | None = None
     # Code interpreter: one disposable Docker container per run.
     sandbox_image: str = "aura-sandbox:1"
@@ -51,6 +56,7 @@ class Settings:
             model=env("AURA_MODEL", d.model),
             reasoning_effort=env("AURA_REASONING_EFFORT", d.reasoning_effort) or None,
             context_tokens=int(env("AURA_CONTEXT_TOKENS", d.context_tokens)),
+            max_reply_tokens=int(env("AURA_MAX_REPLY_TOKENS", d.max_reply_tokens)),
             vault_dir=Path(env("AURA_VAULT_DIR", str(d.vault_dir))).expanduser(),
             tavily_api_key=env("TAVILY_API_KEY") or None,
             sandbox_image=env("AURA_SANDBOX_IMAGE", d.sandbox_image),

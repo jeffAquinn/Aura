@@ -38,6 +38,18 @@ class MemoryKeyring:
         del self.items[(service, name)]
 
 
+def real_key(name: str) -> str | None:
+    """A key from the real macOS Keychain, where Aura's Settings → Keys stores it: for live tests
+    only. Call it inside a test or fixture, never at import, so offline runs and the Governor's
+    suite gate never touch the Keychain."""
+    try:
+        from keyring.backends.macOS import Keyring
+
+        return Keyring().get_password("local.aura", name) or None
+    except Exception:  # noqa: BLE001: no Keychain, locked, or not on macOS
+        return None
+
+
 @pytest.fixture(autouse=True)
 def _isolate_from_real_keychain(monkeypatch):
     import keyring

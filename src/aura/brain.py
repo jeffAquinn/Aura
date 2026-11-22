@@ -98,6 +98,7 @@ def build_model(settings: Settings) -> ChatOpenAI:
         api_key=settings.api_key,
         model=settings.model,
         reasoning_effort=settings.reasoning_effort,
+        max_tokens=settings.max_reply_tokens,  # a looping model stops instead of running forever
         # Report real token usage on streamed replies too. Memory compaction keys off the
         # server's count, which (unlike the local estimate) includes the system prompt and
         # tool schemas.
