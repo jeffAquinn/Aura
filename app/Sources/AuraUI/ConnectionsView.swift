@@ -128,6 +128,7 @@ extension ProviderGuide {
         steps: { c in [
             StepInfo(text: "Open the Discord Developer Portal → **New Application** → name it “Aura” → Create.",
                      links: [("Developer Portal", "https://discord.com/developers/applications")]),
+            StepInfo(text: "Open the **Installation** page and set **Install Link** to **None**, then Save Changes. (A private bot can't keep Discord's default install link; Aura gives you its own invite link in step 3 below.)"),
             StepInfo(text: "Open the **Bot** page. Turn **off** “Public Bot” (so only you can add it to a server). Under Privileged Gateway Intents, turn **on** “Message Content Intent” (without it Discord hides message text from bots). Save Changes.",
                      links: c.setup?.portalUrl.map { [("This bot's page", $0)] } ?? []),
             StepInfo(text: "On the same page, under Token, click **Reset Token** and copy it. Discord shows it only once. Paste it below: Aura checks it with Discord before saving, and refuses a personal account's token (Discord forbids automating user accounts)."),
