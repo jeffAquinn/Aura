@@ -157,7 +157,7 @@ struct GoogleSetupView: View {
                              ("Drive API", "https://console.cloud.google.com/apis/library/drive.googleapis.com")])
                 Step(n: 3, text: "Google Auth Platform → Get started: app name “Aura”, your Gmail address as the support email. For Audience choose **Personal**: only your account can use it, with no verification and no weekly sign-in. (If Personal isn't offered, choose External, then add your Gmail under Audience → Test users; Google then asks you to sign in again every 7 days.)",
                      links: [("Google Auth Platform", "https://console.cloud.google.com/auth/overview")])
-                Step(n: 4, text: "Clients → Create client. Application type: **Desktop app**, name “Aura on this Mac”, then Create. Keep the dialog open: you'll copy the Client ID and Client secret below.",
+                Step(n: 4, text: "Clients → Create client. Application type: **Desktop app** (not iOS or macOS: those ask for a Bundle ID and won't work with Aura's sign-in). Name it “Aura on this Mac”, then Create. Desktop app asks for nothing else: no Bundle ID, no redirect URI. Aura signs in through a one-time address on this Mac (http://127.0.0.1). Keep the dialog open: you'll copy the Client ID and Client secret below.",
                      links: [("Create client", "https://console.cloud.google.com/auth/clients/create")])
             }
             .frame(maxWidth: .infinity, alignment: .leading)
