@@ -373,6 +373,27 @@ struct SnapshotTests {
         #expect(ChatAppearance.bubbles(user: "", aura: "").aura == ChatAppearance.color(hex: ChatAppearance.defaultAura))
     }
 
+    // MARK: - Settings → Connections
+
+    @Test func googleConnectionSetup() throws {
+        let services = [
+            ConnectionService(id: "gmail", label: "Gmail", purpose: "Read and search your mail, and write drafts. Aura never sends mail.", granted: true),
+            ConnectionService(id: "calendar", label: "Calendar", purpose: "Read your calendars and events, and add or change events.", granted: true),
+            ConnectionService(id: "drive", label: "Drive", purpose: "Search and read your files, and create new ones.", granted: false),
+        ]
+        let fresh = ConnectionInfo(id: "google", label: "Google", state: "not_set_up", services: services.map {
+            ConnectionService(id: $0.id, label: $0.label, purpose: $0.purpose) })
+        try renderWide("25-google-setup", width: 720, GoogleSetupView(store: ConnectionsStore(connections: [fresh]), connection: fresh))
+        let connected = ConnectionInfo(
+            id: "google", label: "Google", state: "connected", configured: true, account: "me@gmail.com", services: services,
+            credentials: [SecretInfo(name: "google_client_id", label: "Google OAuth client ID", set: true, hint: "123456…apps.googleusercontent.com"),
+                          SecretInfo(name: "google_client_secret", label: "Google OAuth client secret", set: true, hint: "GOCSPX-…uvwx")],
+            checks: [ConnectionCheck(service: "gmail", ok: true, detail: "Working."),
+                     ConnectionCheck(service: "calendar", ok: false, detail: "Google Calendar API has not been used in project 1234 before or it is disabled.")])
+        try renderWide("26-google-connected", width: 720, dark: true,
+                       GoogleSetupView(store: ConnectionsStore(connections: [connected]), connection: connected))
+    }
+
     @Test func toolStatusReadsLikeASentence() {
         #expect(ToolStatusView.readable("[Tool: File_System_Tool] Reading 'budget.csv'...") == "Reading 'budget.csv'…")
         #expect(ToolStatusView.readable("Plain status") == "Plain status")

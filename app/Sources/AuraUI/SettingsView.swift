@@ -68,6 +68,7 @@ struct SettingsView: View {
                 Text("Ask \(store.persona.name) to change its tone, brevity or style; you approve each change.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            ConnectionsSection(store: store)
             KeysSection(store: store)
         }
         .formStyle(.grouped)

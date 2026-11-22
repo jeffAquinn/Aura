@@ -32,6 +32,12 @@ public protocol AuraTransport: Sendable {
     func secrets() async throws -> [SecretInfo]
     func setSecret(_ name: String, value: String) async throws -> SecretInfo
     func deleteSecret(_ name: String) async throws
+    func connections() async throws -> [ConnectionInfo]
+    func saveConnectionCredentials(_ id: String, _ credentials: ConnectionCredentials) async throws -> ConnectionInfo
+    func removeConnectionCredentials(_ id: String) async throws -> ConnectionInfo
+    func connect(_ id: String, services: [String]) async throws -> SignInStart
+    func checkConnection(_ id: String) async throws -> ConnectionInfo
+    func disconnect(_ id: String) async throws -> ConnectionInfo
 }
 
 /// Defaults so test fakes only implement what they exercise.
@@ -62,6 +68,14 @@ extension AuraTransport {
     public func secrets() async throws -> [SecretInfo] { [] }
     public func setSecret(_ name: String, value: String) async throws -> SecretInfo { throw AuraClientError.badResponse }
     public func deleteSecret(_ name: String) async throws {}
+    public func connections() async throws -> [ConnectionInfo] { [] }
+    public func saveConnectionCredentials(_ id: String, _ credentials: ConnectionCredentials) async throws -> ConnectionInfo {
+        throw AuraClientError.badResponse
+    }
+    public func removeConnectionCredentials(_ id: String) async throws -> ConnectionInfo { throw AuraClientError.badResponse }
+    public func connect(_ id: String, services: [String]) async throws -> SignInStart { throw AuraClientError.badResponse }
+    public func checkConnection(_ id: String) async throws -> ConnectionInfo { throw AuraClientError.badResponse }
+    public func disconnect(_ id: String) async throws -> ConnectionInfo { throw AuraClientError.badResponse }
 }
 
 public enum AuraClientError: Error, LocalizedError, Equatable {
@@ -225,6 +239,37 @@ public final class AuraClient: AuraTransport {
         var r = request("/v1/secrets/\(name)")
         r.httpMethod = "DELETE"
         _ = try await send(r)
+    }
+
+    // MARK: - connections (Settings → Connections)
+
+    public func connections() async throws -> [ConnectionInfo] {
+        try Self.decoder.decode([ConnectionInfo].self, from: await send(request("/v1/connections")))
+    }
+
+    /// The client secret goes to the local server only, which stores it in the macOS Keychain.
+    public func saveConnectionCredentials(_ id: String, _ credentials: ConnectionCredentials) async throws -> ConnectionInfo {
+        var r = request("/v1/connections/\(id)/credentials", body: credentials)
+        r.httpMethod = "PUT"
+        return try Self.decoder.decode(ConnectionInfo.self, from: await send(r))
+    }
+
+    public func removeConnectionCredentials(_ id: String) async throws -> ConnectionInfo {
+        var r = request("/v1/connections/\(id)/credentials")
+        r.httpMethod = "DELETE"
+        return try Self.decoder.decode(ConnectionInfo.self, from: await send(r))
+    }
+
+    public func connect(_ id: String, services: [String]) async throws -> SignInStart {
+        try Self.decoder.decode(SignInStart.self, from: await send(request("/v1/connections/\(id)/connect", body: ["services": services])))
+    }
+
+    public func checkConnection(_ id: String) async throws -> ConnectionInfo {
+        try Self.decoder.decode(ConnectionInfo.self, from: await send(request("/v1/connections/\(id)/check", body: [String: String]())))
+    }
+
+    public func disconnect(_ id: String) async throws -> ConnectionInfo {
+        try Self.decoder.decode(ConnectionInfo.self, from: await send(request("/v1/connections/\(id)/disconnect", body: [String: String]())))
     }
 
     private static var decoder: JSONDecoder {

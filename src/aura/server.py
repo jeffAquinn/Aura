@@ -37,7 +37,8 @@ from aura.config import Settings
 from aura.governor.continuous import DEEP
 from aura.developer.workflow import DeveloperError
 from aura.governor.workshop import WorkshopError
-from aura.secrets import SecretError
+from aura.connections import ConnectionsError
+from aura.secrets import KEYS, SecretError
 from aura.skills import SkillError
 from aura.speech import Kokoro, SpeechUnavailable
 from aura.tools.sandbox import find_docker
@@ -250,6 +251,15 @@ class SecretIn(BaseModel):
     value: str = Field(min_length=1, max_length=512)
 
 
+class CredentialsIn(BaseModel):
+    client_id: str = Field(min_length=1, max_length=300)
+    client_secret: str = Field(min_length=1, max_length=300)
+
+
+class ConnectIn(BaseModel):
+    services: list[str] = Field(min_length=1, max_length=10)
+
+
 class BuildIn(BaseModel):
     skill: str = Field(min_length=2, max_length=40)
     specification: str = Field(min_length=1, max_length=12_000)
@@ -438,8 +448,13 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
     def list_secrets() -> list[dict]:
         return secrets.listing()  # names and masked hints only, never values
 
+    def is_key(name: str) -> bool:  # Settings → Keys only; connections have their own endpoints
+        return name in KEYS and KEYS[name].group == "keys"
+
     @app.put("/v1/secrets/{name}")
     def set_secret(name: str, body: SecretIn) -> Response:
+        if not is_key(name):
+            return _error(404, f"unknown key '{name}'")
         try:
             secrets.set(name, body.value)
         except SecretError as e:
@@ -450,6 +465,8 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
 
     @app.delete("/v1/secrets/{name}")
     def delete_secret(name: str) -> Response:
+        if not is_key(name):
+            return _error(404, f"unknown key '{name}'")
         try:
             secrets.delete(name)
         except SecretError as e:
@@ -457,6 +474,60 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
         if name == "tavily_api_key":
             aura.toolbox.search.set_key(aura.settings.tavily_api_key)  # back to .env's, if any
         return Response(status_code=204)
+
+    # ── connections (Settings → Connections): credentials, sign-in, check. No agent tool here. ──
+
+    connections = aura.toolbox.connections
+
+    def connection_call(connection_id: str, action) -> Response:  # noqa: ANN001
+        try:
+            result = action(connections.get(connection_id))
+        except ConnectionsError as e:
+            return _error(404 if "no connection called" in str(e) else 409, str(e))
+        except SecretError as e:
+            return _error(422, str(e))
+        return JSONResponse(result)
+
+    @app.get("/v1/connections")
+    def list_connections() -> list[dict]:
+        return connections.public()  # states, accounts and masked hints: never a secret or a token
+
+    @app.get("/v1/connections/{connection_id}")
+    def get_connection(connection_id: str) -> Response:
+        return connection_call(connection_id, lambda c: c.status())
+
+    @app.put("/v1/connections/{connection_id}/credentials")
+    def set_credentials(connection_id: str, body: CredentialsIn) -> Response:
+        def save(c):  # noqa: ANN001, ANN202
+            c.set_credentials(body.client_id, body.client_secret)
+            return c.status()
+
+        return connection_call(connection_id, save)
+
+    @app.delete("/v1/connections/{connection_id}/credentials")
+    def remove_credentials(connection_id: str) -> Response:
+        def remove(c):  # noqa: ANN001, ANN202
+            c.remove_credentials()
+            return c.status()
+
+        return connection_call(connection_id, remove)
+
+    @app.post("/v1/connections/{connection_id}/connect")
+    def connect(connection_id: str, body: ConnectIn) -> Response:
+        """Starts a sign-in; the app opens the returned URL in the user's browser."""
+        return connection_call(connection_id, lambda c: {"auth_url": c.begin(body.services), **c.status()})
+
+    @app.post("/v1/connections/{connection_id}/check")
+    def check_connection(connection_id: str) -> Response:
+        return connection_call(connection_id, lambda c: c.check())
+
+    @app.post("/v1/connections/{connection_id}/disconnect")
+    def disconnect(connection_id: str) -> Response:
+        def drop(c):  # noqa: ANN001, ANN202
+            c.disconnect()
+            return c.status()
+
+        return connection_call(connection_id, drop)
 
     @app.get("/v1/developer")
     def developer_state() -> dict:

@@ -1,5 +1,15 @@
-# Secrets
+# Secrets. Aura keeps keys and connection credentials in the macOS Keychain (Settings), never
+# in files; these patterns stop a downloaded credential file from ever being committed.
 .env
+.env.*
+!.env.example
+client_secret*.json
+*.apps.googleusercontent.com.json
+credentials*.json
+token*.json
+*.pem
+*.p12
+*.key
 
 # Python
 __pycache__/

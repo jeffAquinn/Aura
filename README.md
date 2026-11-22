@@ -114,6 +114,21 @@ skill to **Improve** it).
 never shown again (only a masked hint), and never written to a file, a log or the chat. The
 Anthropic key is passed to Claude Code's container only.
 
+### Connections (Sprint 7, in progress)
+
+Settings (the gear) → Connections, or **Connections…** in the menu bar menu, sets up Aura's links to
+your accounts, one at a time. **Google** (Gmail, Calendar, Drive) is first:
+1. **Create a Google OAuth client** in your own Google Cloud project. The window walks you through it:
+   audience "Personal", type "Desktop app".
+2. **Save its ID and secret** to the Keychain.
+3. **Choose the services and sign in** in your browser. Sign-in is OAuth with PKCE, through a one-time
+   listener on 127.0.0.1.
+
+Aura asks Google only for the services you choose. Its access to Gmail is read plus drafts; it
+never sends mail. Everything is stored in the Keychain: never in the project folder, a file, a log or
+the chat. No tool of Aura's can reach a connection yet: that arrives with the Permissions screen.
+Slack and Discord come next.
+
 ## Layout
 
 | Path | Role |
@@ -128,7 +143,8 @@ Anthropic key is passed to Claude Code's container only.
 | `src/aura/skills.py` | Skill manifests, the registry and approvals, skill tools |
 | `src/aura/governor/` | Security Governor: `scan.py` (static), `provenance.py` (PyPI/OSV), `workshop.py` (staging, audit, deploy, uninstall), `continuous.py` (re-checks of installed skills) |
 | `src/aura/developer/` | The Developer: `engines.py` (Claude Code, Codex), `container.py` + `egress.py` (the isolated container and its egress allowlist), `workspace.py` (the scratch workspace), `workflow.py` (specification → build → audit → repair → review) |
-| `src/aura/secrets.py` | Keys in the macOS Keychain |
+| `src/aura/secrets.py` | Keys and connection credentials in the macOS Keychain |
+| `src/aura/connections/` | Settings → Connections: `oauth.py` (browser sign-in, PKCE, loopback), `google.py` (Gmail, Calendar, Drive) |
 | `src/aura/main.py` | Terminal interface |
 | `src/aura/server.py` | Local HTTP + SSE server for the app (auth, streaming, Smart-Warm) |
 | `app/` | SwiftUI menu bar app: `AuraKit` (client, SSE, state, speech) + `AuraUI` (chat, settings, Workshop) + `Aura` (app shell) + `aura-smoke` |

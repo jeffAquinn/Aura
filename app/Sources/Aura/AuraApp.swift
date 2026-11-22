@@ -25,6 +25,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var buildCheck: Timer?
     private lazy var workshop = WorkshopStore { [weak self] in self?.store.transport }
     private var workshopWindow: NSWindow?
+    private lazy var connections = ConnectionsStore(transport: { [weak self] in self?.store.transport },
+                                                    openURL: { NSWorkspace.shared.open($0) })  // the user's browser
+    private var connectionsWindow: NSWindow?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -40,6 +43,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.restartServer()
         }
         .environment(\.openWorkshop, OpenWorkshopAction { [weak self] taskID in self?.openWorkshop(taskID) })
+        .environment(\.openConnections, OpenConnectionsAction { [weak self] id in self?.openConnections(id) })
         panel = AuraPanel(rootView: chat)
         panel.onHide = { [weak self] in self?.panelHidden() }
         hotKey = HotKey(keyCode: UInt32(kVK_Space), modifiers: UInt32(optionKey)) { [weak self] in
@@ -246,6 +250,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         add(hotKey == nil ? "Open Aura" : "Open Aura (⌥Space)", #selector(openPanel))
         add("New Conversation", #selector(newConversation))
         add("Open Workshop…", #selector(openWorkshopFromMenu))
+        add("Connections…", #selector(openConnectionsFromMenu))
         menu.addItem(.separator())
         add("Open Vault in Finder", #selector(openVault))
         add("Open Audit Log", #selector(openAuditLog))
@@ -278,6 +283,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         workshopWindow?.makeKeyAndOrderFront(nil)
         Task { await workshop.refresh() }
         AppLog.write("workshop opened\(taskID.map { " on task \($0)" } ?? "")")
+    }
+
+    @objc private func openConnectionsFromMenu() { openConnections(nil) }
+
+    /// Settings → Connections: a normal window, where each account is set up step by step.
+    func openConnections(_ id: String?) {
+        if connectionsWindow == nil {
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 900, height: 700),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+                backing: .buffered, defer: false)
+            window.title = "Aura Connections"
+            window.isReleasedWhenClosed = false
+            window.contentView = NSHostingView(rootView: ConnectionsView(store: connections))
+            window.setFrameAutosaveName("AuraConnections")
+            if window.frame.origin == .zero { window.center() }
+            connectionsWindow = window
+        }
+        if let id { connections.selectedID = id }
+        panel.hide()  // the floating panel would sit on top of it
+        NSApp.activate()
+        connectionsWindow?.makeKeyAndOrderFront(nil)
+        Task { await connections.refresh() }
+        AppLog.write("connections opened\(id.map { " on \($0)" } ?? "")")
     }
 
     @objc private func newConversation() {

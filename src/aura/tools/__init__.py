@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 
 from langchain_core.tools import BaseTool
 
+from aura.connections import Connections
+from aura.connections.google import GoogleConnection
 from aura.audit import AuditLog
 from aura.config import Settings
 from aura.events import emit
@@ -93,6 +95,7 @@ class Toolbox:
     continuous: ContinuousAudit
     secrets: Secrets
     developer: Developer
+    connections: Connections  # Settings → Connections only: no tool reaches these (yet: Sprint 7)
     tools: list[BaseTool] = field(default_factory=list)
 
     def all_tools(self) -> list[BaseTool]:
@@ -142,4 +145,6 @@ class Toolbox:
         continuous = ContinuousAudit(skills, audit, settings.data_dir / "continuous_audit.json")
         developer = Developer(settings, workshop, container or DevContainer(sandbox, secrets, audit), secrets, audit)
         tools += workshop_tools(workshop, developer)
-        return cls(audit, vault, search, sandbox, identity, voice, skills, workshop, continuous, secrets, developer, tools)
+        connections = Connections(GoogleConnection(secrets, audit))
+        return cls(audit, vault, search, sandbox, identity, voice, skills, workshop, continuous, secrets, developer,
+                   connections, tools)  # fmt: skip
