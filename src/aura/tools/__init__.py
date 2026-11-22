@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from langchain_core.tools import BaseTool
 
 from aura.connections import Connections
+from aura.connections.actions import OUTWARD, PRIVATE_READS, connection_tools
 from aura.connections.discord import DiscordConnection
 from aura.connections.google import GoogleConnection
 from aura.connections.slack import SlackConnection
@@ -31,11 +32,12 @@ if TYPE_CHECKING:  # imported lazily in from_settings (they import this package 
 from aura import speech
 from aura.voice import VoiceStore
 
-__all__ = ["NEEDS_APPROVAL", "Toolbox", "emit", "status_line"]
+__all__ = ["NEEDS_APPROVAL", "PRIVATE_READS", "Toolbox", "emit", "status_line"]
 
 # Tools that run code, change the vault, or change Aura's persona: each pauses for the user's
 # approval first (code execution was added by Gemma's Sprint 4 review).
-NEEDS_APPROVAL = ("write_file", "create_folder", "delete_path", "update_persona", "run_python", "develop_skill")
+NEEDS_APPROVAL = ("write_file", "create_folder", "delete_path", "update_persona", "run_python", "develop_skill",
+                  *OUTWARD)  # Sprint 7: Gemma's floors: sending, posting, drafting, adding events
 # Approvals that may be edited on the card before approving: tool -> the fields the user may change.
 EDITABLE: dict[str, tuple[str, ...]] = {"develop_skill": ("specification", "engine")}
 
@@ -55,6 +57,12 @@ GROUP = {
     "list_skills": "Workshop",
     "propose_skill": "Workshop",
     "develop_skill": "Developer",
+    "list_connections": "Connections",
+    "gmail_read": "Gmail", "gmail_draft": "Gmail",
+    "calendar_read": "Calendar", "calendar_add": "Calendar",
+    "drive_read": "Drive",
+    "slack_read": "Slack", "slack_send": "Slack",
+    "discord_read": "Discord", "discord_send": "Discord",
 }
 
 _DOING: dict[str, Callable[[dict], str]] = {
@@ -73,6 +81,17 @@ _DOING: dict[str, Callable[[dict], str]] = {
     "list_skills": lambda a: "Looking through my skills...",
     "propose_skill": lambda a: f"Staging the '{a.get('name')}' skill for audit...",
     "develop_skill": lambda a: f"Starting {'Codex' if a.get('engine') == 'codex' else 'Claude Code'} on the '{a.get('name')}' skill...",
+    "list_connections": lambda a: "Checking my connections...",
+    "gmail_read": lambda a: "Opening an email..." if a.get("message_id") else f"Searching Gmail for '{a.get('query') or 'your inbox'}'...",
+    "gmail_draft": lambda a: f"Saving a draft to {a.get('to')}...",
+    "calendar_read": lambda a: f"Looking at your calendar for the next {a.get('days', 7)} days...",
+    "calendar_add": lambda a: f"Adding '{a.get('title')}' to your calendar...",
+    "drive_read": lambda a: "Opening a Drive file..." if a.get("file_id") else f"Searching Drive for '{a.get('query') or 'recent files'}'...",
+    "slack_read": lambda a: (f"Searching Slack for '{a['query']}'..." if a.get("query")
+                             else f"Reading Slack {a['channel']}..." if a.get("channel") else "Listing your Slack channels..."),
+    "slack_send": lambda a: f"Posting in Slack {a.get('channel')}...",
+    "discord_read": lambda a: f"Reading Discord {a['channel']}..." if a.get("channel") else "Listing Discord channels...",
+    "discord_send": lambda a: f"Posting in Discord {a.get('channel')}...",
 }
 
 
@@ -101,8 +120,9 @@ class Toolbox:
     tools: list[BaseTool] = field(default_factory=list)
 
     def all_tools(self) -> list[BaseTool]:
-        """The built-in tools plus every approved, enabled skill (re-read on each rebuild)."""
-        return [*self.tools, *self.skills.tools()]
+        """The built-in tools, every approved and enabled skill, and the tools of whatever is
+        connected (all re-read on each rebuild)."""
+        return [*self.tools, *self.skills.tools(), *connection_tools(self.connections)]
 
     @classmethod
     def from_settings(

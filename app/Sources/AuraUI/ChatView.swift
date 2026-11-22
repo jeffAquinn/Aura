@@ -427,6 +427,12 @@ struct ToolStatusView: View {
         if text.contains("Skill_Tool") { return "puzzlepiece.extension" }
         if text.contains("Governor") { return "checkmark.shield" }
         if text.contains("Workshop") { return "hammer" }
+        if text.contains("[Tool: Gmail]") { return "envelope" }
+        if text.contains("[Tool: Calendar]") { return "calendar" }
+        if text.contains("[Tool: Drive]") { return "doc.text" }
+        if text.contains("[Tool: Slack]") { return "number" }
+        if text.contains("[Tool: Discord]") { return "bubble.left.and.bubble.right" }
+        if text.contains("[Tool: Connections]") { return "link" }
         return "folder"
     }
 

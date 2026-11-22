@@ -33,6 +33,7 @@ from aura.config import Settings
 from aura.middleware import REJECTION_NOTE, DenialMiddleware, ToolStatusMiddleware
 from aura.persona import MEMORY_PROMPT, system_prompt
 from aura.developer.workflow import describe_build
+from aura.connections.actions import OUTWARD, describe_outward, turn_is_tainted
 from aura.tools import EDITABLE, NEEDS_APPROVAL, Toolbox
 from aura.tools.sandbox import describe_run
 
@@ -140,11 +141,17 @@ class Aura:
                 return describe_run(str(args.get("code", "")), self.toolbox.sandbox.timeout)
             if tool_call["name"] == "develop_skill":
                 return describe_build(args, self.toolbox.developer)
+            if tool_call["name"] in (*OUTWARD, "web_search"):
+                return describe_outward(tool_call["name"], args)
             return vault.describe_change(tool_call["name"], args)
 
         approval = InterruptOnConfig(allowed_decisions=["approve", "reject"], description=describe)
         # The Specification Approval card: the user may also edit the specification before approving.
         editable = InterruptOnConfig(allowed_decisions=["approve", "edit", "reject"], description=describe)
+        # R2 (Gemma's taint rule): a web search sends its words off this Mac, so once a turn has read
+        # private data (mail, calendar, Drive, Slack, Discord) the search waits for the user too.
+        tainted = InterruptOnConfig(allowed_decisions=["approve", "reject"], description=describe,
+                                    when=lambda request: turn_is_tainted(request.state["messages"]))  # fmt: skip
         # Conversation memory (and paused approvals): checkpointed per thread_id. Kept across
         # agent rebuilds, so deploying a skill doesn't forget the conversation.
         self._checkpointer = InMemorySaver()
@@ -172,12 +179,14 @@ class Aura:
                     ToolCallLimitMiddleware(run_limit=TOOL_CALLS_PER_TURN),
                     ToolStatusMiddleware(),
                     HumanInTheLoopMiddleware(interrupt_on={
-                        name: editable if name in EDITABLE else approval for name in NEEDS_APPROVAL}),
+                        **{name: editable if name in EDITABLE else approval for name in NEEDS_APPROVAL},
+                        "web_search": tainted}),
                 ],
                 checkpointer=self._checkpointer,
             )
 
         self._build = build
+        self._connected = self.toolbox.connections.signature()
         self._agent = build(self.toolbox.all_tools())
         self.toolbox.workshop.on_deployed = self.reload_tools
         self.toolbox.continuous.on_change = self.reload_tools  # the server wraps this in its turn lock
@@ -185,6 +194,7 @@ class Aura:
 
     def reload_tools(self) -> None:
         """Rebuild the agent with the current tools (e.g. a newly deployed skill). Memory is kept."""
+        self._connected = self.toolbox.connections.signature()
         self._agent = self._build(self.toolbox.all_tools())
 
     def new_conversation(self) -> None:
@@ -209,6 +219,8 @@ class Aura:
         ApprovalNeeded (answer it with `resume`)."""
         if self._pending:
             raise RuntimeError("An approval is pending; answer it with resume() first.")
+        if self.toolbox.connections.signature() != self._connected:  # an account was connected or removed
+            self.reload_tools()
         self._turn_notices: set[str] = set()  # each notice is said once per turn
         return self._run({"messages": [{"role": "user", "content": text}]})
 

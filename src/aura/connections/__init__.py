@@ -24,6 +24,10 @@ class Connections:
     def public(self) -> list[dict[str, Any]]:
         return [c.status() for c in self.all.values()]
 
+    def signature(self) -> tuple:
+        """What's connected and granted: when it changes, Aura's tools are rebuilt."""
+        return tuple((c["id"], c["state"], tuple(s["id"] for s in c["services"] if s["granted"])) for c in self.public())
+
     def get(self, connection_id: str) -> Any:
         if connection_id not in self.all:
             raise ConnectionsError(f"no connection called '{connection_id}'")
