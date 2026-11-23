@@ -146,7 +146,7 @@ struct ConnectionSetupView: View {
     @State private var chosen: Set<String>?
     @State private var error: String?
     @State private var confirmRemove = false
-    @State private var liveValues = ["", ""]
+    @State private var liveValues = ["", "", "", ""]  // bot token, app-level token, refresh token, Client Secret
     @State private var replacingLive = false
     @State private var confirmRemoveLive = false
 
@@ -414,8 +414,8 @@ struct LiveMessagesCard: View {
                                    links: [("Your Slack apps", "https://api.slack.com/apps")],
                                    copy: connection.setup?.manifest.map { ("Copy Aura's Manifest", $0) }),
             ProviderGuide.StepInfo(text: "Open **Install App** → **Reinstall to Workspace** → Allow. Copy the **Bot User OAuth Token** (it starts with xoxb-)."),
-            ProviderGuide.StepInfo(text: "Open **Basic Information** → App-Level Tokens → **Generate Token and Scopes**. Name it “Aura live”, add the scope **connections:write**, then Generate. Copy the token (it starts with xapp-)."),
-            ProviderGuide.StepInfo(text: "Paste both below. Aura checks them with Slack before it saves them to the Keychain."),
+            ProviderGuide.StepInfo(text: "Open **Basic Information** → App-Level Tokens → **Generate Token and Scopes**. Name it “Aura live”, add the scope **connections:write**, then Generate. Copy the token (it starts with xapp-). If your app has **token rotation** on, Slack shows an **Access Token** (xoxe.xapp-…) and a **Refresh Token** (xoxe-1-…): copy both, plus the **Client Secret** under App Credentials on the same page. Aura then renews the token every 12 hours by itself."),
+            ProviderGuide.StepInfo(text: "Paste them below. Aura checks them with Slack before it saves them to the Keychain."),
             ProviderGuide.StepInfo(text: "In Slack, invite the bot to each channel you want Aura to hear: type **/invite @Aura** in #aura-chat. Direct messages to Aura need no invite."),
         ]
     }
@@ -425,7 +425,13 @@ struct LiveMessagesCard: View {
             Step(n: i + 1, text: step.text, links: step.links, copy: step.copy)
         }
         SecureField("Bot token (starts with xoxb-)", text: $values[0]).textFieldStyle(.roundedBorder)
-        SecureField("App-level token (starts with xapp-)", text: $values[1]).textFieldStyle(.roundedBorder)
+        SecureField("App-level token (xapp-… or xoxe.xapp-…)", text: $values[1]).textFieldStyle(.roundedBorder)
+        if rotates {
+            Text("This token rotates (token rotation is on in your app): it lasts 12 hours, so Aura renews it with its refresh token and your app's Client Secret.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            SecureField("Refresh token (starts with xoxe-1-)", text: $values[2]).textFieldStyle(.roundedBorder)
+            SecureField("Client Secret (Basic Information → App Credentials)", text: $values[3]).textFieldStyle(.roundedBorder)
+        }
         if let refusal {
             Label(refusal, systemImage: "xmark.octagon.fill")
                 .foregroundStyle(.red).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
@@ -441,17 +447,20 @@ struct LiveMessagesCard: View {
                 saving = true
                 refusal = nil
                 Task {
-                    refusal = await store.saveLive(connection.id, botToken: values[0], appToken: values[1])
+                    refusal = await store.saveLive(connection.id, botToken: values[0], appToken: values[1],
+                                                   refreshToken: values[2], clientSecret: values[3])
                     saving = false
                     if refusal == nil { reset() }
                 }
             }
-            .disabled(values.contains(where: \.isEmpty) || store.busy || saving)
+            .disabled(values.prefix(rotates ? 4 : 2).contains(where: \.isEmpty) || store.busy || saving)
         }
     }
 
+    private var rotates: Bool { LiveTokens.rotates(values[1]) }
+
     @ViewBuilder private var saved: some View {
-        ForEach(live.credentials) { c in
+        ForEach(live.credentials.filter(\.set)) { c in
             LabeledContent(c.label) { Text(c.hint ?? "Not set").font(.callout.monospaced()) }
         }
         HStack {
@@ -464,7 +473,7 @@ struct LiveMessagesCard: View {
     }
 
     private func reset() {
-        values = ["", ""]  // nothing lingers in the view
+        values = ["", "", "", ""]  // nothing lingers in the view
         replacing = false
     }
 }

@@ -126,7 +126,12 @@ struct ConnectionsTests {
         #expect(fake.liveSaved.map(\.botToken) == ["xoxb-bot"] && fake.liveSaved.map(\.appToken) == ["xapp-1-app"])
         #expect(store.connections.first?.live?.state == "connecting")
         let body = try JSONSerialization.jsonObject(with: JSONEncoder().encode(fake.liveSaved[0])) as? [String: String]
-        #expect(body == ["bot_token": "xoxb-bot", "app_token": "xapp-1-app"])  // the server's field names
+        #expect(body == ["bot_token": "xoxb-bot", "app_token": "xapp-1-app", "refresh_token": "", "client_secret": ""])  // the server's names
+        // A rotating token (token rotation on) travels with its refresh token and the app's Client Secret.
+        #expect(await store.saveLive("slack", botToken: "xoxb-bot", appToken: "xoxe.xapp-1-app ",
+                                     refreshToken: " xoxe-1-refresh", clientSecret: "secret\n") == nil)
+        #expect(fake.liveSaved.last?.refreshToken == "xoxe-1-refresh" && fake.liveSaved.last?.clientSecret == "secret")
+        #expect(LiveTokens.rotates(" xoxe.xapp-1-a") && !LiveTokens.rotates("xapp-1-a"))
 
         let d = JSONDecoder()
         d.keyDecodingStrategy = .convertFromSnakeCase

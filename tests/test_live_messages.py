@@ -34,6 +34,10 @@ BOT_TOKEN = ".".join(("MTA1NTk5OTk5OTk5OTk5OTk5OQ", "GhSECRET", "kX9SECRETSECRET
 XOXP = "xoxp-" + "1111111111-2222222222-3333333333-SECRETuserTOKEN0000000000"
 XOXB = "xoxb-" + "1111111111-4444444444-SECRETbotTOKEN0000000"
 XAPP = "xapp-" + "1-A0123456789-1234567890123-" + "f" * 64
+ROTATING = "xoxe." + "xapp-1-A0AURA-1234567890123-" + "a" * 64  # token rotation on: 12 hours
+REFRESH = "xoxe-" + "1-" + "r" * 60
+SECRET = "c0ffee" * 5 + "00"  # 32 characters
+SLACK_ID = "1234567890123.1234567890987"
 
 
 class FakeSocket:
@@ -201,13 +205,31 @@ class FakeSlackLive:
         self.app_error: str | None = None
         self.socket_app = "A0AURA"  # the app the app-level token belongs to
         self.calls: list[str] = []
+        self.access = {XAPP}  # app-level tokens Slack accepts right now
+        self.refresh = {REFRESH}  # refresh tokens not yet spent (each works once)
+        self.renewals = 0
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
         method = str(request.url).split("?")[0].removeprefix("https://slack.com/api/")
         auth = request.headers.get("authorization", "")
         self.calls.append(method)
+        if method == "oauth.v2.access":
+            from urllib.parse import parse_qsl
+
+            form = dict(parse_qsl(request.content.decode()))
+            if form.get("client_secret") != SECRET or form.get("client_id") != SLACK_ID:
+                return httpx.Response(200, json={"ok": False, "error": "bad_client_secret"})
+            if form.get("grant_type") != "refresh_token" or form.get("refresh_token") not in self.refresh:
+                return httpx.Response(200, json={"ok": False, "error": "invalid_refresh_token"})
+            self.refresh.discard(form["refresh_token"])
+            self.renewals += 1
+            access, refresh = f"{ROTATING}{self.renewals}", f"{REFRESH}{self.renewals}"
+            self.access.add(access)
+            self.refresh.add(refresh)
+            return httpx.Response(200, json={"ok": True, "token_type": "app_level", "access_token": access,
+                                             "refresh_token": refresh, "expires_in": 43200, "app_id": "A0AURA"})  # fmt: skip
         if method == "apps.connections.open":
-            if auth != f"Bearer {XAPP}" or self.app_error:
+            if auth.removeprefix("Bearer ") not in self.access or self.app_error:
                 return httpx.Response(200, json={"ok": False, "error": self.app_error or "invalid_auth"})
             return httpx.Response(200, json={"ok": True, "url": f"wss://wss.slack.com/link/?ticket=1&app_id={self.socket_app}"})
         if method == "auth.test":
@@ -233,6 +255,7 @@ class FakeSlackLive:
 def slack_live(tmp_path):
     fake, secrets = FakeSlackLive(), Secrets()
     conn = SlackConnection(secrets, AuditLog(tmp_path / "audit.jsonl"), http=httpx.Client(transport=httpx.MockTransport(fake)))
+    secrets.set("slack_client_id", SLACK_ID)
     secrets.store("slack_tokens", json.dumps({"access_token": XOXP, "user_id": "UME", "team_id": "T1",
                                               "account": "jeff in Aura", "scopes": "channels:read"}))  # fmt: skip
     sockets, inbox = Sockets(), Inbox()
@@ -272,11 +295,43 @@ def test_live_tokens_are_checked_with_slack_before_they_are_saved(slack_live):
     conn.set_live(f" {XOXB} ", XAPP)
     assert conn.bot_profile()["app_id"] == "A0AURA"
     live = conn.status()["live"]
-    assert live["configured"] and [c["hint"] for c in live["credentials"]] == ["xoxb-…0000", "xapp-…ffff"]
+    assert live["configured"] and [c["hint"] for c in live["credentials"] if c["set"]] == ["xoxb-…0000", "xapp…ffff"]
     assert XOXB not in json.dumps(conn.status()) and conn.bot_profile()["user_id"] == "UBOT"
     assert [c["name"] for c in conn.status()["credentials"]] == ["slack_client_id"]  # kept apart from the Client ID
     conn.remove_credentials()  # Remove… forgets everything, live tokens included
     assert not conn.live_configured and conn.bot_profile() == {}
+
+
+def test_a_rotating_app_level_token_is_renewed_and_its_refresh_token_kept(slack_live):
+    conn, socket, _, sockets, fake = slack_live
+    with pytest.raises(ConnectionsError, match="rotates .* Paste its refresh token and your app's Client Secret"):
+        conn.set_live(XOXB, ROTATING)
+    with pytest.raises(ConnectionsError, match="Client Secret isn't this app's"):
+        conn.set_live(XOXB, ROTATING, REFRESH, "f" * 32)
+    assert not conn.live_configured and REFRESH in fake.refresh  # a refused secret spends nothing
+    conn.set_live(XOXB, ROTATING, f" {REFRESH} ", SECRET)  # renewed once, at once: proves both work
+    assert fake.renewals == 1 and REFRESH not in fake.refresh
+    assert conn.secrets.get("slack_app_token") == f"{ROTATING}1" and conn.secrets.get("slack_app_refresh") == f"{REFRESH}1"
+    hints = {c["name"]: c["hint"] for c in conn.status()["live"]["credentials"]}
+    assert hints["slack_client_secret"] == "…" + SECRET[-4:] and hints["slack_app_refresh"] == "…" + f"{REFRESH}1"[-4:]
+    assert SECRET not in json.dumps(conn.status()) and REFRESH not in json.dumps(conn.status())
+    assert conn.app_token() == f"{ROTATING}1"  # plenty of time left: no renewal
+    later = conn.clock() + 43200 - 600  # ten minutes before it expires
+    conn.clock = lambda: later
+    assert conn.app_token() == f"{ROTATING}2" and conn.secrets.get("slack_app_refresh") == f"{REFRESH}2"
+    # Expired early (the Mac slept through the renewal): the listener renews once, then connects.
+    fake.access.discard(f"{ROTATING}2")
+    sockets.scripts = [[{"type": "hello"}, {"type": "disconnect", "reason": "refresh_requested"}]]
+    socket._session(threading.Event())
+    assert fake.renewals == 3 and sockets.opened[0].url.endswith("app_id=A0AURA")
+    # A spent refresh token can't renew: the listener stops and says how to fix it.
+    conn.secrets.set("slack_app_refresh", REFRESH)
+    fake.access.clear()
+    with pytest.raises(Fatal, match="each one works only once"):
+        socket._session(threading.Event())
+    fake.access.add(XAPP)
+    conn.set_live(XOXB, XAPP)  # a plain token replaces it: nothing left to renew
+    assert conn.secrets.get("slack_app_refresh") is None and conn.secrets.get("slack_client_secret") is None
 
 
 def test_slack_acknowledges_every_envelope_and_brings_in_what_people_say(slack_live):
@@ -421,9 +476,9 @@ def test_the_app_long_polls_new_messages_and_no_token_leaves(env):  # noqa: F811
     assert client.get("/v1/messages", params={"after": 1}, headers=auth).json()["messages"] == []
     assert client.get("/v1/messages", headers={}).status_code in (401, 403)  # the token guard
     slack = client.get("/v1/connections/slack", headers=auth).json()
-    assert slack["live"] == {"state": "off", "detail": "", "configured": False,
-                             "credentials": [{"name": "slack_bot_token", "label": "Slack bot token", "set": False, "hint": None},
-                                             {"name": "slack_app_token", "label": "Slack app-level token", "set": False, "hint": None}]}  # fmt: skip
+    assert slack["live"]["state"] == "off" and not slack["live"]["configured"]
+    assert [(c["name"], c["set"]) for c in slack["live"]["credentials"]] == [
+        ("slack_bot_token", False), ("slack_app_token", False), ("slack_app_refresh", False), ("slack_client_secret", False)]
     refused = client.put("/v1/connections/slack/live", json={"bot_token": XOXP, "app_token": XAPP}, headers=auth)
     assert refused.status_code == 422 and XOXP not in refused.text
     discord = client.put("/v1/connections/discord/live", json={"bot_token": XOXB, "app_token": XAPP}, headers=auth)

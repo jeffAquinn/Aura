@@ -263,6 +263,8 @@ class ConnectIn(BaseModel):
 class LiveIn(BaseModel):
     bot_token: str = Field(min_length=1, max_length=300)
     app_token: str = Field(min_length=1, max_length=300)
+    refresh_token: str = Field(default="", max_length=300)  # a rotating app-level token's (xoxe.xapp-…)
+    client_secret: str = Field(default="", max_length=300)
 
 
 class BuildIn(BaseModel):
@@ -524,7 +526,7 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
         def save(c):  # noqa: ANN001, ANN202
             if not hasattr(c, "set_live"):
                 raise ConnectionsError(f"{c.label}'s live messages need no extra tokens.")
-            c.set_live(body.bot_token, body.app_token)
+            c.set_live(body.bot_token, body.app_token, body.refresh_token, body.client_secret)
             return c.status()
 
         return connection_call(connection_id, save, restart=True)

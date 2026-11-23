@@ -39,6 +39,7 @@ from aura.secrets import Secrets
 AUTH_URL = "https://slack.com/oauth/v2/authorize"
 API = "https://slack.com/api/"
 PORT = 47615  # fixed: Slack matches the redirect exactly, port included
+RENEW_BEFORE = 30 * 60  # a rotating app-level token (12 hours) is renewed when it has under 30 minutes left
 REDIRECT = f"http://localhost:{PORT}/slack/callback"
 
 
@@ -154,11 +155,18 @@ class SlackConnection:
 
     # ── live messages: the bot token and the app-level token, checked with Slack first ──────
 
-    def set_live(self, bot_token: str, app_token: str) -> None:
+    def set_live(self, bot_token: str, app_token: str, refresh_token: str = "", client_secret: str = "") -> None:
         from aura.connections.live import explain_live
 
         bot_token = self.secrets.spec_check("slack_bot_token", bot_token)
         app_token = self.secrets.spec_check("slack_app_token", app_token)
+        rotating = app_token.startswith("xoxe.")
+        if rotating:
+            if not refresh_token.strip() or not client_secret.strip():
+                raise ConnectionsError("This app-level token rotates (it starts with xoxe. and lasts 12 hours). Paste "
+                                       "its refresh token and your app's Client Secret too, so Aura can renew it.")  # fmt: skip
+            refresh_token = self.secrets.spec_check("slack_app_refresh", refresh_token)
+            client_secret = self.secrets.spec_check("slack_client_secret", client_secret)
         try:
             who = _json(self.http.post(API + "auth.test", headers={"Authorization": f"Bearer {bot_token}"}))
             if not who.get("ok"):
@@ -170,34 +178,102 @@ class SlackConnection:
             bot = _json(self.http.get(API + "bots.info", params={"bot": who["bot_id"]},
                                       headers={"Authorization": f"Bearer {bot_token}"}))  # fmt: skip
             bot_app = (bot.get("bot") or {}).get("app_id")
+            signed_in_app = (self._tokens() or {}).get("app_id")
+            if bot_app and signed_in_app and bot_app != signed_in_app:
+                raise ConnectionsError(f"That bot is from Slack app {bot_app}, but Aura signed in through app "
+                                       f"{signed_in_app}. Copy the tokens from the app Aura signed in with (its App ID "
+                                       "is on its Basic Information page), or sign in again with the other app's "
+                                       "Client ID.")  # fmt: skip
+            renewal = None
+            if rotating:  # renew once now: proves the refresh token and the secret (the old pair is spent)
+                renewal = self._refresh_app_token(refresh_token, client_secret)
+                app_token = renewal["access_token"]
             opened = _json(self.http.post(API + "apps.connections.open", headers={"Authorization": f"Bearer {app_token}"}))
             if not opened.get("ok"):
                 raise ConnectionsError(f"Slack didn't accept the app-level token: {explain_live(opened.get('error'))}")
         except httpx.HTTPError as e:
             raise ConnectionsError(f"Couldn't reach Slack to check the tokens ({type(e).__name__}). Try again.") from e
         socket_app = (parse_qs(urlparse(str(opened.get("url") or "")).query).get("app_id") or [None])[0]
+        socket_app = socket_app or (renewal or {}).get("app_id")
         if bot_app and socket_app and bot_app != socket_app:
             raise ConnectionsError(two_apps(bot_app, socket_app))
-        signed_in_app = (self._tokens() or {}).get("app_id")
-        if bot_app and signed_in_app and bot_app != signed_in_app:
-            raise ConnectionsError(f"That bot is from Slack app {bot_app}, but Aura signed in through app {signed_in_app}. "
-                                   "Copy the tokens from the app Aura signed in with (its App ID is on its Basic "
-                                   "Information page), or sign in again with the other app's Client ID.")  # fmt: skip
         team = (self._tokens() or {}).get("team_id")
         if team and who.get("team_id") and team != who.get("team_id"):
             raise ConnectionsError("That bot is in a different workspace from the one you signed in to.")
         self.secrets.set("slack_bot_token", bot_token)
-        self.secrets.set("slack_app_token", app_token)
+        if renewal:
+            self._keep_renewal(renewal, client_secret)
+        else:
+            self.secrets.set("slack_app_token", app_token)
+            for name in ("slack_app_refresh", "slack_client_secret", "slack_app_rotation"):
+                self.secrets.delete(name)  # a plain xapp- token never expires: nothing to renew
         self.secrets.store("slack_bot", json.dumps({"user_id": who.get("user_id"), "bot_id": who.get("bot_id"),
                                                      "app_id": bot_app, "name": who.get("user"),
                                                      "team": who.get("team")}))  # fmt: skip
         self.audit.record("connection_live_set", connection=self.id, bot=who.get("user"))
 
     def remove_live(self) -> None:
-        had = any([self.secrets.delete("slack_bot_token"), self.secrets.delete("slack_app_token"),
-                   self.secrets.delete("slack_bot")])  # fmt: skip
-        if had:
+        names = ("slack_bot_token", "slack_app_token", "slack_app_refresh", "slack_client_secret", "slack_app_rotation",
+                 "slack_bot")  # fmt: skip
+        if any([self.secrets.delete(name) for name in names]):
             self.audit.record("connection_live_removed", connection=self.id)
+
+    # ── a rotating app-level token (xoxe.xapp-…): renewed before its 12 hours are up ─────────
+
+    @property
+    def rotating(self) -> bool:
+        return str(self.secrets.get("slack_app_token") or "").startswith("xoxe.")
+
+    def app_token(self) -> str | None:
+        """The app-level token for Socket Mode, renewed first if it rotates and is due."""
+        with self._lock:
+            token = self.secrets.get("slack_app_token")
+            if not token or not token.startswith("xoxe."):
+                return token
+            if self._app_token_expires() - self.clock() > RENEW_BEFORE:
+                return token
+            return self.renew_app_token()
+
+    def renew_app_token(self) -> str:
+        """Slack's refresh (oauth.v2.access, grant_type=refresh_token): a new access token and a new
+        single-use refresh token, both kept at once (the old refresh token is spent)."""
+        with self._lock:
+            refresh, secret = self.secrets.get("slack_app_refresh"), self.secrets.get("slack_client_secret")
+            if not refresh or not secret:
+                raise ConnectionsError("The app-level token rotates, but Aura doesn't have its refresh token and the "
+                                       "app's Client Secret. Paste them on the Live messages card.")  # fmt: skip
+            try:
+                renewal = self._refresh_app_token(refresh, secret)
+            except httpx.HTTPError as e:
+                raise ConnectionError(f"Couldn't reach Slack to renew the app-level token ({type(e).__name__})") from e
+            self._keep_renewal(renewal, secret)
+            self.audit.record("connection_token_renewed", connection=self.id)
+            return str(renewal["access_token"])
+
+    def _refresh_app_token(self, refresh: str, secret: str) -> dict[str, Any]:
+        from aura.connections.live import explain_live
+
+        body = _json(self.http.post(API + "oauth.v2.access", data={
+            "client_id": self.secrets.get("slack_client_id") or "", "client_secret": secret,
+            "grant_type": "refresh_token", "refresh_token": refresh,
+        }))  # fmt: skip
+        if not body.get("ok") or not str(body.get("access_token") or "").startswith("xoxe.xapp-"):
+            raise ConnectionsError(f"Slack didn't renew the app-level token: {explain_live(body.get('error') or 'no token')}")
+        return body
+
+    def _keep_renewal(self, renewal: dict[str, Any], secret: str) -> None:
+        self.secrets.set("slack_app_token", str(renewal["access_token"]))
+        if renewal.get("refresh_token"):
+            self.secrets.set("slack_app_refresh", str(renewal["refresh_token"]))
+        self.secrets.set("slack_client_secret", secret)
+        expires = self.clock() + float(renewal.get("expires_in") or 43200)
+        self.secrets.store("slack_app_rotation", json.dumps({"expires_at": expires}))
+
+    def _app_token_expires(self) -> float:
+        try:
+            return float(json.loads(self.secrets.get("slack_app_rotation") or "{}").get("expires_at") or 0)
+        except ValueError:
+            return 0.0
 
     def bot_profile(self) -> dict[str, Any]:
         raw = self.secrets.get("slack_bot")

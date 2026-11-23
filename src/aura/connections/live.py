@@ -382,6 +382,13 @@ _LIVE_ERRORS = {
     "not_allowed_token_type": "That's the wrong kind of token: the bot token starts with xoxb-, the app-level "
                               "token with xapp-.",
     "missing_scope": "The app-level token needs the connections:write scope. Generate a new one with it.",
+    "token_expired": "That app-level token has expired (rotating tokens last 12 hours). Paste its refresh token and "
+                     "your app's Client Secret so Aura can renew it.",
+    "invalid_refresh_token": "Slack didn't accept the refresh token (each one works only once). Generate a new "
+                             "app-level token and paste its access and refresh tokens.",
+    "bad_client_secret": "That Client Secret isn't this app's. Copy it from the app's Basic Information page.",
+    "invalid_client_id": "The Client ID Aura has isn't this app's. Sign in to Slack with this app's Client ID first "
+                         "(step 2 above).",
 }  # fmt: skip
 
 
@@ -408,16 +415,25 @@ class SlackSocket(Listener):
     def _bot_user(self) -> str:
         return str(self.slack.bot_profile().get("user_id") or "")
 
-    def _session(self, stop: threading.Event) -> None:
-        app_token = self.slack.secrets.get("slack_app_token")
-        if not app_token or not self.slack.secrets.get("slack_bot_token"):
-            raise Fatal("Live messages aren't set up.")
+    def _open(self, app_token: str) -> dict[str, Any]:
         r = self.slack.http.post(SLACK_API + "apps.connections.open", headers={"Authorization": f"Bearer {app_token}"})
-        body = r.json() if r.content else {}
+        return r.json() if r.content else {"ok": False, "error": f"HTTP {r.status_code}"}
+
+    def _session(self, stop: threading.Event) -> None:
+        from aura.connections import ConnectionsError
+
+        if not self.slack.secrets.get("slack_app_token") or not self.slack.secrets.get("slack_bot_token"):
+            raise Fatal("Live messages aren't set up.")
+        try:
+            body = self._open(self.slack.app_token())  # a rotating token is renewed first if it's due
+            if body.get("error") in ("token_expired", "invalid_auth") and self.slack.rotating:
+                body = self._open(self.slack.renew_app_token())  # expired early (e.g. the Mac slept): once
+        except ConnectionsError as e:
+            raise Fatal(str(e)) from e
         if not body.get("ok") or not body.get("url"):
             if body.get("error") in _LIVE_ERRORS:
                 raise Fatal(explain_live(body.get("error")))
-            raise ConnectionError(f"Slack: {body.get('error') or r.status_code}")
+            raise ConnectionError(f"Slack: {body.get('error')}")
         ws = self._ws = self.connect(str(body["url"]))
         try:
             while not stop.is_set():

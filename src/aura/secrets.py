@@ -31,6 +31,7 @@ class KeySpec:
     user_settable: bool = True  # False: written only by the server (sign-in tokens)
     pattern: str = ""  # a full-match regex, when the shape is known exactly
     example: str = ""  # what it looks like, for the error message
+    last4_only: bool = False  # its hint shows only the last 4 characters (no fixed prefix to show)
 
 
 KEYS = {
@@ -48,7 +49,16 @@ KEYS = {
         # Live messages (Socket Mode): the app's Aura bot user, and the app-level token that opens
         # the socket. Their own group: they're set on the Live messages card, not with the Client ID.
         KeySpec("slack_bot_token", "Slack bot token", "xoxb-", min_length=40, group="slack_live"),
-        KeySpec("slack_app_token", "Slack app-level token", "xapp-", min_length=40, group="slack_live"),
+        KeySpec("slack_app_token", "Slack app-level token", min_length=40, group="slack_live",
+                pattern=r"(xoxe\.)?xapp-[A-Za-z0-9-]+", example="xapp-1-… (or xoxe.xapp-1-… when token rotation is on)"),
+        # With app-level token rotation on (it can't be turned off again), the token lasts 12 hours and
+        # is renewed with its single-use refresh token and the app's Client Secret.
+        KeySpec("slack_app_refresh", "Slack app-level refresh token", min_length=20, group="slack_live",
+                pattern=r"xoxe-[A-Za-z0-9-]+", example="xoxe-1-…", last4_only=True),
+        KeySpec("slack_client_secret", "Slack app Client Secret", min_length=20, group="slack_live",
+                pattern=r"[A-Za-z0-9]{20,64}", example="the Client Secret under App Credentials (letters and digits)",
+                last4_only=True),
+        KeySpec("slack_app_rotation", "Slack app-level token renewal", group="slack_live", user_settable=False),
         KeySpec("slack_bot", "Slack bot details", group="slack_live", user_settable=False),
         KeySpec("discord_bot_token", "Discord bot token", min_length=50, group="discord",
                 pattern=r"[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{20,}",
@@ -132,6 +142,8 @@ class Secrets:
 
     @staticmethod
     def hint(spec: KeySpec, value: str) -> str:
+        if spec.last4_only:
+            return f"…{value[-4:]}"
         if spec.prefix:
             return f"{spec.prefix}…{value[-4:]}"
         return f"{value[:6]}…{spec.suffix.lstrip('.')}" if spec.suffix else f"{value[:4]}…{value[-4:]}"

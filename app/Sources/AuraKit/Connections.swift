@@ -91,15 +91,26 @@ public struct LiveInfo: Codable, Sendable, Equatable {
 public struct LiveTokens: Encodable, Sendable {
     public let botToken: String
     public let appToken: String
+    public let refreshToken: String  // only for a rotating app-level token (xoxe.xapp-…)
+    public let clientSecret: String
 
-    public init(botToken: String, appToken: String) {
+    public init(botToken: String, appToken: String, refreshToken: String = "", clientSecret: String = "") {
         self.botToken = botToken
         self.appToken = appToken
+        self.refreshToken = refreshToken
+        self.clientSecret = clientSecret
+    }
+
+    /// Token rotation is on for the app: its app-level token lasts 12 hours and Aura renews it.
+    public static func rotates(_ appToken: String) -> Bool {
+        appToken.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("xoxe.")
     }
 
     enum CodingKeys: String, CodingKey {
         case botToken = "bot_token"
         case appToken = "app_token"
+        case refreshToken = "refresh_token"
+        case clientSecret = "client_secret"
     }
 }
 
@@ -244,10 +255,13 @@ public final class ConnectionsStore {
     }
 
     /// Slack's live messages: returns why the tokens were refused (nil: checked and saved).
-    public func saveLive(_ id: String, botToken: String, appToken: String) async -> String? {
+    public func saveLive(_ id: String, botToken: String, appToken: String, refreshToken: String = "",
+                         clientSecret: String = "") async -> String? {
+        let trim = { (s: String) in s.trimmingCharacters(in: .whitespacesAndNewlines) }
+        let rotates = LiveTokens.rotates(appToken)  // a plain xapp- token sends nothing more
         let refused = await perform { try await $0.saveLiveTokens(id, LiveTokens(
-            botToken: botToken.trimmingCharacters(in: .whitespacesAndNewlines),
-            appToken: appToken.trimmingCharacters(in: .whitespacesAndNewlines))) }
+            botToken: trim(botToken), appToken: trim(appToken),
+            refreshToken: rotates ? trim(refreshToken) : "", clientSecret: rotates ? trim(clientSecret) : "")) }
         if refused == nil { followLive(id) }
         return refused
     }
