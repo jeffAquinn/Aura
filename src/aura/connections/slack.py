@@ -461,7 +461,7 @@ class SlackConnection:
         if not body.get("ok"):
             if body.get("error") == "missing_scope":
                 raise ConnectionsError("the Aura bot can't post yet: paste Aura's updated manifest into your Slack app "
-                                       "(it adds chat:write), then Reinstall to Workspace")  # fmt: skip
+                                       "(it adds chat:write), then Install App → Reinstall to (your workspace's name)")  # fmt: skip
             raise ConnectionsError(f"Slack said {body.get('error')}")
         return str(body.get("ts") or "")
 

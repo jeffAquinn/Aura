@@ -562,8 +562,10 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
             if body.enabled and not c.live_configured:
                 raise ConnectionsError("Set up live messages first: Aura hears you through them.")
             if body.enabled and not c.bot_can_post():
-                raise ConnectionsError("The Aura bot can't answer yet: paste Aura's updated manifest into your Slack "
-                                       "app (it adds chat:write), use Reinstall to Workspace, then switch this on.")  # fmt: skip
+                raise ConnectionsError("The Aura bot can't post yet: Slack hasn't given it chat:write. Paste Aura's "
+                                       "manifest into your Slack app if you haven't, then open Install App and click "
+                                       "Reinstall to (your workspace's name) → Allow. Slack only gives the bot a new "
+                                       "permission when the app is reinstalled. Then switch this on.")  # fmt: skip
             try:
                 remote.configure(body.enabled, body.channel)
             except ValueError as e:
