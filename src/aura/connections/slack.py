@@ -178,6 +178,11 @@ class SlackConnection:
         socket_app = (parse_qs(urlparse(str(opened.get("url") or "")).query).get("app_id") or [None])[0]
         if bot_app and socket_app and bot_app != socket_app:
             raise ConnectionsError(two_apps(bot_app, socket_app))
+        signed_in_app = (self._tokens() or {}).get("app_id")
+        if bot_app and signed_in_app and bot_app != signed_in_app:
+            raise ConnectionsError(f"That bot is from Slack app {bot_app}, but Aura signed in through app {signed_in_app}. "
+                                   "Copy the tokens from the app Aura signed in with (its App ID is on its Basic "
+                                   "Information page), or sign in again with the other app's Client ID.")  # fmt: skip
         team = (self._tokens() or {}).get("team_id")
         if team and who.get("team_id") and team != who.get("team_id"):
             raise ConnectionsError("That bot is in a different workspace from the one you signed in to.")
@@ -262,7 +267,7 @@ class SlackConnection:
         granted = set(str(user.get("scope") or body.get("scope") or "").split(","))
         who = self._identify(token)
         tokens = {"access_token": token, "scopes": ",".join(sorted(granted)), "user_id": user.get("id"),
-                  "team_id": (body.get("team") or {}).get("id"), "account": who}  # fmt: skip
+                  "team_id": (body.get("team") or {}).get("id"), "app_id": body.get("app_id"), "account": who}  # fmt: skip
         self.secrets.store("slack_tokens", json.dumps(tokens))
         self._checks = {}
         missing = [SERVICES[s].label for s in self._wanted if not set(SERVICES[s].scopes) <= granted]

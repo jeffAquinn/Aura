@@ -264,6 +264,11 @@ def test_live_tokens_are_checked_with_slack_before_they_are_saved(slack_live):
         conn.set_live(XOXB, XAPP)
     assert not conn.live_configured
     fake.socket_app = "A0AURA"
+    tokens = json.loads(conn.secrets.get("slack_tokens"))
+    conn.secrets.store("slack_tokens", json.dumps({**tokens, "app_id": "A0OLD"}))  # signed in through another app
+    with pytest.raises(ConnectionsError, match="bot is from Slack app A0AURA, but Aura signed in through app A0OLD"):
+        conn.set_live(XOXB, XAPP)
+    conn.secrets.store("slack_tokens", json.dumps({**tokens, "app_id": "A0AURA"}))
     conn.set_live(f" {XOXB} ", XAPP)
     assert conn.bot_profile()["app_id"] == "A0AURA"
     live = conn.status()["live"]

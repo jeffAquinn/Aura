@@ -407,6 +407,7 @@ def test_slack_sign_in_uses_pkce_without_a_secret_and_keeps_the_user_token(slack
     assert {s["id"]: s["granted"] for s in status["services"]} == {"read": True, "send": False}
     exchange = next(form for url, form, _ in fake.calls if url.endswith("oauth.v2.access"))
     assert "client_secret" not in exchange  # Slack, with PKCE: "should not include client_secret"
+    assert json.loads(conn.secrets.get("slack_tokens"))["app_id"] == "A1"  # which app Aura signed in through
     shown = json.dumps(status) + (tmp_path / "audit.jsonl").read_text()
     assert XOXP not in shown and "slack-code" not in shown
 
