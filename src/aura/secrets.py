@@ -45,6 +45,11 @@ KEYS = {
         KeySpec("slack_client_id", "Slack app Client ID", min_length=10, group="slack", pattern=r"\d{6,20}\.\d{6,20}",
                 example="1234567890123.1234567890123"),
         KeySpec("slack_tokens", "Slack sign-in", group="slack", user_settable=False),
+        # Live messages (Socket Mode): the app's Aura bot user, and the app-level token that opens
+        # the socket. Their own group: they're set on the Live messages card, not with the Client ID.
+        KeySpec("slack_bot_token", "Slack bot token", "xoxb-", min_length=40, group="slack_live"),
+        KeySpec("slack_app_token", "Slack app-level token", "xapp-", min_length=40, group="slack_live"),
+        KeySpec("slack_bot", "Slack bot details", group="slack_live", user_settable=False),
         KeySpec("discord_bot_token", "Discord bot token", min_length=50, group="discord",
                 pattern=r"[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{20,}",
                 example="three parts joined by dots (MTA1…·Gh7…·kX9…)"),

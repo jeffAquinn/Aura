@@ -11,6 +11,7 @@ from aura.connections import Connections
 from aura.connections.actions import OUTWARD, PRIVATE_READS, connection_tools
 from aura.connections.discord import DiscordConnection
 from aura.connections.google import GoogleConnection
+from aura.connections.live import DiscordGateway, Inbox, LiveMessages, SlackSocket
 from aura.connections.slack import SlackConnection
 from aura.audit import AuditLog
 from aura.config import Settings
@@ -63,6 +64,7 @@ GROUP = {
     "drive_read": "Drive",
     "slack_read": "Slack", "slack_send": "Slack",
     "discord_read": "Discord", "discord_send": "Discord",
+    "new_messages": "Connections",
 }
 
 _DOING: dict[str, Callable[[dict], str]] = {
@@ -92,6 +94,7 @@ _DOING: dict[str, Callable[[dict], str]] = {
     "slack_send": lambda a: f"Posting in Slack {a.get('channel')}...",
     "discord_read": lambda a: f"Reading Discord {a['channel']}..." if a.get("channel") else "Listing Discord channels...",
     "discord_send": lambda a: f"Posting in Discord {a.get('channel')}...",
+    "new_messages": lambda a: "Checking new Slack and Discord messages...",
 }
 
 
@@ -116,13 +119,14 @@ class Toolbox:
     continuous: ContinuousAudit
     secrets: Secrets
     developer: Developer
-    connections: Connections  # Settings → Connections only: no tool reaches these (yet: Sprint 7)
+    connections: Connections  # tools via connection_tools (Gemma's floors, taint and framing)
     tools: list[BaseTool] = field(default_factory=list)
+    live: LiveMessages = field(default_factory=LiveMessages)  # live messages: started by the server only
 
     def all_tools(self) -> list[BaseTool]:
         """The built-in tools, every approved and enabled skill, and the tools of whatever is
         connected (all re-read on each rebuild)."""
-        return [*self.tools, *self.skills.tools(), *connection_tools(self.connections)]
+        return [*self.tools, *self.skills.tools(), *connection_tools(self.connections, self.live.inbox)]
 
     @classmethod
     def from_settings(
@@ -167,7 +171,9 @@ class Toolbox:
         continuous = ContinuousAudit(skills, audit, settings.data_dir / "continuous_audit.json")
         developer = Developer(settings, workshop, container or DevContainer(sandbox, secrets, audit), secrets, audit)
         tools += workshop_tools(workshop, developer)
-        connections = Connections(GoogleConnection(secrets, audit), SlackConnection(secrets, audit),
-                                  DiscordConnection(secrets, audit))
+        slack, discord = SlackConnection(secrets, audit), DiscordConnection(secrets, audit)
+        connections = Connections(GoogleConnection(secrets, audit), slack, discord)
+        inbox = Inbox()
+        live = LiveMessages(inbox, SlackSocket(slack, inbox), DiscordGateway(discord, inbox))
         return cls(audit, vault, search, sandbox, identity, voice, skills, workshop, continuous, secrets, developer,
-                   connections, tools)  # fmt: skip
+                   connections, tools, live)  # fmt: skip

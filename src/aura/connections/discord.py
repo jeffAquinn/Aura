@@ -10,6 +10,7 @@ Discord (docs.discord.com, read 2026-11-22):
   Intents); the application's flags show it (1<<18, or 1<<19 for under 100 servers).
 - Bots join servers through an invite link (OAuth2, scope "bot") with the permission bits asked for.
   Aura asks for View Channels, Send Messages and Read Message History only.
+- Live messages (live.py) use the same token on the Gateway: nothing more to set up.
 
 Gemma: the token is verified with Discord before it is saved. Discord has no API to revoke a bot
 token: disconnecting forgets it, and the user resets it in the Developer Portal to kill it.
@@ -58,6 +59,7 @@ class DiscordConnection:
         self._checks: dict[str, dict[str, Any]] = {}
         self._problem: str | None = None
         self._lock = threading.RLock()
+        self.listener: Any = None  # live.DiscordGateway, when the server listens
 
     # ── what the app shows ──────────────────────────────────────────────────────────────────
 
@@ -73,6 +75,8 @@ class DiscordConnection:
             "checks": list(self._checks.values()),
             "setup": {"invite_url": invite_url(profile["app_id"]) if connected else None,
                       "portal_url": f"{PORTAL}/{profile['app_id']}/bot" if connected else PORTAL},
+            "live": {**(self.listener.status() if self.listener else {"state": "off", "detail": ""}),
+                     "configured": connected, "credentials": []},
         }  # fmt: skip
 
     @staticmethod

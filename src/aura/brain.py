@@ -33,7 +33,7 @@ from aura.config import Settings
 from aura.middleware import REJECTION_NOTE, DenialMiddleware, ToolStatusMiddleware
 from aura.persona import MEMORY_PROMPT, system_prompt
 from aura.developer.workflow import describe_build
-from aura.connections.actions import OUTWARD, describe_outward, turn_is_tainted
+from aura.connections.actions import OUTWARD, describe_outward, inbox_exchange, turn_is_tainted
 from aura.tools import EDITABLE, NEEDS_APPROVAL, Toolbox
 from aura.tools.sandbox import describe_run
 
@@ -222,7 +222,11 @@ class Aura:
         if self.toolbox.connections.signature() != self._connected:  # an account was connected or removed
             self.reload_tools()
         self._turn_notices: set[str] = set()  # each notice is said once per turn
-        return self._run({"messages": [{"role": "user", "content": text}]})
+        messages: list[Any] = [{"role": "user", "content": text}]
+        fresh = self.toolbox.live.inbox.unseen_by_model()
+        if fresh:  # live messages since the last turn: a private read (R2), framed as untrusted (R5)
+            messages += inbox_exchange(fresh)
+        return self._run({"messages": messages})
 
     def resume(self, approvals: Sequence[bool | dict[str, Any]]) -> Iterator[Event]:
         """Answer the pending ApprovalNeeded, one decision per action, and continue the run. A

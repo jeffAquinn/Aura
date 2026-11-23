@@ -1,9 +1,9 @@
-"""Connections (Sprint 7): Aura's links to the user's accounts (Google; Slack and Discord next).
+"""Connections (Sprint 7): Aura's links to the user's accounts (Google, Slack, Discord).
 
-So far: the credentials (in the Keychain), the sign-in and a live check, all from Settings →
-Connections. No tool of Aura's (the agent) can reach a connection or its secrets; tools arrive
-later, behind the Permissions screen (Gemma's floors and taint rule). The Developers (Claude
-Code, Codex) never get a connection.
+Credentials live in the Keychain and are set, signed in and checked from Settings → Connections.
+Aura's tools (actions.py) use the connection objects, never the secrets, under Gemma's floors,
+taint rule and framing. Live messages (live.py) bring new Slack and Discord messages in as they
+arrive. The Developers (Claude Code, Codex) never get a connection.
 """
 
 from __future__ import annotations

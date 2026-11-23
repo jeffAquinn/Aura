@@ -60,6 +60,49 @@ public struct ConnectionSetup: Codable, Sendable, Equatable {
     }
 }
 
+/// Live messages: whether Aura hears new Slack or Discord messages as they arrive.
+public struct LiveInfo: Codable, Sendable, Equatable {
+    public let state: String  // off | connecting | listening | problem
+    public let detail: String
+    public let configured: Bool  // Slack: both tokens saved (Discord: connected)
+    public let credentials: [SecretInfo]  // Slack's bot and app-level tokens, as masked hints
+
+    public init(state: String = "off", detail: String = "", configured: Bool = false, credentials: [SecretInfo] = []) {
+        self.state = state
+        self.detail = detail
+        self.configured = configured
+        self.credentials = credentials
+    }
+
+    public var isListening: Bool { state == "listening" }
+
+    public var summary: String {
+        switch state {
+        case "listening": "Listening"
+        case "connecting": "Connecting…"
+        case "problem": "Stopped"
+        default: configured ? "Off" : "Not set up"
+        }
+    }
+}
+
+/// Slack's live-message tokens, sent once to the local server, which checks them with Slack and
+/// keeps them in the Keychain.
+public struct LiveTokens: Encodable, Sendable {
+    public let botToken: String
+    public let appToken: String
+
+    public init(botToken: String, appToken: String) {
+        self.botToken = botToken
+        self.appToken = appToken
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case botToken = "bot_token"
+        case appToken = "app_token"
+    }
+}
+
 public struct ConnectionInfo: Codable, Sendable, Equatable, Identifiable {
     public let id: String
     public let label: String
@@ -71,10 +114,11 @@ public struct ConnectionInfo: Codable, Sendable, Equatable, Identifiable {
     public let problem: String?
     public let checks: [ConnectionCheck]
     public let setup: ConnectionSetup?
+    public let live: LiveInfo?  // Slack and Discord
 
     public init(id: String, label: String, state: String, configured: Bool = false, account: String? = nil,
                 services: [ConnectionService] = [], credentials: [SecretInfo] = [], problem: String? = nil,
-                checks: [ConnectionCheck] = [], setup: ConnectionSetup? = nil) {
+                checks: [ConnectionCheck] = [], setup: ConnectionSetup? = nil, live: LiveInfo? = nil) {
         self.id = id
         self.label = label
         self.state = state
@@ -85,6 +129,7 @@ public struct ConnectionInfo: Codable, Sendable, Equatable, Identifiable {
         self.problem = problem
         self.checks = checks
         self.setup = setup
+        self.live = live
     }
 
     public var isConnected: Bool { state == "connected" }
@@ -196,6 +241,31 @@ public final class ConnectionsStore {
 
     public func check(_ id: String) async {
         lastError = await perform { try await $0.checkConnection(id) }
+    }
+
+    /// Slack's live messages: returns why the tokens were refused (nil: checked and saved).
+    public func saveLive(_ id: String, botToken: String, appToken: String) async -> String? {
+        let refused = await perform { try await $0.saveLiveTokens(id, LiveTokens(
+            botToken: botToken.trimmingCharacters(in: .whitespacesAndNewlines),
+            appToken: appToken.trimmingCharacters(in: .whitespacesAndNewlines))) }
+        if refused == nil { followLive(id) }
+        return refused
+    }
+
+    public func removeLive(_ id: String) async {
+        lastError = await perform { try await $0.removeLiveTokens(id) }
+    }
+
+    /// Connecting takes a moment: refresh until the listener settles.
+    private func followLive(_ id: String) {
+        Task { [weak self] in
+            for _ in 0..<15 {
+                try? await Task.sleep(for: .seconds(1))
+                guard let self else { return }
+                await self.refresh()
+                if self.connections.first(where: { $0.id == id })?.live?.state != "connecting" { return }
+            }
+        }
     }
 
     public func disconnect(_ id: String) async {

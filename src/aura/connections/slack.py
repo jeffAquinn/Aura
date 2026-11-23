@@ -11,6 +11,11 @@ Slack's rules (docs.slack.dev, read 2026-11-22):
 
 The user creates the app from the manifest below, in one paste. Aura asks only for the scopes of
 the services the user picks; sending a message will always ask first (Gemma's floors).
+
+Live messages (live.py): the same app has an "Aura" bot user, Socket Mode and message events. The
+desktop sign-in can't request bot scopes ("Desktop redirects ... cannot request bot scopes"), so
+the user installs the bot from the app's page and pastes two tokens: the bot token (xoxb-) and an
+app-level token (xapp-, connections:write). Both are checked with Slack before they're saved.
 """
 
 from __future__ import annotations
@@ -18,6 +23,7 @@ from __future__ import annotations
 import json
 import threading
 import time
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
@@ -56,14 +62,26 @@ SERVICES = {
 }  # fmt: skip
 
 
+# The bot hears messages (live messages): DMs to it, @mentions, channels it's invited to. It reads
+# names for the notification. It can't post: Aura sends as the user, after the user approves.
+BOT_SCOPES = ("app_mentions:read", "channels:history", "groups:history", "im:history", "mpim:history",
+              "channels:read", "groups:read", "im:read", "mpim:read", "users:read")  # fmt: skip
+BOT_EVENTS = ("app_mention", "message.channels", "message.groups", "message.im", "message.mpim")
+
+
 def manifest() -> str:
     """The Slack app the user creates (api.slack.com/apps → Create New App → From a manifest)."""
     return json.dumps({
         "display_information": {"name": "Aura", "description": "Aura, the assistant on your Mac.",
                                 "background_color": "#7c4dff"},
+        "features": {"bot_user": {"display_name": "Aura", "always_online": True},
+                     "app_home": {"home_tab_enabled": False, "messages_tab_enabled": True,
+                                  "messages_tab_read_only_enabled": False}},
         "oauth_config": {"redirect_urls": [REDIRECT], "pkce_enabled": True,
-                         "scopes": {"user": [scope for s in SERVICES.values() for scope in s.scopes]}},
-        "settings": {"org_deploy_enabled": False, "socket_mode_enabled": False, "token_rotation_enabled": False},
+                         "scopes": {"user": [scope for s in SERVICES.values() for scope in s.scopes],
+                                    "bot": list(BOT_SCOPES)}},
+        "settings": {"event_subscriptions": {"bot_events": list(BOT_EVENTS)}, "org_deploy_enabled": False,
+                     "socket_mode_enabled": True, "token_rotation_enabled": False},
     }, indent=2)  # fmt: skip
 
 
@@ -84,6 +102,8 @@ class SlackConnection:
         self._checks: dict[str, dict[str, Any]] = {}
         self._problem: str | None = None
         self._lock = threading.RLock()
+        self._sent: deque[tuple[str, str, float]] = deque(maxlen=20)  # (channel, text, when) Aura posted
+        self.listener: Any = None  # live.SlackSocket, when the server listens
 
     # ── what the app shows ──────────────────────────────────────────────────────────────────
 
@@ -101,7 +121,13 @@ class SlackConnection:
             "credentials": self.secrets.listing(self.id), "problem": self._current_problem(),
             "checks": list(self._checks.values()),
             "setup": {"redirect_url": f"http://localhost:{self.port}/slack/callback", "manifest": manifest()},
+            "live": {**(self.listener.status() if self.listener else {"state": "off", "detail": ""}),
+                     "configured": self.live_configured, "credentials": self.secrets.listing("slack_live")},
         }  # fmt: skip
+
+    @property
+    def live_configured(self) -> bool:
+        return bool(self.secrets.get("slack_bot_token") and self.secrets.get("slack_app_token"))
 
     @property
     def configured(self) -> bool:
@@ -122,8 +148,59 @@ class SlackConnection:
 
     def remove_credentials(self) -> None:
         self.disconnect()
+        self.remove_live()
         self.secrets.delete("slack_client_id")
         self.audit.record("connection_credentials_removed", connection=self.id)
+
+    # ── live messages: the bot token and the app-level token, checked with Slack first ──────
+
+    def set_live(self, bot_token: str, app_token: str) -> None:
+        from aura.connections.live import explain_live
+
+        bot_token = self.secrets.spec_check("slack_bot_token", bot_token)
+        app_token = self.secrets.spec_check("slack_app_token", app_token)
+        try:
+            who = _json(self.http.post(API + "auth.test", headers={"Authorization": f"Bearer {bot_token}"}))
+            if not who.get("ok"):
+                raise ConnectionsError(f"Slack didn't accept the bot token: {explain_live(who.get('error'))}")
+            if not who.get("bot_id"):
+                raise ConnectionsError("That isn't a bot token. Copy the Bot User OAuth Token (xoxb-) from Install App.")
+            opened = _json(self.http.post(API + "apps.connections.open", headers={"Authorization": f"Bearer {app_token}"}))
+            if not opened.get("ok"):
+                raise ConnectionsError(f"Slack didn't accept the app-level token: {explain_live(opened.get('error'))}")
+        except httpx.HTTPError as e:
+            raise ConnectionsError(f"Couldn't reach Slack to check the tokens ({type(e).__name__}). Try again.") from e
+        team = (self._tokens() or {}).get("team_id")
+        if team and who.get("team_id") and team != who.get("team_id"):
+            raise ConnectionsError("That bot is in a different workspace from the one you signed in to.")
+        self.secrets.set("slack_bot_token", bot_token)
+        self.secrets.set("slack_app_token", app_token)
+        self.secrets.store("slack_bot", json.dumps({"user_id": who.get("user_id"), "bot_id": who.get("bot_id"),
+                                                     "name": who.get("user"), "team": who.get("team")}))  # fmt: skip
+        self.audit.record("connection_live_set", connection=self.id, bot=who.get("user"))
+
+    def remove_live(self) -> None:
+        had = any([self.secrets.delete("slack_bot_token"), self.secrets.delete("slack_app_token"),
+                   self.secrets.delete("slack_bot")])  # fmt: skip
+        if had:
+            self.audit.record("connection_live_removed", connection=self.id)
+
+    def bot_profile(self) -> dict[str, Any]:
+        raw = self.secrets.get("slack_bot")
+        try:
+            return json.loads(raw) if raw else {}
+        except ValueError:
+            return {}
+
+    def remember_sent(self, channel: str, text: str) -> None:
+        """Aura is about to post this as the user: the bot will hear it, and shouldn't notify."""
+        self._sent.append((channel, text.strip(), self.clock()))
+
+    def sent_recently(self, channel: Any, user: Any, text: str) -> bool:
+        if user != (self._tokens() or {}).get("user_id"):
+            return False
+        now = self.clock()
+        return any(c == channel and t == text.strip() and now - at < 120 for c, t, at in self._sent)
 
     # ── sign-in ─────────────────────────────────────────────────────────────────────────────
 

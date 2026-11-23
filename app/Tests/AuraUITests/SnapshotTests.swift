@@ -413,6 +413,40 @@ struct SnapshotTests {
         try renderWide("28-discord-connected", width: 720, ConnectionSetupView(store: ConnectionsStore(connections: [discord]), connection: discord))
     }
 
+    @Test func liveMessagesInTheChatAndInSettings() throws {
+        let store = ChatStore(items: [
+            item(.user, "Did anyone message me?"),
+            .message(IncomingMessage(id: 1, source: "Slack", place: "#aura-chat", author: "Jeff Quinn",
+                                     text: "@Aura can you view this message?", kind: "mention")),
+            .message(IncomingMessage(id: 2, source: "Discord", place: "a direct message", author: "Jeff",
+                                     text: "Lunch at noon? (1 attachment)", kind: "dm")),
+            .message(IncomingMessage(id: 3, source: "Slack", place: "#social", author: "Sam", text: "Pizza's here 🍕")),
+            item(.aura, "Two messages are for you: Jeff asked in **#aura-chat** whether I can see it, and DM'd you about lunch at noon. Want me to reply?"),
+        ])
+        try render("29-live-messages", store)
+        let slackServices = [ConnectionService(id: "read", label: "Read messages", purpose: "Read and search your channels.", granted: true),
+                             ConnectionService(id: "send", label: "Send messages", purpose: "Post messages as you.", granted: true)]
+        let setup = ConnectionSetup(redirectUrl: "http://localhost:47615/slack/callback", manifest: "{}")
+        let notYet = ConnectionInfo(id: "slack", label: "Slack", state: "connected", configured: true, account: "ns8jq008 in Aura",
+                                    services: slackServices, setup: setup,
+                                    live: LiveInfo(credentials: [SecretInfo(name: "slack_bot_token", label: "Slack bot token", set: false),
+                                                                 SecretInfo(name: "slack_app_token", label: "Slack app-level token", set: false)]))
+        try renderWide("30-slack-live-setup", width: 720, ConnectionSetupView(store: ConnectionsStore(connections: [notYet]), connection: notYet))
+        let listening = ConnectionInfo(id: "slack", label: "Slack", state: "connected", configured: true, account: "ns8jq008 in Aura",
+                                       services: slackServices, setup: setup,
+                                       live: LiveInfo(state: "listening", detail: "Listening: DMs to Aura, @Aura mentions, and the channels you've invited it to.",
+                                                      configured: true,
+                                                      credentials: [SecretInfo(name: "slack_bot_token", label: "Slack bot token", set: true, hint: "xoxb-…0000"),
+                                                                    SecretInfo(name: "slack_app_token", label: "Slack app-level token", set: true, hint: "xapp-…ffff")]))
+        try renderWide("31-slack-live-listening", width: 720, dark: true,
+                       ConnectionSetupView(store: ConnectionsStore(connections: [listening]), connection: listening))
+        let discord = ConnectionInfo(id: "discord", label: "Discord", state: "connected", configured: true, account: "Aura",
+                                     setup: ConnectionSetup(inviteUrl: "https://discord.com/oauth2/authorize?client_id=1055&scope=bot&permissions=68608"),
+                                     live: LiveInfo(state: "problem", detail: "The Message Content intent is off, so Discord won't deliver messages. Turn it on under Bot → Privileged Gateway Intents, then press Try Again.",
+                                                    configured: true))
+        try renderWide("32-discord-live-problem", width: 720, ConnectionSetupView(store: ConnectionsStore(connections: [discord]), connection: discord))
+    }
+
     @Test func toolStatusReadsLikeASentence() {
         #expect(ToolStatusView.readable("[Tool: File_System_Tool] Reading 'budget.csv'...") == "Reading 'budget.csv'…")
         #expect(ToolStatusView.readable("Plain status") == "Plain status")

@@ -307,7 +307,53 @@ struct ItemView: View {
             TaskCard(skill: item.text, taskID: item.actions.first?.description)
         case .build:
             TaskCard(skill: item.text, taskID: item.actions.first?.description, building: true)
+        case .incoming:
+            if let message = item.incoming {
+                IncomingMessageCard(message: message)
+                    .contextMenu { MessageMenu(item: item, store: store) }
+            }
         }
+    }
+}
+
+/// A live Slack or Discord message: who wrote it, where, and what they said. Aura doesn't
+/// answer it by itself; the user can ask it to.
+struct IncomingMessageCard: View {
+    let message: IncomingMessage
+    @Environment(\.chatText) private var chat
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            Image(systemName: message.source == "Slack" ? "number.square.fill" : "bubble.left.and.bubble.right.fill")
+                .font(chat.font(1.05))
+                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 3) {
+                HStack(spacing: 6) {
+                    Text(message.heading).font(chat.font(0.82).weight(.semibold)).foregroundStyle(.secondary)
+                    if message.kind == "mention" {
+                        Text("mentions Aura")
+                            .font(chat.font(0.75).weight(.medium))
+                            .padding(.horizontal, 6).padding(.vertical, 1)
+                            .background(Color.accentColor.opacity(0.18), in: .capsule)
+                    }
+                }
+                (Text(message.author).bold() + Text(": ") + Text(message.text))
+                    .font(chat.font(0.95))
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer(minLength: 8)
+        }
+        .padding(10)
+        .background(Color.primary.opacity(0.06), in: .rect(cornerRadius: 12))
+        .overlay(alignment: .leading) {
+            if message.isToAura {  // written to Aura: a stripe in Aura's color
+                Capsule().fill(Color.accentColor).frame(width: 3).padding(.vertical, 8)
+            }
+        }
+        .padding(.leading, 32)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("New \(message.source) message in \(message.place) from \(message.author): \(message.text)")
     }
 }
 

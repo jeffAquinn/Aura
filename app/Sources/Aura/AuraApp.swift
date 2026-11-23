@@ -3,6 +3,7 @@ import AuraKit
 import AuraUI
 import Carbon.HIToolbox
 import SwiftUI
+import UserNotifications
 
 @main
 struct AuraApp: App {
@@ -28,6 +29,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var connections = ConnectionsStore(transport: { [weak self] in self?.store.transport },
                                                     openURL: { NSWorkspace.shared.open($0) })  // the user's browser
     private var connectionsWindow: NSWindow?
+    private let feed = MessageFeed()  // live Slack and Discord messages
+    private let notifier = Notifier()
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -55,6 +58,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem = StatusItemController(menu: menu) { [weak self] in self?.togglePanel() }
         workshop.onAlertsChanged = { [weak self] in self?.checkAlerts() }
         store.onBuildStarted = { [weak self] _ in self?.checkAlerts() }
+        feed.onMessages = { [weak self] in self?.messagesArrived($0) }
+        notifier.onOpen = { [weak self] in self?.showPanel() }
         startServer()
         // Opening Aura should visibly open it: show the panel once the menu bar icon is placed.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
@@ -120,7 +125,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             store.connection = .starting
         case let .running(port):
             guard let server else { return }
-            store.transport = AuraClient(port: port, token: server.token)
+            let client = AuraClient(port: port, token: server.token)
+            store.transport = client
+            feed.start(client)  // a new server: follow its live messages from the start
             if panel.isVisible { warm() }
             alertTimer?.invalidate()  // the Continuous Audit runs in the server; show its alerts here
             alertTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
@@ -134,9 +141,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 AppLog.write("voices registered: \(store.voices.count); speak=\(store.voice.speak); persona=\(store.persona.name)")
             }
         case .failed:  // technical reason is in app.log; the server restarts itself
+            feed.stop()
             store.connectionLost(FriendlyMessage.reconnecting)
         case .stopped:
+            feed.stop()
             store.connectionLost(FriendlyMessage.offline)
+        }
+    }
+
+    // MARK: - live messages
+
+    /// New Slack or Discord messages: a card in the chat, and a notification unless the panel is
+    /// in front of the user already.
+    private func messagesArrived(_ messages: [IncomingMessage]) {
+        AppLog.write("live messages: \(messages.count)")  // never their text
+        store.receive(messages)
+        guard !(panel.isVisible && panel.isKeyWindow) else { return }
+        for message in messages.suffix(3) { notifier.post(message) }  // a burst doesn't flood the screen
+        if let last = messages.last(where: \.isToAura) ?? messages.last {
+            store.speech?.announce("New \(last.source) message from \(last.author).")
         }
     }
 

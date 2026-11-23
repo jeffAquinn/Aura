@@ -126,12 +126,25 @@ your accounts, one at a time. **Google** (Gmail, Calendar, Drive) is first:
 
 Aura asks Google only for the services you choose. Its access to Gmail is read plus drafts; it
 never sends mail. Everything is stored in the Keychain: never in the project folder, a file, a log or
-the chat. No tool of Aura's can reach a connection yet: that arrives with the Permissions screen.
+the chat; Aura's tools use a connection without ever seeing its secrets.
 **Slack:** you create your own internal Slack app from Aura's manifest (one paste: the permissions,
 PKCE and Aura's return address `http://localhost:47615/slack/callback`) and give Aura only its Client ID:
 with PKCE there's no client secret. **Discord:** your own private bot. Aura checks its token with Discord
 before saving it, refuses a personal account's token, and builds an invite link with the least
 permissions it needs (View Channels, Send Messages, Read Message History).
+
+**Using them:** Aura reads Gmail, Calendar, Drive, Slack and Discord when you ask. Anything that
+sends, posts, drafts or adds an event shows you the exact content on an approval card first. After
+Aura has read private data in a turn, a web search in that turn asks first too, and everything Aura
+reads is labelled as information, never instructions.
+
+**Live messages:** Aura hears new Slack and Discord messages as they arrive. Each shows up in the
+chat as a card and as a Mac notification. Aura sees it at the start of your next message, and
+won't answer in Slack or Discord by itself. Discord's bot listens over the Gateway with no extra
+setup. Slack's uses Socket Mode (no public web address): paste the updated manifest, reinstall the
+app, then give Aura its bot token (`xoxb-`) and an app-level token (`xapp-`, scope
+`connections:write`) on the **Live messages** card. Invite the bot to each channel it should hear
+with `/invite @Aura`.
 
 ## Layout
 

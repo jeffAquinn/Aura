@@ -40,6 +40,21 @@ final class FakeConnections: AuraTransport, @unchecked Sendable {
     }
     func checkConnection(_ id: String) async throws -> ConnectionInfo { checks += 1; return info }
     func disconnect(_ id: String) async throws -> ConnectionInfo { state = "ready"; return info }
+
+    var liveSaved: [LiveTokens] = []
+    var liveState = "off"
+    func saveLiveTokens(_ id: String, _ tokens: LiveTokens) async throws -> ConnectionInfo {
+        guard tokens.botToken.hasPrefix("xoxb-") else {
+            throw AuraClientError.http(status: 422, message: "That doesn't look like a Slack bot token (it should start with 'xoxb-').")
+        }
+        liveSaved.append(tokens)
+        liveState = "connecting"
+        return liveInfo
+    }
+    var liveInfo: ConnectionInfo {
+        ConnectionInfo(id: "slack", label: "Slack", state: "connected", configured: true,
+                       live: LiveInfo(state: liveState, configured: !liveSaved.isEmpty))
+    }
 }
 
 @MainActor
@@ -100,5 +115,31 @@ struct ConnectionsTests {
         let store = ConnectionsStore(transport: { fake }, openURL: { opened.append($0) })
         #expect(await store.signIn("google", services: ["gmail"]) == "The sign-in address was invalid.")
         #expect(opened.isEmpty)
+    }
+
+    @Test func liveTokensAreTrimmedCheckedAndTheListenerFollowed() async throws {
+        let fake = FakeConnections()
+        let store = ConnectionsStore(transport: { fake }, openURL: { _ in })
+        let refused = await store.saveLive("slack", botToken: "xoxp-user", appToken: "xapp-1")
+        #expect(refused?.contains("xoxb-") == true && fake.liveSaved.isEmpty)
+        #expect(await store.saveLive("slack", botToken: " xoxb-bot \n", appToken: " xapp-1-app ") == nil)
+        #expect(fake.liveSaved.map(\.botToken) == ["xoxb-bot"] && fake.liveSaved.map(\.appToken) == ["xapp-1-app"])
+        #expect(store.connections.first?.live?.state == "connecting")
+        let body = try JSONSerialization.jsonObject(with: JSONEncoder().encode(fake.liveSaved[0])) as? [String: String]
+        #expect(body == ["bot_token": "xoxb-bot", "app_token": "xapp-1-app"])  // the server's field names
+
+        let d = JSONDecoder()
+        d.keyDecodingStrategy = .convertFromSnakeCase
+        let slack = try d.decode(ConnectionInfo.self, from: Data("""
+        {"id": "slack", "label": "Slack", "state": "connected", "configured": true, "account": "jeff in Aura", "services": [],
+         "credentials": [], "problem": null, "checks": [],
+         "live": {"state": "listening", "detail": "Listening: DMs to Aura…", "configured": true,
+                  "credentials": [{"name": "slack_bot_token", "label": "Slack bot token", "set": true, "hint": "xoxb-…0000"}]}}
+        """.utf8))
+        #expect(slack.live?.isListening == true && slack.live?.summary == "Listening" && slack.live?.credentials.first?.hint == "xoxb-…0000")
+        let google = try d.decode(ConnectionInfo.self, from: Data("""
+        {"id": "google", "label": "Google", "state": "ready", "configured": true, "services": [], "credentials": [], "checks": []}
+        """.utf8))
+        #expect(google.live == nil)  // only Slack and Discord listen
     }
 }

@@ -172,4 +172,60 @@ struct ChatStoreTests {
           [Approval: delete file 'a.txt' (6 B)]
         """)
     }
+
+    // MARK: - live messages
+
+    @Test func liveMessagesBecomeCardsButNeverSplitAReply() async {
+        let transport = FakeTransport(chat: [[.text("Hello"), .text(" there")]])
+        transport.hangChat = true  // the reply is still streaming
+        let s = store(transport)
+        let ping = IncomingMessage(id: 1, source: "Slack", place: "#aura-chat", author: "Jeff", text: "hi Aura", kind: "mention")
+        s.receive([ping])
+        #expect(roles(s) == [.incoming] && s.items[0].incoming == ping)
+        #expect(s.items[0].text == "Jeff in Slack · #aura-chat: hi Aura" && ChatStore.copyText(s.items[0]) == s.items[0].text)
+        s.send("Anything else?")
+        #expect(await eventually { s.items.last?.text == "Hello there" })
+        let dm = IncomingMessage(id: 2, source: "Discord", place: "a direct message", author: "Sam", text: "lunch?", kind: "dm")
+        s.receive([dm])  // mid-reply: held back
+        #expect(roles(s) == [.incoming, .user, .aura])
+        s.stop()
+        #expect(await eventually { s.phase == .idle && s.items.count == 4 })
+        #expect(roles(s) == [.incoming, .user, .aura, .incoming] && s.items[3].incoming?.heading == "Discord · direct message")
+        #expect(s.conversationText().contains("  [Sam in Discord · direct message: lunch?]"))
+    }
+
+    @Test func theFeedFollowsTheServerFromItsLatestMessage() async {
+        let transport = FeedTransport(pages: [
+            MessagesPage(messages: [IncomingMessage(id: 1, source: "Slack", place: "#a", author: "J", text: "one")], latest: 1),
+            MessagesPage(messages: [], latest: 1),
+            MessagesPage(messages: [IncomingMessage(id: 2, source: "Discord", place: "#b", author: "K", text: "two")], latest: 2),
+        ])
+        let feed = MessageFeed(wait: 0, pause: .zero)
+        var got: [Int] = []
+        feed.onMessages = { got += $0.map(\.id) }
+        feed.start(transport)
+        #expect(await eventually { got == [1, 2] })
+        feed.stop()
+        #expect(transport.asked.prefix(3) == [0, 1, 1] && feed.after == 2 && !feed.isRunning)
+    }
+}
+
+/// Hands out one page of live messages per call, recording the `after` it was asked for.
+final class FeedTransport: AuraTransport, @unchecked Sendable {
+    var pages: [MessagesPage]
+    private(set) var asked: [Int] = []
+
+    init(pages: [MessagesPage]) { self.pages = pages }
+
+    func messages(after: Int, wait: Int) async throws -> MessagesPage {
+        asked.append(after)
+        if pages.isEmpty { try await Task.sleep(for: .seconds(30)); throw CancellationError() }
+        return pages.removeFirst()
+    }
+
+    func chat(_ text: String) -> AsyncThrowingStream<AuraEvent, Error> { AsyncThrowingStream { $0.finish() } }
+    func approve(_ approvals: [Bool]) -> AsyncThrowingStream<AuraEvent, Error> { AsyncThrowingStream { $0.finish() } }
+    func newConversation() async throws {}
+    func warmup() async throws {}
+    func health() async throws -> Health { throw URLError(.badServerResponse) }
 }

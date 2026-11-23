@@ -25,7 +25,7 @@ from langchain_core.tools import BaseTool, tool
 from aura.connections import Connections, ConnectionsError
 
 MAX_CHARS = 6000  # what one read returns: the model's window is 16k tokens
-PRIVATE_READS = ("gmail_read", "calendar_read", "drive_read", "slack_read", "discord_read")
+PRIVATE_READS = ("gmail_read", "calendar_read", "drive_read", "slack_read", "discord_read", "new_messages")
 OUTWARD = ("gmail_draft", "calendar_add", "slack_send", "discord_send")
 
 
@@ -227,6 +227,7 @@ def slack_read(slack: Any, channel: str = "", query: str = "", limit: int = 20) 
 
 def slack_send(slack: Any, channel: str, text: str) -> str:
     channel_id, label = _slack_channel(slack, channel)
+    slack.remember_sent(channel_id, text)  # Aura's bot will hear it: not a new message for the user
     _slack(slack, "chat.postMessage", http="POST", channel=channel_id, text=text)
     return f"Sent to Slack {label}."
 
@@ -291,7 +292,40 @@ def discord_send(discord: Any, channel: str, text: str) -> str:
 # ── the tools ───────────────────────────────────────────────────────────────────────────────
 
 
-def connection_tools(connections: Connections) -> list[BaseTool]:
+# ── live messages (live.py): what arrived while the user was away ───────────────────────────
+
+
+def inbox_text(items: list[Any], fresh: bool = False) -> str:
+    lines = "\n".join(m.line() for m in items) or "No messages have arrived since Aura started."
+    note = ("These arrived since the user's last message; the user already sees them in the chat panel. Use them "
+            "when the user's message refers to them; otherwise don't repeat them.\n" if fresh else "")  # fmt: skip
+    return note + untrusted("Slack and Discord (messages heard live)", lines)
+
+
+def inbox_exchange(items: list[Any]) -> list[Any]:
+    """New messages, given to the model as if it had called new_messages at the start of the
+    turn: a private read (R2), framed as untrusted (R5)."""
+    import uuid
+
+    from langchain_core.messages import AIMessage, ToolMessage
+
+    call_id = f"live-{uuid.uuid4().hex[:12]}"
+    return [AIMessage("", tool_calls=[{"name": "new_messages", "args": {}, "id": call_id, "type": "tool_call"}]),
+            ToolMessage(inbox_text(items, fresh=True), tool_call_id=call_id, name="new_messages")]  # fmt: skip
+
+
+def _live_line(c: dict[str, Any]) -> str:
+    live = c.get("live") or {}
+    if live.get("state") == "listening":
+        return " Live: new messages reach you as they arrive (new_messages)."
+    if c["id"] == "slack" and not live.get("configured"):
+        return " Not live: you see messages only when you read a channel (the user can turn on live messages in Settings)."
+    if live.get("state") == "problem":
+        return f" Not live: {live.get('detail')}"
+    return " Not live right now: you see messages only when you read a channel."
+
+
+def connection_tools(connections: Connections, inbox: Any = None) -> list[BaseTool]:
     """Tools for whatever is connected right now (re-read whenever the agent is rebuilt)."""
     status = {c["id"]: c for c in connections.public()}
 
@@ -316,7 +350,8 @@ def connection_tools(connections: Connections) -> list[BaseTool]:
                 lines.append(f"{c['label']}: not connected (the user sets it up in Settings → Connections).")
                 continue
             services = ", ".join(s["label"] for s in c["services"] if s["granted"]) or "nothing granted"
-            lines.append(f"{c['label']}: connected as {c.get('account')}. Can use: {services}.")
+            live = _live_line(c) if c["id"] in ("slack", "discord") else ""
+            lines.append(f"{c['label']}: connected as {c.get('account')}. Can use: {services}.{live}")
         return "\n".join(lines) + ("\nTo send, post, draft or add an event, call that tool now with the exact text: "
                                     "the user is shown an approval card automatically, so don't ask in chat first.")
 
@@ -382,7 +417,8 @@ def connection_tools(connections: Connections) -> list[BaseTool]:
         @tool("slack_read")
         def slack_read_tool(channel: str = "", query: str = "", limit: int = 20) -> str:
             """Read the user's Slack. No arguments: list their channels. `channel` (e.g. "#general"):
-            its latest `limit` messages. `query`: search their messages."""
+            its latest `limit` messages, from everyone in it. `query`: search messages. When the
+            user asks what's in a channel, read it: don't guess what you can see."""
             try:
                 return slack_read(slack, channel, query, limit)
             except Exception as e:  # noqa: BLE001
@@ -424,6 +460,16 @@ def connection_tools(connections: Connections) -> list[BaseTool]:
                 return _fail("Discord", e)
 
         tools += [discord_read_tool, discord_send_tool]
+
+    if inbox is not None and (connected("slack") or connected("discord")):
+        @tool("new_messages")
+        def new_messages_tool(limit: int = 10) -> str:
+            """The latest Slack and Discord messages heard live (DMs to Aura, @Aura mentions, and
+            channels its bots are in), newest last. New ones are also given to you at the start
+            of each turn."""
+            return inbox_text(inbox.recent(max(1, min(limit, 30))))
+
+        tools.append(new_messages_tool)
 
     return tools
 

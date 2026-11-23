@@ -260,6 +260,11 @@ class ConnectIn(BaseModel):
     services: list[str] = Field(min_length=1, max_length=10)
 
 
+class LiveIn(BaseModel):
+    bot_token: str = Field(min_length=1, max_length=300)
+    app_token: str = Field(min_length=1, max_length=300)
+
+
 class BuildIn(BaseModel):
     skill: str = Field(min_length=2, max_length=40)
     specification: str = Field(min_length=1, max_length=12_000)
@@ -478,14 +483,20 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
     # ── connections (Settings → Connections): credentials, sign-in, check. No agent tool here. ──
 
     connections = aura.toolbox.connections
+    live = aura.toolbox.live
 
-    def connection_call(connection_id: str, action) -> Response:  # noqa: ANN001
+    def connection_call(connection_id: str, action, restart: bool = False) -> Response:  # noqa: ANN001
         try:
             result = action(connections.get(connection_id))
         except ConnectionsError as e:
+            live.sync()
             return _error(404 if "no connection called" in str(e) else 409, str(e))
         except SecretError as e:
             return _error(422, str(e))
+        # Live messages follow the connection: new tokens reconnect, a disconnect stops listening.
+        live.restart(connection_id) if restart else live.sync()
+        if isinstance(result, dict) and "live" in result:
+            result = {**result, "live": connections.get(connection_id).status()["live"]}  # as it is now
         return JSONResponse(result)
 
     @app.get("/v1/connections")
@@ -502,7 +513,35 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
             c.set_credentials(body.client_id, body.client_secret)
             return c.status()
 
-        return connection_call(connection_id, save)
+        return connection_call(connection_id, save, restart=True)
+
+    @app.put("/v1/connections/{connection_id}/live")
+    def set_live(connection_id: str, body: LiveIn) -> Response:
+        """Slack's live messages: the bot token and the app-level token, checked with Slack."""
+
+        def save(c):  # noqa: ANN001, ANN202
+            if not hasattr(c, "set_live"):
+                raise ConnectionsError(f"{c.label}'s live messages need no extra tokens.")
+            c.set_live(body.bot_token, body.app_token)
+            return c.status()
+
+        return connection_call(connection_id, save, restart=True)
+
+    @app.delete("/v1/connections/{connection_id}/live")
+    def remove_live(connection_id: str) -> Response:
+        def remove(c):  # noqa: ANN001, ANN202
+            if hasattr(c, "remove_live"):
+                c.remove_live()
+            return c.status()
+
+        return connection_call(connection_id, remove)
+
+    @app.get("/v1/messages")
+    def messages(after: int = 0, wait: float = 0) -> dict:
+        """Live messages newer than `after`. With `wait` (seconds, up to 25) it waits for one: the
+        app long-polls this to show each message as it arrives."""
+        items = live.inbox.wait(max(0, after), min(max(wait, 0.0), 25.0))
+        return {"messages": [m.public() for m in items], "latest": live.inbox.latest}
 
     @app.delete("/v1/connections/{connection_id}/credentials")
     def remove_credentials(connection_id: str) -> Response:
@@ -693,6 +732,7 @@ def main() -> None:
     if profile.speak and profile.voice:
         app.state.kokoro.warm(profile.voice)  # ready before the first reply is spoken
     aura.toolbox.continuous.start(idle=app.state.idle)  # quick pass now; deep pass daily, when idle
+    aura.toolbox.live.start()  # Slack and Discord live messages, for whatever is set up
     log.info("listening on 127.0.0.1:%d", sock.getsockname()[1])
     print(f"AURA_READY port={sock.getsockname()[1]}", flush=True)
     server.run(sockets=[sock])

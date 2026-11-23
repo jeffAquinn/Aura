@@ -14,20 +14,27 @@ public final class ChatStore {
     }
 
     public struct Item: Identifiable, Equatable, Sendable {
-        public enum Role: Sendable { case user, aura, status, approval, error, task, build }
+        public enum Role: Sendable { case user, aura, status, approval, error, task, build, incoming }
         public let id = UUID()
         public let role: Role
         public var text: String
         public var actions: [PendingAction] = []
         public var decisions: [Bool]?  // approval cards: nil until the user answers
         public var edited = false  // approved with the user's edits (the Specification Approval card)
+        public var incoming: IncomingMessage?  // a live Slack or Discord message
 
-        public init(role: Role, text: String, actions: [PendingAction] = [], decisions: [Bool]? = nil, edited: Bool = false) {
+        public init(role: Role, text: String, actions: [PendingAction] = [], decisions: [Bool]? = nil, edited: Bool = false,
+                    incoming: IncomingMessage? = nil) {
             self.role = role
             self.text = text
             self.actions = actions
             self.decisions = decisions
             self.edited = edited
+            self.incoming = incoming
+        }
+
+        public static func message(_ m: IncomingMessage) -> Item {
+            Item(role: .incoming, text: m.plainText, incoming: m)
         }
     }
 
@@ -87,6 +94,7 @@ public final class ChatStore {
             case .approval: "  [Approval: \(item.actions.map { $0.description.components(separatedBy: "\n").first ?? "" }.joined(separator: "; "))]"
             case .error: "  [\(item.text)]"
             case .task, .build: "  [\(item.role == .build ? "Building" : "Auditing") the \(item.text) skill]"
+            case .incoming: "  [\(item.text)]"
             }
         }
         .joined(separator: "\n\n")
@@ -128,6 +136,22 @@ public final class ChatStore {
     public func stop() {
         turnTask?.cancel()
         speech?.stop()
+    }
+
+    // MARK: - live messages (Slack, Discord)
+
+    /// Messages that arrived while Aura was replying: shown once the reply ends, so a reply is
+    /// never split in two.
+    @ObservationIgnored private var held: [IncomingMessage] = []
+
+    /// New Slack or Discord messages, as cards in the conversation. (The server also gives them to
+    /// Aura at the start of the user's next message.)
+    public func receive(_ messages: [IncomingMessage]) {
+        if isBusy {
+            held += messages
+            return
+        }
+        items += messages.map(Item.message)
     }
 
     // MARK: - voice and persona
@@ -282,6 +306,10 @@ public final class ChatStore {
         if phase != .awaitingApproval {
             finishSpokenSegment()
             phase = .idle
+        }
+        if !held.isEmpty, !isBusy {
+            items += held.map(Item.message)
+            held.removeAll()
         }
     }
 }

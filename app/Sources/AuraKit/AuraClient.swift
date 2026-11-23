@@ -38,6 +38,10 @@ public protocol AuraTransport: Sendable {
     func connect(_ id: String, services: [String]) async throws -> SignInStart
     func checkConnection(_ id: String) async throws -> ConnectionInfo
     func disconnect(_ id: String) async throws -> ConnectionInfo
+    func saveLiveTokens(_ id: String, _ tokens: LiveTokens) async throws -> ConnectionInfo
+    func removeLiveTokens(_ id: String) async throws -> ConnectionInfo
+    /// Live messages newer than `after`, waiting up to `wait` seconds for one (a long poll).
+    func messages(after: Int, wait: Int) async throws -> MessagesPage
 }
 
 /// Defaults so test fakes only implement what they exercise.
@@ -76,6 +80,9 @@ extension AuraTransport {
     public func connect(_ id: String, services: [String]) async throws -> SignInStart { throw AuraClientError.badResponse }
     public func checkConnection(_ id: String) async throws -> ConnectionInfo { throw AuraClientError.badResponse }
     public func disconnect(_ id: String) async throws -> ConnectionInfo { throw AuraClientError.badResponse }
+    public func saveLiveTokens(_ id: String, _ tokens: LiveTokens) async throws -> ConnectionInfo { throw AuraClientError.badResponse }
+    public func removeLiveTokens(_ id: String) async throws -> ConnectionInfo { throw AuraClientError.badResponse }
+    public func messages(after: Int, wait: Int) async throws -> MessagesPage { MessagesPage(messages: [], latest: after) }
 }
 
 public enum AuraClientError: Error, LocalizedError, Equatable {
@@ -270,6 +277,26 @@ public final class AuraClient: AuraTransport {
 
     public func disconnect(_ id: String) async throws -> ConnectionInfo {
         try Self.decoder.decode(ConnectionInfo.self, from: await send(request("/v1/connections/\(id)/disconnect", body: [String: String]())))
+    }
+
+    public func saveLiveTokens(_ id: String, _ tokens: LiveTokens) async throws -> ConnectionInfo {
+        var r = request("/v1/connections/\(id)/live", body: tokens)
+        r.httpMethod = "PUT"
+        return try Self.decoder.decode(ConnectionInfo.self, from: await send(r))
+    }
+
+    public func removeLiveTokens(_ id: String) async throws -> ConnectionInfo {
+        var r = request("/v1/connections/\(id)/live")
+        r.httpMethod = "DELETE"
+        return try Self.decoder.decode(ConnectionInfo.self, from: await send(r))
+    }
+
+    public func messages(after: Int, wait: Int) async throws -> MessagesPage {
+        var r = request("/v1/messages")
+        r.url = r.url?.appending(queryItems: [URLQueryItem(name: "after", value: String(after)),
+                                              URLQueryItem(name: "wait", value: String(wait))])
+        r.timeoutInterval = TimeInterval(wait + 30)  // the server holds the request open while it waits
+        return try Self.decoder.decode(MessagesPage.self, from: await send(r))
     }
 
     private static var decoder: JSONDecoder {

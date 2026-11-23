@@ -146,6 +146,9 @@ struct ConnectionSetupView: View {
     @State private var chosen: Set<String>?
     @State private var error: String?
     @State private var confirmRemove = false
+    @State private var liveValues = ["", ""]
+    @State private var replacingLive = false
+    @State private var confirmRemoveLive = false
 
     private var guide: ProviderGuide { .of(connection.id) }
     private var selected: Set<String> { chosen ?? Set(connection.services.map(\.id)) }
@@ -165,6 +168,10 @@ struct ConnectionSetupView: View {
                 steps
                 credentials
                 if guide.signIn != nil { signIn } else { invite }
+                if let live = connection.live, connection.isConnected {
+                    LiveMessagesCard(store: store, connection: connection, live: live, values: $liveValues,
+                                     replacing: $replacingLive, confirmRemove: $confirmRemoveLive, error: $error)
+                }
                 SecurityNote(service: connection.label, revoke: guide.signIn != nil)
             }
             .padding(24)
@@ -339,6 +346,108 @@ struct ConnectionSetupView: View {
             error = await store.saveCredentials(connection.id, clientId: values[0], clientSecret: values[1])
             if error == nil { reset() }
         }
+    }
+
+    private func reset() {
+        values = ["", ""]  // nothing lingers in the view
+        replacing = false
+    }
+}
+
+// MARK: - live messages
+
+/// Whether Aura hears new messages as they arrive. Slack needs the app's bot (two tokens);
+/// Discord's bot already has everything.
+struct LiveMessagesCard: View {
+    let store: ConnectionsStore
+    let connection: ConnectionInfo
+    let live: LiveInfo
+    @Binding var values: [String]
+    @Binding var replacing: Bool
+    @Binding var confirmRemove: Bool
+    @Binding var error: String?
+
+    private var isSlack: Bool { connection.id == "slack" }
+
+    var body: some View {
+        Card {
+            VStack(alignment: .leading, spacing: 10) {
+                Text(isSlack
+                     ? "So Aura notices new messages as they arrive (DMs to Aura, @Aura mentions, and the channels you invite it to), your Slack app gets an **Aura** bot that only listens. Each message appears in Aura's chat and as a Mac notification. Aura won't answer in Slack by itself, and nobody there can make it do anything."
+                     : "Aura hears DMs to your bot, @mentions, and every channel the bot can see. Each message appears in Aura's chat and as a Mac notification. Aura won't answer in Discord by itself, and nobody there can make it do anything.")
+                    .font(.callout).fixedSize(horizontal: false, vertical: true)
+                if live.configured || !isSlack { statusRow }
+                if isSlack && (!live.configured || replacing) { setup } else if isSlack { saved }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        } title: {
+            Label(isSlack ? "4. Live messages (optional)" : "4. Live messages", systemImage: "bell.badge").font(.headline)
+        }
+        .confirmationDialog("Stop live messages and remove the bot's tokens from the Keychain?", isPresented: $confirmRemove) {
+            Button("Remove", role: .destructive) { Task { await store.removeLive(connection.id) } }
+        }
+    }
+
+    private var statusRow: some View {
+        HStack(alignment: .firstTextBaseline) {
+            Image(systemName: live.isListening ? "dot.radiowaves.left.and.right" : live.state == "problem" ? "xmark.circle.fill" : "pause.circle")
+                .foregroundStyle(live.isListening ? Color.green : live.state == "problem" ? .red : .secondary)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(live.summary).font(.callout.weight(.medium))
+                if !live.detail.isEmpty {
+                    Text(live.detail).font(.caption).foregroundStyle(live.state == "problem" ? .red : .secondary)
+                        .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                }
+            }
+            Spacer()
+            if live.state == "problem" || live.state == "off" {
+                Button("Try Again") { Task { await store.check(connection.id) } }.controlSize(.small).disabled(store.busy)
+            }
+        }
+    }
+
+    private var steps: [ProviderGuide.StepInfo] {
+        [
+            ProviderGuide.StepInfo(text: "On your Slack app's page, open **App Manifest**, replace everything with Aura's manifest, and **Save Changes**. It adds the Aura bot, **Socket Mode** (no web address needed) and the message events. Nothing you've set up changes.",
+                                   links: [("Your Slack apps", "https://api.slack.com/apps")],
+                                   copy: connection.setup?.manifest.map { ("Copy Aura's Manifest", $0) }),
+            ProviderGuide.StepInfo(text: "Open **Install App** → **Reinstall to Workspace** → Allow. Copy the **Bot User OAuth Token** (it starts with xoxb-)."),
+            ProviderGuide.StepInfo(text: "Open **Basic Information** → App-Level Tokens → **Generate Token and Scopes**. Name it “Aura live”, add the scope **connections:write**, then Generate. Copy the token (it starts with xapp-)."),
+            ProviderGuide.StepInfo(text: "Paste both below. Aura checks them with Slack before it saves them to the Keychain."),
+            ProviderGuide.StepInfo(text: "In Slack, invite the bot to each channel you want Aura to hear: type **/invite @Aura** in #aura-chat. Direct messages to Aura need no invite."),
+        ]
+    }
+
+    @ViewBuilder private var setup: some View {
+        ForEach(Array(steps.enumerated()), id: \.offset) { i, step in
+            Step(n: i + 1, text: step.text, links: step.links, copy: step.copy)
+        }
+        SecureField("Bot token (starts with xoxb-)", text: $values[0]).textFieldStyle(.roundedBorder)
+        SecureField("App-level token (starts with xapp-)", text: $values[1]).textFieldStyle(.roundedBorder)
+        HStack {
+            Spacer()
+            if replacing { Button("Cancel") { reset() } }
+            Button("Verify & Save to Keychain") {
+                Task {
+                    error = await store.saveLive(connection.id, botToken: values[0], appToken: values[1])
+                    if error == nil { reset() }
+                }
+            }
+            .disabled(values.contains(where: \.isEmpty) || store.busy)
+        }
+    }
+
+    @ViewBuilder private var saved: some View {
+        ForEach(live.credentials) { c in
+            LabeledContent(c.label) { Text(c.hint ?? "Not set").font(.callout.monospaced()) }
+        }
+        HStack {
+            Text("Invite the bot with **/invite @Aura** in each channel Aura should hear.").font(.caption).foregroundStyle(.secondary)
+            Spacer()
+            Button("Remove…", role: .destructive) { confirmRemove = true }
+            Button("Replace…") { replacing = true }
+        }
+        .controlSize(.small)
     }
 
     private func reset() {

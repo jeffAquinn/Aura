@@ -69,6 +69,7 @@ dependencies = [
     { name = "soundfile" },
     { name = "tavily-python" },
     { name = "uvicorn" },
+    { name = "websockets" },
 ]
 
 [package.dev-dependencies]
@@ -91,6 +92,7 @@ requires-dist = [
     { name = "soundfile", specifier = ">=0.14.0" },
     { name = "tavily-python", specifier = ">=0.8.5" },
     { name = "uvicorn", specifier = ">=0.54.0" },
+    { name = "websockets", specifier = ">=15" },
 ]
 
 [package.metadata.requires-dev]
