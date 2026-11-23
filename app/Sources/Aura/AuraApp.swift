@@ -151,16 +151,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - live messages
 
-    /// New Slack or Discord messages: a card in the chat, and a notification unless the panel is
-    /// in front of the user already.
+    /// New Slack or Discord messages: a card in the chat for each. A Mac notification only when
+    /// Aura answers the user in a messaging app (the user's choice), unless the panel is in front.
     private func messagesArrived(_ messages: [IncomingMessage]) {
         AppLog.write("live messages: \(messages.count)")  // never their text
         store.receive(messages)
-        guard !(panel.isVisible && panel.isKeyWindow) else { return }
-        for message in messages.suffix(3) { notifier.post(message) }  // a burst doesn't flood the screen
-        if let last = messages.last(where: \.isToAura) ?? messages.last {
-            store.speech?.announce("New \(last.source) message from \(last.author).")
-        }
+        let answers = messages.filter { $0.kind == "reply" }
+        guard !answers.isEmpty, !(panel.isVisible && panel.isKeyWindow) else { return }
+        for answer in answers.suffix(3) { notifier.post(answer) }  // a burst doesn't flood the screen
     }
 
     // MARK: - panel + Smart-Warm

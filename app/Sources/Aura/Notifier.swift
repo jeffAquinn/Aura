@@ -2,8 +2,8 @@ import AppKit
 import AuraKit
 import UserNotifications
 
-/// Mac notifications for live Slack and Discord messages. macOS asks the user once, the first
-/// time one arrives; clicking a notification opens Aura's panel.
+/// Mac notifications when Aura answers the user in Slack (or another messaging app). macOS asks
+/// the user once, the first time; clicking a notification opens Aura's panel.
 @MainActor
 final class Notifier: NSObject, UNUserNotificationCenterDelegate {
     var onOpen: () -> Void = {}
@@ -25,9 +25,9 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
                 AppLog.write("notifications: \(granted ? "allowed" : "not allowed")")
             }
             let content = UNMutableNotificationContent()
-            content.title = message.heading
-            content.subtitle = message.author
-            content.body = message.text
+            content.title = message.kind == "reply" ? "Aura answered you in \(message.source)" : message.heading
+            content.subtitle = message.kind == "reply" ? message.heading : message.author
+            content.body = message.text.replacingOccurrences(of: "**", with: "")  // Markdown marks read as noise
             content.sound = .default
             content.threadIdentifier = message.heading  // one stack per channel
             try? await center.add(UNNotificationRequest(identifier: "aura-message-\(UUID().uuidString)",

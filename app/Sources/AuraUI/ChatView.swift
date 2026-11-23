@@ -316,11 +316,30 @@ struct ItemView: View {
     }
 }
 
-/// A live Slack or Discord message: who wrote it, where, and what they said. Aura doesn't
-/// answer it by itself; the user can ask it to.
+/// A live Slack or Discord message: who wrote it, where, and what they said. Aura answers only
+/// the user's own messages to it in Slack (when switched on); anything else, the user can ask it to.
 struct IncomingMessageCard: View {
     let message: IncomingMessage
     @Environment(\.chatText) private var chat
+
+    /// Aura's own answers are Markdown (bold, links); other people's words are shown as written.
+    private var messageText: AttributedString {
+        if message.kind == "reply",
+           let rich = try? AttributedString(markdown: message.text,
+                                            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)) {
+            return rich
+        }
+        return AttributedString(message.text)
+    }
+
+    private var badge: String? {
+        switch message.kind {
+        case "mention": "mentions Aura"
+        case "command": "you, to Aura"
+        case "reply": "Aura answered"
+        default: nil
+        }
+    }
 
     var body: some View {
         HStack(alignment: .top, spacing: 10) {
@@ -330,14 +349,14 @@ struct IncomingMessageCard: View {
             VStack(alignment: .leading, spacing: 3) {
                 HStack(spacing: 6) {
                     Text(message.heading).font(chat.font(0.82).weight(.semibold)).foregroundStyle(.secondary)
-                    if message.kind == "mention" {
-                        Text("mentions Aura")
+                    if let badge {
+                        Text(badge)
                             .font(chat.font(0.75).weight(.medium))
                             .padding(.horizontal, 6).padding(.vertical, 1)
                             .background(Color.accentColor.opacity(0.18), in: .capsule)
                     }
                 }
-                (Text(message.author).bold() + Text(": ") + Text(message.text))
+                (Text(message.author).bold() + Text(": ") + Text(messageText))
                     .font(chat.font(0.95))
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)

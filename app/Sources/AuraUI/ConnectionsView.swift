@@ -111,7 +111,7 @@ struct ProviderGuide {
             StepInfo(text: "Open Slack's app page → **Create New App** → **From a manifest** → choose your workspace → replace everything in the box with Aura's manifest → Next → **Create**.",
                      links: [("Create a Slack app", "https://api.slack.com/apps?new_app=1")],
                      copy: c.setup?.manifest.map { ("Copy Aura's Manifest", $0) }),
-            StepInfo(text: "The manifest sets everything: the name, the permissions Aura may ask for, **PKCE** (so no client secret is needed), no token rotation, and Aura's return address. You don't need to type the address anywhere; it's here in case Slack asks.",
+            StepInfo(text: "The manifest sets everything: the name, the permissions Aura may ask for, **PKCE** (so no client secret is needed), and Aura's return address. (If your app has token rotation on, Aura renews its sign-in by itself.) You don't need to type the address anywhere; it's here in case Slack asks.",
                      copy: c.setup?.redirectUrl.map { ("Copy \($0)", $0) }),
             StepInfo(text: "Keep the app **internal** to your workspace: don't distribute it. (Slack's AI features accept only internal or Marketplace apps.) If your workspace requires admins to approve apps, approve it as the owner."),
             StepInfo(text: "On the app's **Basic Information** page, under App Credentials, copy the **Client ID** into the field below. Aura doesn't need the Client Secret."),
@@ -375,11 +375,15 @@ struct LiveMessagesCard: View {
         Card {
             VStack(alignment: .leading, spacing: 10) {
                 Text(isSlack
-                     ? "So Aura notices new messages as they arrive (DMs to Aura, @Aura mentions, and the channels you invite it to), your Slack app gets an **Aura** bot that only listens. Each message appears in Aura's chat and as a Mac notification. Aura won't answer in Slack by itself, and nobody there can make it do anything."
-                     : "Aura hears DMs to your bot, @mentions, and every channel the bot can see. Each message appears in Aura's chat and as a Mac notification. Aura won't answer in Discord by itself, and nobody there can make it do anything.")
+                     ? "So Aura notices new messages as they arrive (DMs to Aura, @Aura mentions, and the channels you invite it to), your Slack app gets an **Aura** bot. Each message appears in Aura's chat. Only you can talk to Aura there (switch it on below), and you get a Mac notification when it answers you; nobody else's message can make it do anything."
+                     : "Aura hears DMs to your bot, @mentions, and every channel the bot can see. Each message appears in Aura's chat. Aura doesn't answer in Discord (talking to Aura works from Slack for now), and nobody there can make it do anything.")
                     .font(.callout).fixedSize(horizontal: false, vertical: true)
                 if live.configured || !isSlack { statusRow }
                 if isSlack && (!live.configured || replacing) { setup } else if isSlack { saved }
+                if isSlack && live.configured && !replacing {
+                    Divider()
+                    SlackChatSwitch(store: store, connection: connection, chat: live.chat ?? ChatSwitch())
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         } title: {
@@ -476,6 +480,57 @@ struct LiveMessagesCard: View {
     private func reset() {
         values = ["", "", "", ""]  // nothing lingers in the view
         replacing = false
+    }
+}
+
+/// Talking to Aura from Slack (your phone): your own messages to Aura get answered there.
+struct SlackChatSwitch: View {
+    let store: ConnectionsStore
+    let connection: ConnectionInfo
+    let chat: ChatSwitch
+    @State private var channel: String?
+    @State private var refusal: String?
+    @State private var saving = false
+
+    private var channelName: String { channel ?? chat.channel }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Toggle(isOn: Binding(get: { chat.enabled }, set: { save(enabled: $0) })) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Talk to Aura from Slack").font(.callout.weight(.semibold))
+                    Text("Use your phone: Aura answers your own messages to it, as the Aura bot.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .toggleStyle(.switch)
+            .disabled(saving || store.busy)
+            HStack {
+                Text("Aura's channel: #").font(.callout)
+                TextField("aura-chat", text: Binding(get: { channelName }, set: { channel = $0 }))
+                    .textFieldStyle(.roundedBorder).frame(maxWidth: 220)
+                    .onSubmit { if chat.enabled { save(enabled: true) } }
+                if channel != nil && channelName != chat.channel {
+                    Button("Save") { save(enabled: chat.enabled) }.controlSize(.small)
+                }
+            }
+            Text("Only your account (\(connection.account ?? "the one Aura signed in with")) can talk to Aura: DM **Aura**, @mention it anywhere, or just write in **#\(channelName)**. Everyone else's messages stay notifications, never instructions. Anything that sends, posts or writes still asks first, right in Slack: answer **allow** or **deny**. Slack keeps Aura's answers, so what you ask about (an email, a file) will be in Slack too.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if let refusal {
+                Label(refusal, systemImage: "xmark.octagon.fill")
+                    .font(.callout).foregroundStyle(.red).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+
+    private func save(enabled: Bool) {
+        saving = true
+        refusal = nil
+        Task {
+            refusal = await store.setChat(connection.id, enabled: enabled, channel: channelName)
+            if refusal == nil { channel = nil }
+            saving = false
+        }
     }
 }
 

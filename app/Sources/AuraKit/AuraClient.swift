@@ -40,6 +40,7 @@ public protocol AuraTransport: Sendable {
     func disconnect(_ id: String) async throws -> ConnectionInfo
     func saveLiveTokens(_ id: String, _ tokens: LiveTokens) async throws -> ConnectionInfo
     func removeLiveTokens(_ id: String) async throws -> ConnectionInfo
+    func setChat(_ id: String, _ chat: ChatSwitch) async throws -> ConnectionInfo
     /// Live messages newer than `after`, waiting up to `wait` seconds for one (a long poll).
     func messages(after: Int, wait: Int) async throws -> MessagesPage
 }
@@ -82,6 +83,7 @@ extension AuraTransport {
     public func disconnect(_ id: String) async throws -> ConnectionInfo { throw AuraClientError.badResponse }
     public func saveLiveTokens(_ id: String, _ tokens: LiveTokens) async throws -> ConnectionInfo { throw AuraClientError.badResponse }
     public func removeLiveTokens(_ id: String) async throws -> ConnectionInfo { throw AuraClientError.badResponse }
+    public func setChat(_ id: String, _ chat: ChatSwitch) async throws -> ConnectionInfo { throw AuraClientError.badResponse }
     public func messages(after: Int, wait: Int) async throws -> MessagesPage { MessagesPage(messages: [], latest: after) }
 }
 
@@ -288,6 +290,12 @@ public final class AuraClient: AuraTransport {
     public func removeLiveTokens(_ id: String) async throws -> ConnectionInfo {
         var r = request("/v1/connections/\(id)/live")
         r.httpMethod = "DELETE"
+        return try Self.decoder.decode(ConnectionInfo.self, from: await send(r))
+    }
+
+    public func setChat(_ id: String, _ chat: ChatSwitch) async throws -> ConnectionInfo {
+        var r = request("/v1/connections/\(id)/chat", body: chat)
+        r.httpMethod = "PUT"
         return try Self.decoder.decode(ConnectionInfo.self, from: await send(r))
     }
 

@@ -421,6 +421,10 @@ struct SnapshotTests {
             .message(IncomingMessage(id: 2, source: "Discord", place: "a direct message", author: "Jeff",
                                      text: "Lunch at noon? (1 attachment)", kind: "dm")),
             .message(IncomingMessage(id: 3, source: "Slack", place: "#social", author: "Sam", text: "Pizza's here 🍕")),
+            .message(IncomingMessage(id: 4, source: "Slack", place: "#aura-chat", author: "Jeff Quinn",
+                                     text: "What's on my calendar tomorrow?", kind: "command")),
+            .message(IncomingMessage(id: 5, source: "Slack", place: "#aura-chat", author: "Aura",
+                                     text: "Tomorrow you have **Dentist** at 9:00 and **Team sync** at 14:00.", kind: "reply")),
             item(.aura, "Two messages are for you: Jeff asked in **#aura-chat** whether I can see it, and DM'd you about lunch at noon. Want me to reply?"),
         ])
         try render("29-live-messages", store)
@@ -441,7 +445,8 @@ struct SnapshotTests {
                                        live: LiveInfo(state: "listening", detail: "Listening: DMs to Aura, @Aura mentions, and the channels you've invited it to.",
                                                       configured: true,
                                                       credentials: [SecretInfo(name: "slack_bot_token", label: "Slack bot token", set: true, hint: "xoxb-…0000"),
-                                                                    SecretInfo(name: "slack_app_token", label: "Slack app-level token", set: true, hint: "xapp-…ffff")]))
+                                                                    SecretInfo(name: "slack_app_token", label: "Slack app-level token", set: true, hint: "xapp-…ffff")],
+                                                      chat: ChatSwitch(enabled: true, channel: "aura-chat")))
         try renderWide("31-slack-live-listening", width: 720, dark: true,
                        ConnectionSetupView(store: ConnectionsStore(connections: [listening]), connection: listening))
         let discord = ConnectionInfo(id: "discord", label: "Discord", state: "connected", configured: true, account: "Aura",

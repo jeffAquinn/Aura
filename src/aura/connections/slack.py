@@ -64,10 +64,11 @@ SERVICES = {
 }  # fmt: skip
 
 
-# The bot hears messages (live messages): DMs to it, @mentions, channels it's invited to. It reads
-# names for the notification. It can't post: Aura sends as the user, after the user approves.
+# The bot hears messages (live messages): DMs to it, @mentions, channels it's invited to, and reads
+# names for the notification. It posts only Aura's answers to the owner's own messages (remote.py):
+# sending as the user, anywhere else, stays the slack_send tool, after the user approves.
 BOT_SCOPES = ("app_mentions:read", "channels:history", "groups:history", "im:history", "mpim:history",
-              "channels:read", "groups:read", "im:read", "mpim:read", "users:read")  # fmt: skip
+              "channels:read", "groups:read", "im:read", "mpim:read", "users:read", "chat:write")  # fmt: skip
 BOT_EVENTS = ("app_mention", "message.channels", "message.groups", "message.im", "message.mpim")
 
 
@@ -124,7 +125,8 @@ class SlackConnection:
             "checks": list(self._checks.values()),
             "setup": {"redirect_url": f"http://localhost:{self.port}/slack/callback", "manifest": manifest()},
             "live": {**(self.listener.status() if self.listener else {"state": "off", "detail": ""}),
-                     "configured": self.live_configured, "credentials": self.secrets.listing("slack_live")},
+                     "configured": self.live_configured, "credentials": self.secrets.listing("slack_live"),
+                     "chat": self.listener.chat.settings() if self.listener and self.listener.chat else None},
         }  # fmt: skip
 
     @property
@@ -356,6 +358,9 @@ class SlackConnection:
         who = self._identify(token)
         tokens = {"access_token": token, "scopes": ",".join(sorted(granted)), "user_id": user.get("id"),
                   "team_id": (body.get("team") or {}).get("id"), "app_id": body.get("app_id"), "account": who}  # fmt: skip
+        if user.get("refresh_token"):  # token rotation on: the sign-in lasts 12 hours and is renewed
+            tokens |= {"refresh_token": user["refresh_token"],
+                       "expires_at": self.clock() + float(user.get("expires_in") or 43200)}  # fmt: skip
         self.secrets.store("slack_tokens", json.dumps(tokens))
         self._checks = {}
         missing = [SERVICES[s].label for s in self._wanted if not set(SERVICES[s].scopes) <= granted]
@@ -378,10 +383,68 @@ class SlackConnection:
     # ── using it ────────────────────────────────────────────────────────────────────────────
 
     def token(self) -> str:
-        tokens = self._tokens()
-        if not tokens:
-            raise ConnectionsError("Slack isn't connected.")
-        return str(tokens["access_token"])
+        """The user token: a rotating one (xoxe.xoxp-, token rotation on) is renewed when due."""
+        with self._lock:
+            tokens = self._tokens()
+            if not tokens:
+                raise ConnectionsError("Slack isn't connected.")
+            if tokens.get("refresh_token") and float(tokens.get("expires_at") or 0) - self.clock() < RENEW_BEFORE:
+                tokens = self._renew_user_token(tokens)
+            return str(tokens["access_token"])
+
+    def _renew_user_token(self, tokens: dict[str, Any]) -> dict[str, Any]:
+        """oauth.v2.access, grant_type=refresh_token. A PKCE app's desktop sign-in needs no client
+        secret to renew (Slack: "intended to be used on a public client"); the single-use refresh
+        token is replaced at once."""
+        form = {"client_id": self.secrets.get("slack_client_id") or "", "grant_type": "refresh_token",
+                "refresh_token": tokens["refresh_token"]}  # fmt: skip
+        try:
+            body = _json(self.http.post(API + "oauth.v2.access", data=form))
+            secret = self.secrets.get("slack_client_secret")
+            if not body.get("ok") and secret and body.get("error") != "invalid_refresh_token":
+                body = _json(self.http.post(API + "oauth.v2.access", data={**form, "client_secret": secret}))
+        except httpx.HTTPError as e:
+            raise ConnectionsError(f"Couldn't reach Slack to renew the sign-in ({type(e).__name__}).") from e
+        fresh = body.get("authed_user") or body
+        if not body.get("ok") or not fresh.get("access_token"):
+            self.secrets.delete("slack_tokens")
+            self.audit.record("connection_expired", connection=self.id)
+            raise ConnectionsError("Slack's sign-in ran out and couldn't be renewed. Press Sign In Again in Settings → "
+                                   "Connections → Slack.")  # fmt: skip
+        tokens = {**tokens, "access_token": fresh["access_token"], "refresh_token": fresh.get("refresh_token") or
+                  tokens["refresh_token"], "expires_at": self.clock() + float(fresh.get("expires_in") or 43200)}  # fmt: skip
+        self.secrets.store("slack_tokens", json.dumps(tokens))
+        self.audit.record("connection_token_renewed", connection=self.id, token="user")
+        return tokens
+
+    # ── the Aura bot answering the owner (remote.py) ──────────────────────────────────────────
+
+    def post_as_bot(self, channel: str, markdown: str, thread_ts: str | None = None) -> str:
+        """Aura's answer, as the Aura bot, in Slack's Markdown (markdown_text, up to 12,000 chars)."""
+        bot = self.secrets.get("slack_bot_token")
+        if not bot:
+            raise ConnectionsError("live messages aren't set up")
+        payload: dict[str, Any] = {"channel": channel, "markdown_text": markdown}
+        if thread_ts:
+            payload["thread_ts"] = thread_ts
+        body = _json(self.http.post(API + "chat.postMessage", json=payload, headers={"Authorization": f"Bearer {bot}"}))
+        if not body.get("ok"):
+            if body.get("error") == "missing_scope":
+                raise ConnectionsError("the Aura bot can't post yet: paste Aura's updated manifest into your Slack app "
+                                       "(it adds chat:write), then Reinstall to Workspace")  # fmt: skip
+            raise ConnectionsError(f"Slack said {body.get('error')}")
+        return str(body.get("ts") or "")
+
+    def bot_can_post(self) -> bool:
+        """Whether the bot token has chat:write (Slack lists a token's scopes in X-OAuth-Scopes)."""
+        bot = self.secrets.get("slack_bot_token")
+        if not bot:
+            return False
+        try:
+            r = self.http.post(API + "auth.test", headers={"Authorization": f"Bearer {bot}"})
+        except httpx.HTTPError:
+            return False
+        return "chat:write" in {s.strip() for s in r.headers.get("x-oauth-scopes", "").split(",")}
 
     def check(self) -> dict[str, Any]:
         """auth.test for the token, then one harmless read per granted service. Sending can't be

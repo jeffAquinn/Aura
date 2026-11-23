@@ -113,11 +113,16 @@ class Aura:
         settings: Settings | None = None,
         model: BaseChatModel | None = None,
         toolbox: Toolbox | None = None,
+        primary: bool = True,
     ):
+        """`primary`: the Mac panel's Aura. Another (Slack chat, remote.py) shares the toolbox and
+        model but keeps its own conversation, and leaves the reload hooks and the live-message
+        notices to the primary."""
         self.settings = settings or Settings.from_env()
         self.toolbox = toolbox or Toolbox.from_settings(self.settings)
         self.toolbox.vault.ensure_exists()
-        llm = model or build_model(self.settings)
+        self.primary = primary
+        llm = self.llm = model or build_model(self.settings)
         budget = self.settings.context_tokens
         vault = self.toolbox.vault
         identity = self.toolbox.identity
@@ -188,8 +193,9 @@ class Aura:
         self._build = build
         self._connected = self.toolbox.connections.signature()
         self._agent = build(self.toolbox.all_tools())
-        self.toolbox.workshop.on_deployed = self.reload_tools
-        self.toolbox.continuous.on_change = self.reload_tools  # the server wraps this in its turn lock
+        if primary:
+            self.toolbox.workshop.on_deployed = self.reload_tools
+            self.toolbox.continuous.on_change = self.reload_tools  # the server wraps this in its turn lock
         self.new_conversation()
 
     def reload_tools(self) -> None:
@@ -223,7 +229,7 @@ class Aura:
             self.reload_tools()
         self._turn_notices: set[str] = set()  # each notice is said once per turn
         messages: list[Any] = [{"role": "user", "content": text}]
-        fresh = self.toolbox.live.inbox.unseen_by_model()
+        fresh = self.toolbox.live.inbox.unseen_by_model() if self.primary else []
         if fresh:  # live messages since the last turn: a private read (R2), framed as untrusted (R5)
             messages += inbox_exchange(fresh)
         return self._run({"messages": messages})

@@ -60,18 +60,32 @@ public struct ConnectionSetup: Codable, Sendable, Equatable {
     }
 }
 
+/// Talking to Aura from Slack: on or off, and the channel where every message of the owner's is for Aura.
+public struct ChatSwitch: Codable, Sendable, Equatable {
+    public let enabled: Bool
+    public let channel: String
+
+    public init(enabled: Bool = false, channel: String = "aura-chat") {
+        self.enabled = enabled
+        self.channel = channel
+    }
+}
+
 /// Live messages: whether Aura hears new Slack or Discord messages as they arrive.
 public struct LiveInfo: Codable, Sendable, Equatable {
     public let state: String  // off | connecting | listening | problem
     public let detail: String
     public let configured: Bool  // Slack: both tokens saved (Discord: connected)
     public let credentials: [SecretInfo]  // Slack's bot and app-level tokens, as masked hints
+    public let chat: ChatSwitch?  // Slack only
 
-    public init(state: String = "off", detail: String = "", configured: Bool = false, credentials: [SecretInfo] = []) {
+    public init(state: String = "off", detail: String = "", configured: Bool = false, credentials: [SecretInfo] = [],
+                chat: ChatSwitch? = nil) {
         self.state = state
         self.detail = detail
         self.configured = configured
         self.credentials = credentials
+        self.chat = chat
     }
 
     public var isListening: Bool { state == "listening" }
@@ -264,6 +278,11 @@ public final class ConnectionsStore {
             refreshToken: rotates ? trim(refreshToken) : "", clientSecret: rotates ? trim(clientSecret) : "")) }
         if refused == nil { followLive(id) }
         return refused
+    }
+
+    /// Talking to Aura from Slack: returns why it couldn't be switched (nil: done).
+    public func setChat(_ id: String, enabled: Bool, channel: String) async -> String? {
+        await perform { try await $0.setChat(id, ChatSwitch(enabled: enabled, channel: channel)) }
     }
 
     public func removeLive(_ id: String) async {

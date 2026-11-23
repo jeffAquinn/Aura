@@ -58,7 +58,7 @@ class Incoming:
     place: str  # "#aura-chat", "#general in Aura HQ", "a direct message"
     author: str
     text: str
-    kind: str  # "dm", "mention" or "channel"
+    kind: str  # "dm", "mention", "channel"; the owner's Slack chat with Aura: "command", "reply"
     at: float
 
     def public(self) -> dict[str, Any]:
@@ -112,9 +112,10 @@ class Inbox:
             return list(self._items)[-n:] if n > 0 else []
 
     def unseen_by_model(self, n: int = 10) -> list[Incoming]:
-        """What arrived since the model last looked (the newest n), now marked as shown."""
+        """What arrived since the model last looked (the newest n), now marked as shown. The
+        owner's Slack chat with Aura (commands and replies) has its own conversation: not here."""
         with self._changed:
-            fresh = [m for m in self._items if m.id > self._given]
+            fresh = [m for m in self._items if m.id > self._given and m.kind not in ("command", "reply")]
             self._given = self._next - 1
             return fresh[-n:]
 
@@ -404,6 +405,7 @@ class SlackSocket(Listener):
     def __init__(self, slack: Any, inbox: Inbox, connect: Callable[[str], Any] | None = None):
         super().__init__(inbox, connect)
         self.slack = slack
+        self.chat: Any = None  # remote.RemoteChat: the owner talking to Aura from Slack (when switched on)
         self._names: dict[str, str] = {}
         self._places: dict[str, str] = {}
         self._seen: deque[tuple[Any, Any]] = deque(maxlen=500)  # an @mention arrives twice: message + app_mention
@@ -488,7 +490,27 @@ class SlackSocket(Listener):
             kind = "mention" if e.get("type") == "app_mention" or (bot_user and f"<@{bot_user}" in raw) else "channel"
         files = len(e.get("files") or [])
         text = self._plain(raw, bot_user) + (f" ({files} file{'s' if files != 1 else ''})" if files else "")
+        ask = self._ask(e, user, place, kind, text)
+        if ask is not None:  # the owner talking to Aura: Aura answers in Slack
+            self.inbox.add("Slack", place, self._name(str(user)), ask.text, "command")
+            self.chat.submit(ask)
+            return
         self.inbox.add("Slack", place, self._name(str(user)), text, kind)
+
+    def _ask(self, e: dict[str, Any], user: str, place: str, kind: str, text: str) -> Any:
+        """The owner's message to Aura (a DM, an @mention, or one in their chat channel), when the
+        user has switched Slack chat on. Anyone else's message is never an instruction."""
+        from aura.connections.remote import Ask
+
+        if self.chat is None or user != (self.slack._tokens() or {}).get("user_id"):
+            return None
+        settings = self.chat.settings()
+        in_chat_channel = place == f"#{settings['channel']}"
+        if not settings["enabled"] or not (kind in ("dm", "mention") or in_chat_channel):
+            return None
+        request = re.sub(r"^@Aura[\s,:]*", "", text).strip() or text
+        thread = e.get("thread_ts") or (e.get("ts") if kind == "mention" and not in_chat_channel else None)
+        return Ask(channel=str(e.get("channel")), ts=str(e.get("ts")), thread_ts=thread, text=request, place=place)
 
     def _get(self, method: str, **params: Any) -> dict[str, Any]:
         token = self.slack.secrets.get("slack_bot_token")

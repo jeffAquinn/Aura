@@ -260,6 +260,11 @@ class ConnectIn(BaseModel):
     services: list[str] = Field(min_length=1, max_length=10)
 
 
+class ChatSwitchIn(BaseModel):
+    enabled: bool
+    channel: str = Field(default="aura-chat", max_length=80)
+
+
 class LiveIn(BaseModel):
     bot_token: str = Field(min_length=1, max_length=300)
     app_token: str = Field(min_length=1, max_length=300)
@@ -487,6 +492,21 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
     connections = aura.toolbox.connections
     live = aura.toolbox.live
 
+    # Talking to Aura from Slack (remote.py): the owner's messages, answered by a second Aura with
+    # its own conversation, taking turns with the Mac panel under the same lock.
+    from aura.brain import Aura as _Aura
+    from aura.connections.remote import RemoteChat
+
+    slack_connection = connections.all.get("slack")
+    slack_listener = live.listeners.get("slack")
+    remote = RemoteChat(
+        make_aura=lambda: _Aura(settings=aura.settings, model=aura.llm, toolbox=aura.toolbox, primary=False),
+        turn=turn, post=lambda channel, text, thread: slack_connection.post_as_bot(channel, text, thread),
+        inbox=live.inbox, settings_path=aura.settings.data_dir / "slack_chat.json")  # fmt: skip
+    app.state.remote = remote
+    if slack_listener is not None:
+        slack_listener.chat = remote
+
     def connection_call(connection_id: str, action, restart: bool = False) -> Response:  # noqa: ANN001
         try:
             result = action(connections.get(connection_id))
@@ -530,6 +550,28 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
             return c.status()
 
         return connection_call(connection_id, save, restart=True)
+
+    @app.put("/v1/connections/{connection_id}/chat")
+    def set_chat(connection_id: str, body: ChatSwitchIn) -> Response:
+        """Switch talking to Aura from Slack on or off (and the channel where every message of the
+        owner's is for Aura). Switching on needs the Aura bot to be able to answer (chat:write)."""
+
+        def switch(c):  # noqa: ANN001, ANN202
+            if c.id != "slack":
+                raise ConnectionsError(f"Talking to Aura works from Slack only (for now), not {c.label}.")
+            if body.enabled and not c.live_configured:
+                raise ConnectionsError("Set up live messages first: Aura hears you through them.")
+            if body.enabled and not c.bot_can_post():
+                raise ConnectionsError("The Aura bot can't answer yet: paste Aura's updated manifest into your Slack "
+                                       "app (it adds chat:write), use Reinstall to Workspace, then switch this on.")  # fmt: skip
+            try:
+                remote.configure(body.enabled, body.channel)
+            except ValueError as e:
+                raise ConnectionsError(str(e)) from e
+            aura.toolbox.audit.record("slack_chat_switched", enabled=body.enabled, channel=remote.settings()["channel"])
+            return c.status()
+
+        return connection_call(connection_id, switch)
 
     @app.delete("/v1/connections/{connection_id}/live")
     def remove_live(connection_id: str) -> Response:

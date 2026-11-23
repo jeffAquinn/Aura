@@ -373,10 +373,10 @@ def test_slacks_manifest_registers_aura_with_pkce_and_no_rotation():
     assert m["oauth_config"]["redirect_urls"] == ["http://localhost:47615/slack/callback"] == [slack_mod.REDIRECT]
     assert m["oauth_config"]["pkce_enabled"] is True and m["settings"]["token_rotation_enabled"] is False
     assert set(m["oauth_config"]["scopes"]["user"]) == {sc for s in slack_mod.SERVICES.values() for sc in s.scopes}
-    # Live messages: an "Aura" bot user that only listens (it can't post: Aura sends as the user,
-    # after the user approves), over Socket Mode (no public URL).
+    # Live messages: an "Aura" bot user over Socket Mode (no public URL). It reads, and its one
+    # write is chat:write, to answer the owner's own messages (talking to Aura from Slack).
     bot = set(m["oauth_config"]["scopes"]["bot"])
-    assert not any(scope.endswith(":write") for scope in bot) and "app_mentions:read" in bot
+    assert [scope for scope in bot if scope.endswith(":write")] == ["chat:write"] and "app_mentions:read" in bot
     assert m["settings"]["socket_mode_enabled"] is True and m["features"]["bot_user"]["display_name"] == "Aura"
     assert set(m["settings"]["event_subscriptions"]["bot_events"]) == {
         "app_mention", "message.channels", "message.groups", "message.im", "message.mpim"}

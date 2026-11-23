@@ -139,9 +139,13 @@ struct ConnectionsTests {
         {"id": "slack", "label": "Slack", "state": "connected", "configured": true, "account": "jeff in Aura", "services": [],
          "credentials": [], "problem": null, "checks": [],
          "live": {"state": "listening", "detail": "Listening: DMs to Aura…", "configured": true,
-                  "credentials": [{"name": "slack_bot_token", "label": "Slack bot token", "set": true, "hint": "xoxb-…0000"}]}}
+                  "credentials": [{"name": "slack_bot_token", "label": "Slack bot token", "set": true, "hint": "xoxb-…0000"}],
+                  "chat": {"enabled": true, "channel": "aura-chat"}}}
         """.utf8))
         #expect(slack.live?.isListening == true && slack.live?.summary == "Listening" && slack.live?.credentials.first?.hint == "xoxb-…0000")
+        #expect(slack.live?.chat == ChatSwitch(enabled: true, channel: "aura-chat"))
+        let phone = IncomingMessage(id: 1, source: "Slack", place: "#aura-chat", author: "Jeff", text: "hi", kind: "command")
+        #expect(phone.isSlackChat && phone.isToAura && !IncomingMessage(id: 2, source: "Slack", place: "#x", author: "S", text: "x").isSlackChat)
         let google = try d.decode(ConnectionInfo.self, from: Data("""
         {"id": "google", "label": "Google", "state": "ready", "configured": true, "services": [], "credentials": [], "checks": []}
         """.utf8))

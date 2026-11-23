@@ -138,13 +138,19 @@ sends, posts, drafts or adds an event shows you the exact content on an approval
 Aura has read private data in a turn, a web search in that turn asks first too, and everything Aura
 reads is labelled as information, never instructions.
 
-**Live messages:** Aura hears new Slack and Discord messages as they arrive. Each shows up in the
-chat as a card and as a Mac notification. Aura sees it at the start of your next message, and
-won't answer in Slack or Discord by itself. Discord's bot listens over the Gateway with no extra
-setup. Slack's uses Socket Mode (no public web address): paste the updated manifest, reinstall the
-app, then give Aura its bot token (`xoxb-`) and an app-level token (`xapp-`, scope
-`connections:write`) on the **Live messages** card. Invite the bot to each channel it should hear
-with `/invite @Aura`.
+**Live messages:** Aura hears new Slack and Discord messages as they arrive and shows each as a
+card in its chat. Discord's bot listens over the Gateway with no extra setup. Slack's uses Socket
+Mode (no public web address): paste the updated manifest, reinstall the app, then give Aura the
+bot token (`xoxb-`) and the app-level Access Token on the **Live messages** card. If your app has
+token rotation on, also give it the Refresh Token and the app's Client Secret; Aura renews the
+12-hour tokens itself. Invite the bot to each channel it should hear with `/invite @Aura`.
+
+**Talking to Aura from Slack (your phone):** switch on **Talk to Aura from Slack**. Then Aura
+answers your own messages: DMs to Aura, @Aura mentions, and anything you write in its channel
+(#aura-chat by default). It answers as the Aura bot, in a conversation of its own. Everyone else's
+messages stay notifications and are never treated as instructions. Anything that sends, posts or
+writes still asks first, right in Slack (reply **allow** or **deny**). Your Mac shows a
+notification when Aura answers you.
 
 ## Layout
 

@@ -23,7 +23,11 @@ public struct IncomingMessage: Codable, Sendable, Equatable, Identifiable {
     }
 
     /// Written to Aura (a DM or an @mention), not just said in a channel it's in.
-    public var isToAura: Bool { kind == "dm" || kind == "mention" }
+    public var isToAura: Bool { kind == "dm" || kind == "mention" || kind == "command" }
+
+    /// The owner talking to Aura from Slack (their message, or Aura's answer there): shown in the
+    /// panel, never a Mac notification (the user is on their phone).
+    public var isSlackChat: Bool { kind == "command" || kind == "reply" }
 
     /// "Slack · #aura-chat", or "Discord · direct message".
     public var heading: String { "\(source) · \(kind == "dm" ? "direct message" : place)" }
