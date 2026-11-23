@@ -27,7 +27,7 @@ from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
 
@@ -165,18 +165,27 @@ class SlackConnection:
                 raise ConnectionsError(f"Slack didn't accept the bot token: {explain_live(who.get('error'))}")
             if not who.get("bot_id"):
                 raise ConnectionsError("That isn't a bot token. Copy the Bot User OAuth Token (xoxb-) from Install App.")
+            # Which app each token belongs to: bots.info gives the bot's, and the socket address
+            # carries the app-level token's (docs.slack.dev, read 2026-11-22).
+            bot = _json(self.http.get(API + "bots.info", params={"bot": who["bot_id"]},
+                                      headers={"Authorization": f"Bearer {bot_token}"}))  # fmt: skip
+            bot_app = (bot.get("bot") or {}).get("app_id")
             opened = _json(self.http.post(API + "apps.connections.open", headers={"Authorization": f"Bearer {app_token}"}))
             if not opened.get("ok"):
                 raise ConnectionsError(f"Slack didn't accept the app-level token: {explain_live(opened.get('error'))}")
         except httpx.HTTPError as e:
             raise ConnectionsError(f"Couldn't reach Slack to check the tokens ({type(e).__name__}). Try again.") from e
+        socket_app = (parse_qs(urlparse(str(opened.get("url") or "")).query).get("app_id") or [None])[0]
+        if bot_app and socket_app and bot_app != socket_app:
+            raise ConnectionsError(two_apps(bot_app, socket_app))
         team = (self._tokens() or {}).get("team_id")
         if team and who.get("team_id") and team != who.get("team_id"):
             raise ConnectionsError("That bot is in a different workspace from the one you signed in to.")
         self.secrets.set("slack_bot_token", bot_token)
         self.secrets.set("slack_app_token", app_token)
         self.secrets.store("slack_bot", json.dumps({"user_id": who.get("user_id"), "bot_id": who.get("bot_id"),
-                                                     "name": who.get("user"), "team": who.get("team")}))  # fmt: skip
+                                                     "app_id": bot_app, "name": who.get("user"),
+                                                     "team": who.get("team")}))  # fmt: skip
         self.audit.record("connection_live_set", connection=self.id, bot=who.get("user"))
 
     def remove_live(self) -> None:
@@ -340,6 +349,12 @@ class SlackConnection:
             return json.loads(raw) if raw else None
         except ValueError:
             return None
+
+
+def two_apps(bot_app: str, socket_app: str) -> str:
+    return (f"These two tokens come from different Slack apps: the bot token from app {bot_app}, the app-level "
+            f"token from app {socket_app}. Copy both from the same app (each app's App ID is on its Basic "
+            "Information page), then save again.")  # fmt: skip
 
 
 def _json(r: httpx.Response) -> dict[str, Any]:

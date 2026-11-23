@@ -432,6 +432,10 @@ struct SnapshotTests {
                                     live: LiveInfo(credentials: [SecretInfo(name: "slack_bot_token", label: "Slack bot token", set: false),
                                                                  SecretInfo(name: "slack_app_token", label: "Slack app-level token", set: false)]))
         try renderWide("30-slack-live-setup", width: 720, ConnectionSetupView(store: ConnectionsStore(connections: [notYet]), connection: notYet))
+        try renderWide("30b-slack-live-refused", width: 720, LiveMessagesCard(
+            store: ConnectionsStore(connections: [notYet]), connection: notYet, live: notYet.live!, values: .constant(["xoxb-…", "xapp-…"]),
+            replacing: .constant(false), confirmRemove: .constant(false),
+            refusal: "These two tokens come from different Slack apps: the bot token from app A0CL2TP2S8H, the app-level token from app A0CKLRY3N0P. Copy both from the same app (each app's App ID is on its Basic Information page), then save again."))
         let listening = ConnectionInfo(id: "slack", label: "Slack", state: "connected", configured: true, account: "ns8jq008 in Aura",
                                        services: slackServices, setup: setup,
                                        live: LiveInfo(state: "listening", detail: "Listening: DMs to Aura, @Aura mentions, and the channels you've invited it to.",

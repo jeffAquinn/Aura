@@ -429,6 +429,12 @@ class SlackSocket(Listener):
                     ws.send(json.dumps({"envelope_id": msg["envelope_id"]}))  # acknowledge first, or Slack retries
                 kind = msg.get("type")
                 if kind == "hello":
+                    from aura.connections.slack import two_apps
+
+                    socket_app = (msg.get("connection_info") or {}).get("app_id")
+                    bot_app = self.slack.bot_profile().get("app_id")
+                    if bot_app and socket_app and bot_app != socket_app:
+                        raise Fatal(two_apps(bot_app, socket_app))  # the events would be for another app's bot
                     self._listening("Listening: DMs to Aura, @Aura mentions, and the channels you've invited it to.")
                 elif kind == "disconnect":
                     if msg.get("reason") == "link_disabled":

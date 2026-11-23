@@ -199,6 +199,7 @@ def test_an_invalid_session_identifies_afresh(gateway):
 class FakeSlackLive:
     def __init__(self) -> None:
         self.app_error: str | None = None
+        self.socket_app = "A0AURA"  # the app the app-level token belongs to
         self.calls: list[str] = []
 
     def __call__(self, request: httpx.Request) -> httpx.Response:
@@ -208,7 +209,7 @@ class FakeSlackLive:
         if method == "apps.connections.open":
             if auth != f"Bearer {XAPP}" or self.app_error:
                 return httpx.Response(200, json={"ok": False, "error": self.app_error or "invalid_auth"})
-            return httpx.Response(200, json={"ok": True, "url": "wss://wss.slack.com/link/?ticket=1"})
+            return httpx.Response(200, json={"ok": True, "url": f"wss://wss.slack.com/link/?ticket=1&app_id={self.socket_app}"})
         if method == "auth.test":
             if auth == f"Bearer {XOXB}":
                 return httpx.Response(200, json={"ok": True, "user_id": "UBOT", "bot_id": "B1", "user": "aura",
@@ -218,6 +219,8 @@ class FakeSlackLive:
             return httpx.Response(200, json={"ok": False, "error": "invalid_auth"})
         if auth != f"Bearer {XOXB}":
             return httpx.Response(200, json={"ok": False, "error": "invalid_auth"})
+        if method == "bots.info":
+            return httpx.Response(200, json={"ok": True, "bot": {"id": "B1", "app_id": "A0AURA", "user_id": "UBOT", "name": "aura"}})
         if method == "users.info":
             return httpx.Response(200, json={"ok": True, "user": {"id": "U2", "name": "jeffq", "real_name": "Jeff Quinn",
                                                                   "profile": {"display_name": "Jeff"}}})  # fmt: skip
@@ -256,8 +259,13 @@ def test_live_tokens_are_checked_with_slack_before_they_are_saved(slack_live):
     with pytest.raises(ConnectionsError, match="connections:write"):
         conn.set_live(XOXB, XAPP)
     assert not conn.live_configured and conn.secrets.get("slack_bot_token") is None  # nothing saved
-    fake.app_error = None
+    fake.app_error, fake.socket_app = None, "A0OTHER"  # the app-level token from a second "Aura" app
+    with pytest.raises(ConnectionsError, match="bot token from app A0AURA, the app-level token from app A0OTHER"):
+        conn.set_live(XOXB, XAPP)
+    assert not conn.live_configured
+    fake.socket_app = "A0AURA"
     conn.set_live(f" {XOXB} ", XAPP)
+    assert conn.bot_profile()["app_id"] == "A0AURA"
     live = conn.status()["live"]
     assert live["configured"] and [c["hint"] for c in live["credentials"]] == ["xoxb-…0000", "xapp-…ffff"]
     assert XOXB not in json.dumps(conn.status()) and conn.bot_profile()["user_id"] == "UBOT"
@@ -285,7 +293,7 @@ def test_slack_acknowledges_every_envelope_and_brings_in_what_people_say(slack_l
     inbox.add = lambda *a: acked_before.append(len(sockets.opened[0].sent)) or add(*a)
     socket._session(threading.Event())  # a refresh: returns, to reconnect
     sock = sockets.opened[0]
-    assert sock.url == "wss://wss.slack.com/link/?ticket=1"
+    assert sock.url == "wss://wss.slack.com/link/?ticket=1&app_id=A0AURA"
     assert sock.sent == [{"envelope_id": f"env-{n}"} for n in range(1, 8)]  # every one, kept or not
     assert acked_before == [1, 6, 7]  # each acknowledged before it's handled
     assert [(m.source, m.place, m.author, m.text, m.kind) for m in inbox.recent()] == [
@@ -311,8 +319,11 @@ def test_what_aura_itself_posted_as_the_user_is_not_news(slack_live):
 def test_slack_stops_and_says_why_on_a_bad_token_or_socket_mode_off(slack_live):
     conn, socket, _, sockets, fake = slack_live
     conn.set_live(XOXB, XAPP)
-    sockets.scripts = [[{"type": "hello"}, {"type": "disconnect", "reason": "link_disabled"}]]
+    sockets.scripts = [[{"type": "hello"}, {"type": "disconnect", "reason": "link_disabled"}],
+                       [{"type": "hello", "connection_info": {"app_id": "A0OTHER"}}]]  # fmt: skip
     with pytest.raises(Fatal, match="Socket Mode was turned off"):
+        socket._session(threading.Event())
+    with pytest.raises(Fatal, match="different Slack apps"):  # the socket is another app's: its bot isn't ours
         socket._session(threading.Event())
     fake.app_error = "invalid_auth"  # the app-level token was revoked
     with pytest.raises(Fatal, match="isn't valid"):

@@ -170,7 +170,7 @@ struct ConnectionSetupView: View {
                 if guide.signIn != nil { signIn } else { invite }
                 if let live = connection.live, connection.isConnected {
                     LiveMessagesCard(store: store, connection: connection, live: live, values: $liveValues,
-                                     replacing: $replacingLive, confirmRemove: $confirmRemoveLive, error: $error)
+                                     replacing: $replacingLive, confirmRemove: $confirmRemoveLive)
                 }
                 SecurityNote(service: connection.label, revoke: guide.signIn != nil)
             }
@@ -365,7 +365,9 @@ struct LiveMessagesCard: View {
     @Binding var values: [String]
     @Binding var replacing: Bool
     @Binding var confirmRemove: Bool
-    @Binding var error: String?
+    /// Why Slack refused the tokens: shown here, by the button (the page's top is out of sight).
+    @State var refusal: String?
+    @State private var saving = false
 
     private var isSlack: Bool { connection.id == "slack" }
 
@@ -408,7 +410,7 @@ struct LiveMessagesCard: View {
 
     private var steps: [ProviderGuide.StepInfo] {
         [
-            ProviderGuide.StepInfo(text: "On your Slack app's page, open **App Manifest**, replace everything with Aura's manifest, and **Save Changes**. It adds the Aura bot, **Socket Mode** (no web address needed) and the message events. Nothing you've set up changes.",
+            ProviderGuide.StepInfo(text: "Open the Slack app whose Client ID you saved above, and use that same app for every step here (if you made more than one “Aura” app, the tokens must all come from this one). Open **App Manifest**, replace everything with Aura's manifest, and **Save Changes**. It adds the Aura bot, **Socket Mode** (no web address needed) and the message events. Nothing you've set up changes.",
                                    links: [("Your Slack apps", "https://api.slack.com/apps")],
                                    copy: connection.setup?.manifest.map { ("Copy Aura's Manifest", $0) }),
             ProviderGuide.StepInfo(text: "Open **Install App** → **Reinstall to Workspace** → Allow. Copy the **Bot User OAuth Token** (it starts with xoxb-)."),
@@ -424,16 +426,27 @@ struct LiveMessagesCard: View {
         }
         SecureField("Bot token (starts with xoxb-)", text: $values[0]).textFieldStyle(.roundedBorder)
         SecureField("App-level token (starts with xapp-)", text: $values[1]).textFieldStyle(.roundedBorder)
+        if let refusal {
+            Label(refusal, systemImage: "xmark.octagon.fill")
+                .foregroundStyle(.red).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+        }
         HStack {
+            if saving {
+                ProgressView().controlSize(.small)
+                Text("Checking with Slack…").foregroundStyle(.secondary)
+            }
             Spacer()
             if replacing { Button("Cancel") { reset() } }
             Button("Verify & Save to Keychain") {
+                saving = true
+                refusal = nil
                 Task {
-                    error = await store.saveLive(connection.id, botToken: values[0], appToken: values[1])
-                    if error == nil { reset() }
+                    refusal = await store.saveLive(connection.id, botToken: values[0], appToken: values[1])
+                    saving = false
+                    if refusal == nil { reset() }
                 }
             }
-            .disabled(values.contains(where: \.isEmpty) || store.busy)
+            .disabled(values.contains(where: \.isEmpty) || store.busy || saving)
         }
     }
 

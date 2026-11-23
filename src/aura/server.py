@@ -489,9 +489,11 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
         try:
             result = action(connections.get(connection_id))
         except ConnectionsError as e:
+            log.info("connection %s refused: %s", connection_id, e)  # reasons only: never a token
             live.sync()
             return _error(404 if "no connection called" in str(e) else 409, str(e))
         except SecretError as e:
+            log.info("connection %s refused: %s", connection_id, e)
             return _error(422, str(e))
         # Live messages follow the connection: new tokens reconnect, a disconnect stops listening.
         live.restart(connection_id) if restart else live.sync()
