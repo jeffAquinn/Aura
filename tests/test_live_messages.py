@@ -7,6 +7,7 @@ as untrusted, counted as a private read) the model.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 import time
@@ -227,11 +228,13 @@ class FakeSlackLive:
             self.access.add(access)
             self.refresh.add(refresh)
             return httpx.Response(200, json={"ok": True, "token_type": "app_level", "access_token": access,
-                                             "refresh_token": refresh, "expires_in": 43200, "app_id": "A0AURA"})  # fmt: skip
+                                             "refresh_token": refresh, "expires_in": 43200, "app_id": self.socket_app})  # fmt: skip
         if method == "apps.connections.open":
             if auth.removeprefix("Bearer ") not in self.access or self.app_error:
                 return httpx.Response(200, json={"ok": False, "error": self.app_error or "invalid_auth"})
-            return httpx.Response(200, json={"ok": True, "url": f"wss://wss.slack.com/link/?ticket=1&app_id={self.socket_app}"})
+            # As Slack really does: the URL's "app_id" is a hash, not the App ID (it fooled Aura once).
+            hashed = hashlib.sha256(self.socket_app.encode()).hexdigest()
+            return httpx.Response(200, json={"ok": True, "url": f"wss://wss.slack.com/link/?ticket=1&app_id={hashed}"})
         if method == "auth.test":
             if auth == f"Bearer {XOXB}":
                 return httpx.Response(200, json={"ok": True, "user_id": "UBOT", "bot_id": "B1", "user": "aura",
@@ -282,17 +285,15 @@ def test_live_tokens_are_checked_with_slack_before_they_are_saved(slack_live):
     with pytest.raises(ConnectionsError, match="connections:write"):
         conn.set_live(XOXB, XAPP)
     assert not conn.live_configured and conn.secrets.get("slack_bot_token") is None  # nothing saved
-    fake.app_error, fake.socket_app = None, "A0OTHER"  # the app-level token from a second "Aura" app
-    with pytest.raises(ConnectionsError, match="bot token from app A0AURA, the Access Token .App-Level Tokens. from app A0OTHER"):
-        conn.set_live(XOXB, XAPP)
-    assert not conn.live_configured
-    fake.socket_app = "A0AURA"
+    fake.app_error = None
     tokens = json.loads(conn.secrets.get("slack_tokens"))
     conn.secrets.store("slack_tokens", json.dumps({**tokens, "app_id": "A0OLD"}))  # signed in through another app
     with pytest.raises(ConnectionsError, match="bot is from Slack app A0AURA, but Aura signed in through app A0OLD"):
         conn.set_live(XOXB, XAPP)
     conn.secrets.store("slack_tokens", json.dumps({**tokens, "app_id": "A0AURA"}))
-    conn.set_live(f" {XOXB} ", XAPP)
+    conn.set_live(f" {XOXB} ", XAPP)  # the socket URL's hashed "app_id" is no App ID: never compared
+    from aura.connections.slack import app_id
+    assert app_id("A0CKLRY3N0P") == "A0CKLRY3N0P" and app_id("ef0d81799c6f14447716e67917dc3422f5747ce3bc80f86cc8a5a4a8dbff441a") is None
     assert conn.bot_profile()["app_id"] == "A0AURA"
     live = conn.status()["live"]
     assert live["configured"] and [c["hint"] for c in live["credentials"] if c["set"]] == ["xoxb-…0000", "xapp…ffff"]
@@ -316,11 +317,12 @@ def test_a_rotating_app_level_token_is_renewed_and_its_refresh_token_kept(slack_
     with pytest.raises(ConnectionsError, match="signed in through app A0OLD"):
         conn.set_live(XOXB, ROTATING, REFRESH, SECRET)
     conn.secrets.store("slack_tokens", json.dumps(tokens))
-    fake.socket_app = "A0OTHER"
-    with pytest.raises(ConnectionsError, match="different Slack apps"):
-        conn.set_live(XOXB, ROTATING, REFRESH, SECRET)
-    fake.socket_app = "A0AURA"
     assert REFRESH in fake.refresh and fake.renewals == 0  # nothing spent
+    fake.socket_app = "A0OTHER"  # the token from a second "Aura" app: its renewal names that app
+    with pytest.raises(ConnectionsError, match="bot token from app A0AURA, the Access Token .App-Level Tokens. from app A0OTHER"):
+        conn.set_live(XOXB, ROTATING, REFRESH, SECRET)
+    assert not conn.live_configured
+    fake.socket_app, fake.refresh, fake.renewals = "A0AURA", {REFRESH}, 0  # start again with a fresh pair
     conn.set_live(XOXB, ROTATING, f" {REFRESH} ", SECRET)  # checked as is, then renewed once: proves both work
     assert fake.renewals == 1 and REFRESH not in fake.refresh
     assert conn.secrets.get("slack_app_token") == f"{ROTATING}1" and conn.secrets.get("slack_app_refresh") == f"{REFRESH}1"
@@ -335,7 +337,7 @@ def test_a_rotating_app_level_token_is_renewed_and_its_refresh_token_kept(slack_
     fake.access.discard(f"{ROTATING}2")
     sockets.scripts = [[{"type": "hello"}, {"type": "disconnect", "reason": "refresh_requested"}]]
     socket._session(threading.Event())
-    assert fake.renewals == 3 and sockets.opened[0].url.endswith("app_id=A0AURA")
+    assert fake.renewals == 3 and sockets.opened[0].url.startswith("wss://wss.slack.com/link/?ticket=1")
     # A spent refresh token can't renew: the listener stops and says how to fix it.
     conn.secrets.set("slack_app_refresh", REFRESH)
     fake.access.clear()
@@ -365,7 +367,7 @@ def test_slack_acknowledges_every_envelope_and_brings_in_what_people_say(slack_l
     inbox.add = lambda *a: acked_before.append(len(sockets.opened[0].sent)) or add(*a)
     socket._session(threading.Event())  # a refresh: returns, to reconnect
     sock = sockets.opened[0]
-    assert sock.url == "wss://wss.slack.com/link/?ticket=1&app_id=A0AURA"
+    assert sock.url.startswith("wss://wss.slack.com/link/?ticket=1&app_id=")
     assert sock.sent == [{"envelope_id": f"env-{n}"} for n in range(1, 8)]  # every one, kept or not
     assert acked_before == [1, 6, 7]  # each acknowledged before it's handled
     assert [(m.source, m.place, m.author, m.text, m.kind) for m in inbox.recent()] == [

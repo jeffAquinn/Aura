@@ -21,13 +21,14 @@ app-level token (xapp-, connections:write). Both are checked with Slack before t
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import parse_qs, urlencode, urlparse
+from urllib.parse import urlencode
 
 import httpx
 
@@ -180,7 +181,7 @@ class SlackConnection:
             # carries the app-level token's (docs.slack.dev, read 2026-11-22).
             bot = _json(self.http.get(API + "bots.info", params={"bot": who["bot_id"]},
                                       headers={"Authorization": f"Bearer {bot_token}"}))  # fmt: skip
-            bot_app = (bot.get("bot") or {}).get("app_id")
+            bot_app = app_id((bot.get("bot") or {}).get("app_id"))
             signed_in_app = (self._tokens() or {}).get("app_id")
             if bot_app and signed_in_app and bot_app != signed_in_app:
                 raise ConnectionsError(f"That bot is from Slack app {bot_app}, but Aura signed in through app "
@@ -197,17 +198,14 @@ class SlackConnection:
                 opened = self._open_socket(app_token)
             if not opened.get("ok"):
                 raise ConnectionsError(f"Slack didn't accept the access token: {explain_live(opened.get('error'))}")
-            socket_app = (parse_qs(urlparse(str(opened.get("url") or "")).query).get("app_id") or [None])[0]
-            socket_app = socket_app or (renewal or {}).get("app_id")
-            if bot_app and socket_app and bot_app != socket_app:
-                raise ConnectionsError(two_apps(bot_app, socket_app))
-            if rotating and signed_in_app and socket_app and socket_app != signed_in_app:
-                raise ConnectionsError(f"This token is from Slack app {socket_app}, but the Client ID Aura signed in "
-                                       f"with is app {signed_in_app}'s, and renewing needs the token's own app. Sign "
-                                       f"in with app {socket_app}'s Client ID (step 2), then save again.")  # fmt: skip
+            # (The socket address's own "app_id" isn't the App ID: it's a long hash. Slack names the
+            # token's app in a renewal's answer, and in the socket's hello, which the listener checks.)
             if rotating and renewal is None:  # renew once now: proves the refresh token and the Client Secret
                 renewal = self._refresh_app_token(refresh_token, client_secret)
                 app_token = str(renewal["access_token"])
+            token_app = app_id((renewal or {}).get("app_id"))
+            if bot_app and token_app and bot_app != token_app:
+                raise ConnectionsError(two_apps(bot_app, token_app))
         except httpx.HTTPError as e:
             raise ConnectionsError(f"Couldn't reach Slack to check the tokens ({type(e).__name__}). Try again.") from e
         self.secrets.set("slack_bot_token", bot_token)
@@ -444,6 +442,11 @@ class SlackConnection:
             return json.loads(raw) if raw else None
         except ValueError:
             return None
+
+
+def app_id(value: Any) -> str | None:
+    """A Slack App ID (A0CKLRY3N0P), or None for anything else (e.g. the hash in a socket URL)."""
+    return value if isinstance(value, str) and re.fullmatch(r"A[A-Z0-9]{4,20}", value) else None
 
 
 def two_apps(bot_app: str, socket_app: str) -> str:
