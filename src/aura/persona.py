@@ -11,6 +11,7 @@ from datetime import date
 from pathlib import Path
 
 from aura.identity import DEFAULT, Persona, validate
+from aura.tools import vault_map
 
 CONSTITUTION = Path(__file__).with_name("constitution.md").read_text(encoding="utf-8").strip()
 
@@ -20,6 +21,7 @@ TOOLS_GUIDE = """\
 Your tools
 - The Vault ({vault}): the one folder you can work in. List, read, write, create folders, and \
 delete there, and nowhere else. Paths are relative to the vault root, e.g. "notes/todo.md".
+{vault_map}
 - Web search: use it for anything current or time-sensitive (news, weather, prices, recent \
 events) or anything you are unsure of. Cite the URLs you relied on.
 - Python sandbox: use it for calculations and data analysis. numpy and pandas are available, the \
@@ -81,7 +83,7 @@ def system_prompt(
         OPENING,
         "Your constitution (permanent)\n" + CONSTITUTION,
         "Your expression (adjustable persona settings)\n" + p.render(),
-        TOOLS_GUIDE.format(vault=shown),
+        TOOLS_GUIDE.format(vault=shown, vault_map=vault_map.guide()),
         CORE_RULES.format(name=p.name, engine=engine),  # last: the rules the model weighs most
         f"Today's date is {today.strftime('%A, %B %-d, %Y')}.",
     ] if part)

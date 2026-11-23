@@ -9,6 +9,7 @@ from collections.abc import Iterator
 import openai
 
 from aura.brain import ApprovalNeeded, Aura, Event, Status, Text
+from aura.tools import vault_map
 
 _TTY = sys.stdout.isatty()
 
@@ -61,6 +62,7 @@ def _ask(request: ApprovalNeeded) -> list[bool]:
 def main() -> None:
     try:
         aura = Aura()
+        vault_map.seed(aura.toolbox.vault)  # the Codex of Emergence, laid out once
     except OSError as e:
         sys.exit(f"Aura couldn't start: {e}")
     s, tb = aura.settings, aura.toolbox

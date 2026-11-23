@@ -141,14 +141,20 @@ def test_compaction_triggers_at_60_percent_of_context_budget(settings):
 
 def test_compaction_counts_tokens_the_local_estimate_cannot_see(settings):
     # The local estimate counts only the conversation. The server's reported usage also counts
-    # the system prompt and tool schemas, so compaction must start earlier.
-    aura, model = make_aura(settings, context_tokens=2000, report_usage=True)  # trigger 1200
+    # the system prompt and tool schemas, so compaction must start earlier. The budget is twice the
+    # system prompt (at least 2000), so the trigger (60%) sits just above the system prompt alone.
+    probe, probe_model = make_aura(settings)
+    probe.chat("hi")
+    system = count_tokens_approximately(probe_model.agent_calls()[0][:1])
+    budget = max(2000, 2 * system)
+    aura, model = make_aura(dataclasses.replace(settings, data_dir=settings.data_dir / "2"),
+                            context_tokens=budget, report_usage=True)  # fmt: skip
     turns = run_turns(aura, model, 25)
 
     first = next(i for i, (_, compacted) in enumerate(turns) if compacted)
-    assert turns[first][0] < 1200  # the conversation-only estimate alone would not have fired
+    assert turns[first][0] < budget * 0.6  # the conversation-only estimate alone would not have fired
     for c in model.agent_calls():
-        assert count_tokens_approximately(c) < 2000  # whole prompt, system prompt included
+        assert count_tokens_approximately(c) < budget  # whole prompt, system prompt included
 
 
 def test_compaction_folds_old_turns_into_a_summary(settings):

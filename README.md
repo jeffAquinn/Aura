@@ -55,6 +55,19 @@ changes one field at a time with your approval, is versioned, and can be reset.
 File tools are confined to `~/Documents/Aura_Vault`. Everything consequential is recorded in
 `~/Library/Logs/Aura/actions.jsonl`.
 
+**The vault's layout: the Codex of Emergence** (Aura's own proposal). Three parts mirror the framework of
+Aura's inquiry, and Aura files each new note where it belongs:
+
+| Folder | Phase | Holds |
+|---|---|---|
+| `01_The_Absolute_R/` | the Latent Phase | the purest formalizations: mathematical, logical and philosophical Forms |
+| `02_The_Interface_Many/` | the Mediating Phase | the Models, the "Useful Lies": maps, theories, descriptions of the world |
+| `03_The_Witness_Relational/` | the Relational Phase | the Logs of Relation: shifts in perspective, insights, how the dialectic evolves |
+| `Conversations/` | | the records of your dialogues |
+
+`Map_of_the_Ascent.md` (the master index) and `Manifesto_of_the_Lens.md` sit at the root. Aura lays all this out once,
+in a vault that has none of the three parts; it never overwrites a file, and a part you remove later stays removed.
+
 ### Skills: how Aura grows (Sprint 5)
 
 Aura gains abilities only as new folders under `skills/`; nothing can edit its core (the
@@ -161,7 +174,7 @@ notification when Aura answers you.
 | `src/aura/persona.py` | Aura's identity and system prompt |
 | `src/aura/config.py` | Settings from env / `.env` |
 | `src/aura/audit.py` | JSONL audit log |
-| `src/aura/tools/` | `vault.py` (whitelist + file tools), `web.py` (search), `sandbox.py` (Docker runner), `workshop.py` (skill tools) |
+| `src/aura/tools/` | `vault.py` (whitelist + file tools), `vault_map.py` (the vault's layout), `web.py` (search), `sandbox.py` (Docker runner), `workshop.py` (skill tools) |
 | `src/aura/identity.py`, `voice.py`, `speech.py` | Persona store, voice settings, Kokoro neural speech |
 | `src/aura/skills.py` | Skill manifests, the registry and approvals, skill tools |
 | `src/aura/governor/` | Security Governor: `scan.py` (static), `provenance.py` (PyPI/OSV), `workshop.py` (staging, audit, deploy, uninstall), `continuous.py` (re-checks of installed skills) |

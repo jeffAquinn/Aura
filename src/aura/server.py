@@ -42,6 +42,7 @@ from aura.secrets import KEYS, SecretError
 from aura.skills import SkillError
 from aura.speech import Kokoro, SpeechUnavailable
 from aura.tools.sandbox import find_docker
+from aura.tools import vault_map
 from aura.voice import VoiceError
 
 KEEP_ALIVE = "30m"
@@ -751,6 +752,7 @@ def main() -> None:
     _log_to(settings.audit_log.parent / "server.log")
     try:
         aura = Aura(settings)
+        vault_map.seed(aura.toolbox.vault)  # the Codex of Emergence, laid out once
     except OSError as e:
         sys.exit(f"aura-server: couldn't start: {e}")
 
