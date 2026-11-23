@@ -368,10 +368,11 @@ def slack_begin(conn: SlackConnection, fake: FakeSlack, services: list[str], gra
     return query
 
 
-def test_slacks_manifest_registers_aura_with_pkce_and_no_rotation():
+def test_slacks_manifest_registers_aura_with_pkce_and_no_rotation_for_a_new_app():
     m = json.loads(slack_mod.manifest())
     assert m["oauth_config"]["redirect_urls"] == ["http://localhost:47615/slack/callback"] == [slack_mod.REDIRECT]
     assert m["oauth_config"]["pkce_enabled"] is True and m["settings"]["token_rotation_enabled"] is False
+    assert m["settings"]["app_level_token_rotation_enabled"] is False
     assert set(m["oauth_config"]["scopes"]["user"]) == {sc for s in slack_mod.SERVICES.values() for sc in s.scopes}
     # Live messages: an "Aura" bot user over Socket Mode (no public URL). It reads, and its one
     # write is chat:write, to answer the owner's own messages (talking to Aura from Slack).
@@ -381,6 +382,34 @@ def test_slacks_manifest_registers_aura_with_pkce_and_no_rotation():
     assert set(m["settings"]["event_subscriptions"]["bot_events"]) == {
         "app_mention", "message.channels", "message.groups", "message.im", "message.mpim"}
     assert m["features"]["app_home"]["messages_tab_read_only_enabled"] is False  # the user can DM Aura
+
+
+def test_slacks_manifest_keeps_token_rotation_on_once_the_app_has_it(slack):
+    # Slack refuses a manifest that turns rotation off again ("can not be disabled once enabled",
+    # the user, 2026-11-22): Aura's copy says what the app's tokens show, and remembers it.
+    conn, fake = slack
+
+    def rotation() -> tuple[bool, bool]:
+        m = json.loads(conn.status()["setup"]["manifest"])["settings"]
+        return m["token_rotation_enabled"], m["app_level_token_rotation_enabled"]
+
+    assert rotation() == (False, False)  # a new app: off, as Slack makes it
+    conn.secrets.store("slack_tokens", json.dumps({"access_token": "xoxe." + "xoxp-1-" + "u" * 40, "scopes": ""}))
+    conn.secrets.set("slack_app_token", "xoxe." + "xapp-1-A0AURA-1234567890123-" + "a" * 64)
+    assert rotation() == (True, True)
+    conn.secrets.delete("slack_tokens")  # a lapsed sign-in, and live messages removed
+    conn.remove_live()
+    assert rotation() == (True, True)  # still on in Slack: it can't be turned off
+    conn.remove_credentials()  # another app (a new Client ID) starts unknown again
+    conn.set_credentials(SLACK_ID)
+    assert rotation() == (False, False)
+
+
+def test_a_rotating_bot_token_is_refused_with_what_to_do(slack):
+    conn, fake = slack
+    with pytest.raises(ConnectionsError, match="Keep the bot token Aura already has"):
+        conn.set_live("xoxe." + "xoxb-1-" + "b" * 60, "xapp-" + "1-A0AURA-1234567890123-" + "a" * 64)
+    assert fake.calls == []  # refused before anything reached Slack
 
 
 def test_slack_needs_only_a_client_id(tmp_path):

@@ -414,7 +414,7 @@ struct LiveMessagesCard: View {
 
     private var steps: [ProviderGuide.StepInfo] {
         [
-            ProviderGuide.StepInfo(text: "Open the Slack app whose Client ID you saved above, and use that same app for every step here (if you made more than one “Aura” app, the tokens must all come from this one). Open **App Manifest**, replace everything with Aura's manifest, and **Save Changes**. It adds the Aura bot, **Socket Mode** (no web address needed) and the message events. Nothing you've set up changes.",
+            ProviderGuide.StepInfo(text: "Open the Slack app whose Client ID you saved above, and use that same app for every step here (if you made more than one “Aura” app, the tokens must all come from this one). Open **App Manifest**, replace everything with Aura's manifest, and **Save Changes**. It adds the Aura bot, **Socket Mode** (no web address needed) and the message events. Nothing you've set up changes. (If Slack says token rotation can't be turned off, change `false` to `true` on that line of the manifest: Aura's copy matches your app once it has seen its tokens.)",
                                    links: [("Your Slack apps", "https://api.slack.com/apps")],
                                    copy: connection.setup?.manifest.map { ("Copy Aura's Manifest", $0) }),
             ProviderGuide.StepInfo(text: "Open **Install App** → **Reinstall to Workspace** → Allow. Copy the **Bot User OAuth Token** (it starts with xoxb-)."),

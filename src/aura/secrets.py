@@ -46,6 +46,7 @@ KEYS = {
         KeySpec("slack_client_id", "Slack app Client ID", min_length=10, group="slack", pattern=r"\d{6,20}\.\d{6,20}",
                 example="1234567890123.1234567890123"),
         KeySpec("slack_tokens", "Slack sign-in", group="slack", user_settable=False),
+        KeySpec("slack_app", "Slack app's token rotation", group="slack", user_settable=False),  # not secret: kept with its app
         # Live messages (Socket Mode): the app's Aura bot user, and the app-level token that opens
         # the socket. Their own group: they're set on the Live messages card, not with the Client ID.
         KeySpec("slack_bot_token", "Slack bot token", "xoxb-", min_length=40, group="slack_live"),

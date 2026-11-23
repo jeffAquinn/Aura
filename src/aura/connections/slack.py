@@ -72,8 +72,13 @@ BOT_SCOPES = ("app_mentions:read", "channels:history", "groups:history", "im:his
 BOT_EVENTS = ("app_mention", "message.channels", "message.groups", "message.im", "message.mpim")
 
 
-def manifest() -> str:
-    """The Slack app the user creates (api.slack.com/apps → Create New App → From a manifest)."""
+def manifest(token_rotation: bool = False, app_level_rotation: bool = False) -> str:
+    """The Slack app the user creates (api.slack.com/apps → Create New App → From a manifest).
+
+    Token rotation, once on, can't be turned off again, and Slack refuses a manifest that says
+    otherwise (or leaves the setting out). So when Aura can tell the app has it on, from the tokens'
+    xoxe. prefix, the manifest says so too.
+    """
     return json.dumps({
         "display_information": {"name": "Aura", "description": "Aura, the assistant on your Mac.",
                                 "background_color": "#7c4dff"},
@@ -84,7 +89,8 @@ def manifest() -> str:
                          "scopes": {"user": [scope for s in SERVICES.values() for scope in s.scopes],
                                     "bot": list(BOT_SCOPES)}},
         "settings": {"event_subscriptions": {"bot_events": list(BOT_EVENTS)}, "org_deploy_enabled": False,
-                     "socket_mode_enabled": True, "token_rotation_enabled": False},
+                     "socket_mode_enabled": True, "token_rotation_enabled": token_rotation,
+                     "app_level_token_rotation_enabled": app_level_rotation},
     }, indent=2)  # fmt: skip
 
 
@@ -123,11 +129,27 @@ class SlackConnection:
                           "granted": bool(tokens) and set(s.scopes) <= granted} for s in SERVICES.values()],
             "credentials": self.secrets.listing(self.id), "problem": self._current_problem(),
             "checks": list(self._checks.values()),
-            "setup": {"redirect_url": f"http://localhost:{self.port}/slack/callback", "manifest": manifest()},
+            "setup": {"redirect_url": f"http://localhost:{self.port}/slack/callback", "manifest": manifest(*self.rotation())},
             "live": {**(self.listener.status() if self.listener else {"state": "off", "detail": ""}),
                      "configured": self.live_configured, "credentials": self.secrets.listing("slack_live"),
                      "chat": self.listener.chat.settings() if self.listener and self.listener.chat else None},
         }  # fmt: skip
+
+    def rotation(self) -> tuple[bool, bool]:
+        """Whether the app has (OAuth) token rotation on, and app-level token rotation: seen from its
+        tokens (a rotating one starts with xoxe.) and remembered, since neither can be turned off and
+        the tokens can go (a lapsed sign-in). Never seen counts as off."""
+        user = str((self._tokens() or {}).get("access_token") or "")
+        bot = str(self.secrets.get("slack_bot_token") or "")
+        try:
+            known = json.loads(self.secrets.get("slack_app") or "{}")
+        except ValueError:
+            known = {}
+        seen = {"token_rotation": bool(known.get("token_rotation")) or user.startswith("xoxe.") or bot.startswith("xoxe."),
+                "app_level_rotation": bool(known.get("app_level_rotation")) or self.rotating}  # fmt: skip
+        if seen != {k: bool(known.get(k)) for k in seen}:
+            self.secrets.store("slack_app", json.dumps(seen))
+        return seen["token_rotation"], seen["app_level_rotation"]
 
     @property
     def live_configured(self) -> bool:
@@ -154,6 +176,7 @@ class SlackConnection:
         self.disconnect()
         self.remove_live()
         self.secrets.delete("slack_client_id")
+        self.secrets.delete("slack_app")  # what Aura knew about that app
         self.audit.record("connection_credentials_removed", connection=self.id)
 
     # ── live messages: the bot token and the app-level token, checked with Slack first ──────
@@ -161,6 +184,10 @@ class SlackConnection:
     def set_live(self, bot_token: str, app_token: str, refresh_token: str = "", client_secret: str = "") -> None:
         from aura.connections.live import explain_live
 
+        if bot_token.strip().startswith("xoxe."):
+            raise ConnectionsError("This bot token rotates (it starts with xoxe.): Aura can't renew a bot token yet. "
+                                   "Keep the bot token Aura already has (it keeps working), or ask for this to be "
+                                   "added.")  # fmt: skip
         bot_token = self.secrets.spec_check("slack_bot_token", bot_token)
         app_token = self.secrets.spec_check("slack_app_token", app_token)
         rotating = app_token.startswith("xoxe.")
@@ -220,6 +247,7 @@ class SlackConnection:
         self.secrets.store("slack_bot", json.dumps({"user_id": who.get("user_id"), "bot_id": who.get("bot_id"),
                                                      "app_id": bot_app, "name": who.get("user"),
                                                      "team": who.get("team")}))  # fmt: skip
+        self.rotation()
         self.audit.record("connection_live_set", connection=self.id, bot=who.get("user"))
 
     def remove_live(self) -> None:
@@ -363,6 +391,7 @@ class SlackConnection:
                        "expires_at": self.clock() + float(user.get("expires_in") or 43200)}  # fmt: skip
         self.secrets.store("slack_tokens", json.dumps(tokens))
         self._checks = {}
+        self.rotation()
         missing = [SERVICES[s].label for s in self._wanted if not set(SERVICES[s].scopes) <= granted]
         self.audit.record("connection_connected", connection=self.id, account=who,
                           services=[s for s in self._wanted if SERVICES[s].label not in missing])  # fmt: skip
@@ -407,6 +436,7 @@ class SlackConnection:
             raise ConnectionsError(f"Couldn't reach Slack to renew the sign-in ({type(e).__name__}).") from e
         fresh = body.get("authed_user") or body
         if not body.get("ok") or not fresh.get("access_token"):
+            self.rotation()  # remembered: the token that shows it is going
             self.secrets.delete("slack_tokens")
             self.audit.record("connection_expired", connection=self.id)
             raise ConnectionsError("Slack's sign-in ran out and couldn't be renewed. Press Sign In Again in Settings → "
@@ -462,6 +492,7 @@ class SlackConnection:
             return self.status()
         if not alive.get("ok"):
             if alive.get("error") in ("invalid_auth", "token_revoked", "account_inactive", "not_authed"):
+                self.rotation()  # remembered: the token that shows it is going
                 self.secrets.delete("slack_tokens")
                 self.audit.record("connection_expired", connection=self.id)
             self._problem = f"Slack: {_explain(alive.get('error'))}"
@@ -495,6 +526,7 @@ class SlackConnection:
                 self.http.post(API + "auth.revoke", headers={"Authorization": f"Bearer {tokens['access_token']}"})
             except httpx.HTTPError:
                 pass  # offline: the local copy is still deleted; the app can be removed in Slack too
+            self.rotation()  # remembered: the token that shows it is going
             self.secrets.delete("slack_tokens")
             self.audit.record("connection_disconnected", connection=self.id)
         self._checks, self._problem = {}, None
