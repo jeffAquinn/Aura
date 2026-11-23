@@ -435,7 +435,7 @@ struct SnapshotTests {
         try renderWide("30b-slack-live-refused", width: 720, LiveMessagesCard(
             store: ConnectionsStore(connections: [notYet]), connection: notYet, live: notYet.live!, values: .constant(["xoxb-…", "xoxe.xapp-1-…", "", ""]),
             replacing: .constant(false), confirmRemove: .constant(false),
-            refusal: "These two tokens come from different Slack apps: the bot token from app A0CL2TP2S8H, the app-level token from app A0CKLRY3N0P. Copy both from the same app (each app's App ID is on its Basic Information page), then save again."))
+            refusal: "These tokens come from different Slack apps: the bot token from app A0CL2TP2S8H, the Access Token (App-Level Tokens) from app A0CKLRY3N0P. Copy them all from the same app (each app's App ID is on its Basic Information page), then save again."))
         let listening = ConnectionInfo(id: "slack", label: "Slack", state: "connected", configured: true, account: "ns8jq008 in Aura",
                                        services: slackServices, setup: setup,
                                        live: LiveInfo(state: "listening", detail: "Listening: DMs to Aura, @Aura mentions, and the channels you've invited it to.",

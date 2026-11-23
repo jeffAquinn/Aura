@@ -205,7 +205,7 @@ class FakeSlackLive:
         self.app_error: str | None = None
         self.socket_app = "A0AURA"  # the app the app-level token belongs to
         self.calls: list[str] = []
-        self.access = {XAPP}  # app-level tokens Slack accepts right now
+        self.access = {XAPP, ROTATING}  # app-level tokens Slack accepts right now
         self.refresh = {REFRESH}  # refresh tokens not yet spent (each works once)
         self.renewals = 0
 
@@ -283,7 +283,7 @@ def test_live_tokens_are_checked_with_slack_before_they_are_saved(slack_live):
         conn.set_live(XOXB, XAPP)
     assert not conn.live_configured and conn.secrets.get("slack_bot_token") is None  # nothing saved
     fake.app_error, fake.socket_app = None, "A0OTHER"  # the app-level token from a second "Aura" app
-    with pytest.raises(ConnectionsError, match="bot token from app A0AURA, the app-level token from app A0OTHER"):
+    with pytest.raises(ConnectionsError, match="bot token from app A0AURA, the Access Token .App-Level Tokens. from app A0OTHER"):
         conn.set_live(XOXB, XAPP)
     assert not conn.live_configured
     fake.socket_app = "A0AURA"
@@ -309,7 +309,19 @@ def test_a_rotating_app_level_token_is_renewed_and_its_refresh_token_kept(slack_
     with pytest.raises(ConnectionsError, match="Client Secret isn't this app's"):
         conn.set_live(XOXB, ROTATING, REFRESH, "f" * 32)
     assert not conn.live_configured and REFRESH in fake.refresh  # a refused secret spends nothing
-    conn.set_live(XOXB, ROTATING, f" {REFRESH} ", SECRET)  # renewed once, at once: proves both work
+    # Signed in with another app's Client ID, or the token from another app: refused before the
+    # single-use refresh token is spent (renewing needs the token's own app's Client ID).
+    tokens = json.loads(conn.secrets.get("slack_tokens"))
+    conn.secrets.store("slack_tokens", json.dumps({**tokens, "app_id": "A0OLD"}))
+    with pytest.raises(ConnectionsError, match="signed in through app A0OLD"):
+        conn.set_live(XOXB, ROTATING, REFRESH, SECRET)
+    conn.secrets.store("slack_tokens", json.dumps(tokens))
+    fake.socket_app = "A0OTHER"
+    with pytest.raises(ConnectionsError, match="different Slack apps"):
+        conn.set_live(XOXB, ROTATING, REFRESH, SECRET)
+    fake.socket_app = "A0AURA"
+    assert REFRESH in fake.refresh and fake.renewals == 0  # nothing spent
+    conn.set_live(XOXB, ROTATING, f" {REFRESH} ", SECRET)  # checked as is, then renewed once: proves both work
     assert fake.renewals == 1 and REFRESH not in fake.refresh
     assert conn.secrets.get("slack_app_token") == f"{ROTATING}1" and conn.secrets.get("slack_app_refresh") == f"{REFRESH}1"
     hints = {c["name"]: c["hint"] for c in conn.status()["live"]["credentials"]}
@@ -327,7 +339,7 @@ def test_a_rotating_app_level_token_is_renewed_and_its_refresh_token_kept(slack_
     # A spent refresh token can't renew: the listener stops and says how to fix it.
     conn.secrets.set("slack_app_refresh", REFRESH)
     fake.access.clear()
-    with pytest.raises(Fatal, match="each one works only once"):
+    with pytest.raises(Fatal, match="each works only once"):
         socket._session(threading.Event())
     fake.access.add(XAPP)
     conn.set_live(XOXB, XAPP)  # a plain token replaces it: nothing left to renew

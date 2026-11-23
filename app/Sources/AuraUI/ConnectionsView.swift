@@ -414,7 +414,8 @@ struct LiveMessagesCard: View {
                                    links: [("Your Slack apps", "https://api.slack.com/apps")],
                                    copy: connection.setup?.manifest.map { ("Copy Aura's Manifest", $0) }),
             ProviderGuide.StepInfo(text: "Open **Install App** → **Reinstall to Workspace** → Allow. Copy the **Bot User OAuth Token** (it starts with xoxb-)."),
-            ProviderGuide.StepInfo(text: "Open **Basic Information** → App-Level Tokens → **Generate Token and Scopes**. Name it “Aura live”, add the scope **connections:write**, then Generate. Copy the token (it starts with xapp-). If your app has **token rotation** on, Slack shows an **Access Token** (xoxe.xapp-…) and a **Refresh Token** (xoxe-1-…): copy both, plus the **Client Secret** under App Credentials on the same page. Aura then renews the token every 12 hours by itself."),
+            ProviderGuide.StepInfo(text: "Open **Basic Information** → scroll to **App-Level Tokens** → **Generate Token and Scopes**. Name it “Aura live”, click **Add Scope** → **connections:write**, then **Generate**. Slack shows an **Access Token** (xoxe.xapp-1-…) and, because token rotation is on in your app, a **Refresh Token** (xoxe-1-…). Copy both now: Slack shows them only once. (If your app shows a single token starting with xapp-, that's all you need.)"),
+            ProviderGuide.StepInfo(text: "On the same Basic Information page, under **App Credentials**, click **Show** next to **Client Secret** and copy it. Aura uses it to renew the Access Token every 12 hours."),
             ProviderGuide.StepInfo(text: "Paste them below. Aura checks them with Slack before it saves them to the Keychain."),
             ProviderGuide.StepInfo(text: "In Slack, invite the bot to each channel you want Aura to hear: type **/invite @Aura** in #aura-chat. Direct messages to Aura need no invite."),
         ]
@@ -425,11 +426,11 @@ struct LiveMessagesCard: View {
             Step(n: i + 1, text: step.text, links: step.links, copy: step.copy)
         }
         SecureField("Bot token (starts with xoxb-)", text: $values[0]).textFieldStyle(.roundedBorder)
-        SecureField("App-level token (xapp-… or xoxe.xapp-…)", text: $values[1]).textFieldStyle(.roundedBorder)
+        SecureField("Access Token from App-Level Tokens (xoxe.xapp-1-… or xapp-1-…)", text: $values[1]).textFieldStyle(.roundedBorder)
         if rotates {
-            Text("This token rotates (token rotation is on in your app): it lasts 12 hours, so Aura renews it with its refresh token and your app's Client Secret.")
+            Text("This Access Token rotates: it lasts 12 hours, so Aura renews it with the Refresh Token shown with it and your app's Client Secret.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-            SecureField("Refresh token (starts with xoxe-1-)", text: $values[2]).textFieldStyle(.roundedBorder)
+            SecureField("Refresh Token (xoxe-1-…), shown with the Access Token", text: $values[2]).textFieldStyle(.roundedBorder)
             SecureField("Client Secret (Basic Information → App Credentials)", text: $values[3]).textFieldStyle(.roundedBorder)
         }
         if let refusal {

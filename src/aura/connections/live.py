@@ -382,10 +382,11 @@ _LIVE_ERRORS = {
     "not_allowed_token_type": "That's the wrong kind of token: the bot token starts with xoxb-, the app-level "
                               "token with xapp-.",
     "missing_scope": "The app-level token needs the connections:write scope. Generate a new one with it.",
-    "token_expired": "That app-level token has expired (rotating tokens last 12 hours). Paste its refresh token and "
+    "token_expired": "That Access Token has expired (rotating tokens last 12 hours). Paste its Refresh Token and "
                      "your app's Client Secret so Aura can renew it.",
-    "invalid_refresh_token": "Slack didn't accept the refresh token (each one works only once). Generate a new "
-                             "app-level token and paste its access and refresh tokens.",
+    "invalid_refresh_token": "Slack didn't accept the Refresh Token. Paste the whole Refresh Token that was shown "
+                             "with this Access Token (each works only once). If you no longer have it, click Generate "
+                             "Token and Scopes again and paste the new pair.",
     "bad_client_secret": "That Client Secret isn't this app's. Copy it from the app's Basic Information page.",
     "invalid_client_id": "The Client ID Aura has isn't this app's. Sign in to Slack with this app's Client ID first "
                          "(step 2 above).",
