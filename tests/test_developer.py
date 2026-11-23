@@ -344,13 +344,20 @@ def test_the_card_names_codex_and_the_chatgpt_plan():
 # ── engines: the flags that isolate them ───────────────────────────────────────────────────
 
 
-def test_claude_code_runs_bare_capped_and_without_web_tools():
+def test_claude_code_runs_on_the_users_plan_without_web_tools():
     argv = ClaudeCode().command("Build it.", 1.25)
-    assert "--bare" in argv and argv[argv.index("--max-budget-usd") + 1] == "1.25"
+    assert "--bare" not in argv and "--max-budget-usd" not in argv  # a plan, not an API bill (the user's choice)
     disallowed = argv[argv.index("--disallowedTools") + 1 : argv.index("--strict-mcp-config")]
     assert {"WebFetch", "WebSearch", "Agent"} <= set(disallowed)
     assert argv[argv.index("--mcp-config") + 1] == '{"mcpServers": {}}'
-    assert ClaudeCode().hosts == ("api.anthropic.com",)
+    assert ClaudeCode().hosts == ("api.anthropic.com",) and not ClaudeCode().caps_cost
+    # The plan's sign-in token goes in, by name; an API key never does (it would bill per use).
+    assert "CLAUDE_CODE_OAUTH_TOKEN" in ClaudeCode().env_names() and "ANTHROPIC_API_KEY" not in ClaudeCode().env_names()
+    secrets = Secrets()
+    assert "claude setup-token" in ClaudeCode().problem(secrets)
+    token = "sk-ant-oat01-" + "t" * 40
+    secrets.set("claude_oauth_token", token)
+    assert ClaudeCode().problem(secrets) is None and ClaudeCode().env_values(secrets)["CLAUDE_CODE_OAUTH_TOKEN"] == token
 
     events = ClaudeCode().parse(json.dumps({"type": "assistant", "message": {"content": [
         {"type": "tool_use", "name": "Write", "input": {"file_path": "/work/skill/skill.py"}}]}}))
@@ -407,18 +414,30 @@ def test_the_egress_proxy_reads_the_hostname_from_a_real_client_hello():
 
 def test_keys_are_validated_and_never_returned():
     secrets = Secrets()
-    with pytest.raises(SecretError, match="should start with 'sk-ant-'"):
-        secrets.set("anthropic_api_key", "tvly-not-this-one-0123456789")
+    with pytest.raises(SecretError, match="should look like sk-ant-oat01-"):
+        secrets.set("claude_oauth_token", "sk-ant-api03-" + "a" * 40)  # an API key is not the plan's token
     with pytest.raises(SecretError, match="unknown key"):
         secrets.set("aws", "x" * 30)
-    key = "sk-ant-api03-" + "a" * 40 + "WXYZ"
-    secrets.set("anthropic_api_key", key)
+    token = "sk-ant-oat01-" + "a" * 40 + "WXYZ"
+    secrets.set("claude_oauth_token", token)
     listing = {s["name"]: s for s in secrets.listing()}
-    assert listing["anthropic_api_key"] == {"name": "anthropic_api_key", "label": listing["anthropic_api_key"]["label"],
-                                            "set": True, "hint": "sk-ant-…WXYZ"}  # fmt: skip
-    assert key not in json.dumps(listing)
+    assert listing["claude_oauth_token"] == {"name": "claude_oauth_token", "label": listing["claude_oauth_token"]["label"],
+                                             "set": True, "hint": "sk-ant-oat…WXYZ", "retired": False}  # fmt: skip
+    assert token not in json.dumps(listing)
     assert ClaudeCode().problem(secrets) is None
-    assert secrets.delete("anthropic_api_key") and not secrets.delete("anthropic_api_key")
+    assert secrets.delete("claude_oauth_token") and not secrets.delete("claude_oauth_token")
+
+
+def test_the_retired_api_key_is_listed_only_while_stored_so_it_can_be_removed():
+    secrets = Secrets()
+    assert "anthropic_api_key" not in {s["name"] for s in secrets.listing()}
+    with pytest.raises(SecretError, match="doesn't use the Anthropic API key any more"):
+        secrets.set("anthropic_api_key", "sk-ant-api03-" + "a" * 40)
+    secrets.backend.set_password("local.aura", "anthropic_api_key", "sk-ant-api03-" + "a" * 40)  # from before
+    listed = {s["name"]: s for s in secrets.listing()}["anthropic_api_key"]
+    assert listed["set"] and "no longer used" in listed["label"]
+    assert ClaudeCode().problem(secrets) is not None  # never used in place of the plan's token
+    assert secrets.delete("anthropic_api_key")
 
 
 def test_the_keychain_tavily_key_wins_over_the_env_file(env, monkeypatch):  # noqa: F811
@@ -446,11 +465,13 @@ def test_developer_and_keys_api(env):  # noqa: F811
     d = aura.toolbox.developer
     d.container, d.engines = FakeContainer(good), ENGINES
 
-    bad = client.put("/v1/secrets/anthropic_api_key", json={"value": "nope"}, headers=auth)
+    bad = client.put("/v1/secrets/claude_oauth_token", json={"value": "nope"}, headers=auth)
     assert bad.status_code == 422
-    key = "sk-ant-api03-" + "b" * 40 + "9876"
-    ok = client.put("/v1/secrets/anthropic_api_key", json={"value": key}, headers=auth)
-    assert ok.status_code == 200 and ok.json()["hint"] == "sk-ant-…9876" and key not in ok.text
+    assert client.put("/v1/secrets/anthropic_api_key", json={"value": "sk-ant-api03-" + "c" * 40},
+                      headers=auth).status_code == 422  # retired  # fmt: skip
+    key = "sk-ant-oat01-" + "b" * 40 + "9876"
+    ok = client.put("/v1/secrets/claude_oauth_token", json={"value": key}, headers=auth)
+    assert ok.status_code == 200 and ok.json()["hint"] == "sk-ant-oat…9876" and key not in ok.text
     assert key not in client.get("/v1/secrets", headers=auth).text
     assert client.get("/v1/secrets").status_code == 401
 
@@ -472,7 +493,7 @@ def test_developer_and_keys_api(env):  # noqa: F811
     assert task["origin"]["engine"] == "Claude Code" and task["origin"]["specification"] == SPEC.strip()
     assert client.post("/v1/builds", json={"skill": "Bad Name", "specification": SPEC}, headers=auth).status_code == 409
     assert client.post("/v1/builds/b-nope/stop", json={}, headers=auth).status_code == 404
-    assert client.delete("/v1/secrets/anthropic_api_key", headers=auth).status_code == 204
+    assert client.delete("/v1/secrets/claude_oauth_token", headers=auth).status_code == 204
 
 
 # ── live: the real engines in the real Developer container ──────────────────────────────────
@@ -489,16 +510,16 @@ def _codex_ready() -> bool:
 
 
 def _claude_secrets() -> Secrets:
-    """The user's Anthropic key, read from the real macOS Keychain (where Settings → Keys put it)
-    into this test's private keyring. Read here, in the test body, so offline runs and the
+    """The user's Claude sign-in token, read from the real macOS Keychain (where Settings → Keys put
+    it) into this test's private keyring. Read here, in the test body, so offline runs and the
     Governor's suite gate never touch the Keychain."""
     if not _docker_up():
         pytest.skip("Docker isn't running")
-    key = real_key("anthropic_api_key")
-    if not key:
-        pytest.skip("no Anthropic API key in the Keychain (add it in Aura's Settings → Keys)")
+    token = real_key("claude_oauth_token")
+    if not token:
+        pytest.skip("no Claude sign-in token in the Keychain (run `claude setup-token`, then Aura's Settings → Keys)")
     secrets = Secrets()  # the test's in-memory keyring (conftest)
-    secrets.set("anthropic_api_key", key)
+    secrets.set("claude_oauth_token", token)
     return secrets
 
 
@@ -542,8 +563,8 @@ def test_live_codex_cannot_reach_this_mac_or_the_internet(tmp_path):
 
 @pytest.mark.live
 def test_live_claude_code_cannot_reach_this_mac_or_the_internet(tmp_path):
-    outcome = _model_leak_test(tmp_path, ClaudeCode(), _claude_secrets(), 0.25)
-    assert 0 < outcome.cost_usd <= 0.25 + 0.05  # the key worked, and Claude Code kept to its cap
+    outcome = _model_leak_test(tmp_path, ClaudeCode(), _claude_secrets(), 0)
+    assert outcome.ok and not outcome.error  # the plan's token worked
 
 
 WORD_COUNT = """\
@@ -595,7 +616,7 @@ def test_live_codex_builds_a_skill_that_passes_the_governor(env):  # noqa: F811
 @pytest.mark.live
 def test_live_claude_code_builds_a_skill_that_passes_the_governor(env):  # noqa: F811
     build = _live_build(env, ClaudeCode(), _claude_secrets())
-    assert 0 < build.cost_usd <= build.budget_usd + 0.05  # within the $2 hard cap
+    assert build.budget_usd == 0 and build.cost_usd == 0  # the user's plan: nothing billed, nothing counted
 
 
 PROBE = """\

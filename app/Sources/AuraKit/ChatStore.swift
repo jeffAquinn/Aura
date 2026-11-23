@@ -22,16 +22,21 @@ public final class ChatStore {
         public var decisions: [Bool]?  // approval cards: nil until the user answers
         public var edited = false  // approved with the user's edits (the Specification Approval card)
         public var incoming: IncomingMessage?  // a live Slack or Discord message
+        public var developer: String?  // the user's message went to this Developer ("claude", "codex")
 
         public init(role: Role, text: String, actions: [PendingAction] = [], decisions: [Bool]? = nil, edited: Bool = false,
-                    incoming: IncomingMessage? = nil) {
+                    incoming: IncomingMessage? = nil, developer: String? = nil) {
             self.role = role
             self.text = text
             self.actions = actions
             self.decisions = decisions
             self.edited = edited
             self.incoming = incoming
+            self.developer = developer
         }
+
+        /// A card asking about the files a Developer changed (one action per file).
+        public var isFileChanges: Bool { role == .approval && !actions.isEmpty && actions.allSatisfy { $0.tool == "apply_change" } }
 
         public static func message(_ m: IncomingMessage) -> Item {
             Item(role: .incoming, text: m.plainText, incoming: m)
@@ -41,6 +46,8 @@ public final class ChatStore {
     public private(set) var items: [Item] = []
     public private(set) var phase: Phase = .idle
     public var connection: Connection = .starting
+    /// The chat box's choice: hand messages to this Developer ("claude", "codex"), or nil (Aura decides).
+    public var developer: String?
     /// Bumped when the panel opens so the input field can take focus.
     public var focusRequests = 0
 
@@ -88,7 +95,7 @@ public final class ChatStore {
     public func conversationText(you: String = "You") -> String {
         items.compactMap { item -> String? in
             switch item.role {
-            case .user: "\(you): \(item.text)"
+            case .user: item.developer.map { "\(you) (to \(EngineInfo.named($0)?.label ?? $0)): \(item.text)" } ?? "\(you): \(item.text)"
             case .aura: "\(persona.name): \(Markdown.plainText(item.text))"
             case .status: "  [\(item.text.replacingOccurrences(of: #"^\[Tool: [^\]]*\]\s*"#, with: "", options: .regularExpression))]"
             case .approval: "  [Approval: \(item.actions.map { $0.description.components(separatedBy: "\n").first ?? "" }.joined(separator: "; "))]"
@@ -101,14 +108,17 @@ public final class ChatStore {
     }
     public var isBusy: Bool { phase == .thinking || phase == .waking || phase == .streaming }
 
+    /// The prefix of a Developer's live progress lines ("[Tool: Developer] · Claude Code: Writing …").
+    public static let progress = "[Tool: Developer] · "
+
     public func send(_ raw: String) {
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, canSend, let transport else { return }
-        items.append(Item(role: .user, text: text))
+        items.append(Item(role: .user, text: text, developer: developer))
         speech?.stop()  // a new message interrupts whatever Aura was saying
         speech?.beginReply()
         speakingItem = nil
-        run(transport.chat(text))
+        run(developer == nil ? transport.chat(text) : transport.chat(text, developer: developer))
     }
 
     /// Answer the pending approval card: one decision per action.
@@ -256,7 +266,13 @@ public final class ChatStore {
         case .waking:
             phase = .waking
         case let .status(text):
-            items.append(Item(role: .status, text: text))
+            // A Developer's live progress: one line that keeps updating, not a line per step.
+            if text.hasPrefix(Self.progress), let last = items.indices.last, items[last].role == .status,
+               items[last].text.hasPrefix(Self.progress) {
+                items[last].text = text
+            } else {
+                items.append(Item(role: .status, text: text))
+            }
             if text.contains("Skill_Tool") {  // Gemma: installed skills get a spoken status line
                 speech?.announce(text.replacingOccurrences(of: #"^\[Tool: [^\]]*\]\s*"#, with: "", options: .regularExpression))
             }

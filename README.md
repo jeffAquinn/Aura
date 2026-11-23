@@ -41,6 +41,7 @@ Docker Desktop running for the code interpreter. Configuration: see `.env.exampl
 | `check_library` (PyPI + OSV facts) | Governor | — |
 | `list_skills`, `propose_skill` | Workshop | — (deploying is your decision in the Workshop) |
 | `develop_skill` (Claude Code or Codex builds or improves a skill) | Developer | asked first: the Specification Approval card |
+| `ask_developer` (Claude Code or Codex does a job in the vault) | Developer | asked first (what it gets), then each file it changed |
 | `skill_<name>` (each installed skill) | Skill_Tool | — (approved once, at install) |
 
 **Voice:** the app speaks replies sentence by sentence, offline: Kokoro-82M neural voices (Heart,
@@ -109,8 +110,8 @@ skill to **Improve** it).
    Steps, Acceptance tests, Constraints). The **Specification Approval card** shows the Developer,
    the hard limits, exactly what is sent and to whom, and the specification itself. You can edit the
    specification or switch the Developer, then **Approve & Build**. Return denies.
-2. **Developer.** Claude Code (a dedicated Anthropic API key, `--bare`, $2 hard cap per build) or Codex
-   (your ChatGPT sign-in) works in the **Developer container**:
+2. **Developer.** Claude Code (your Claude plan) or Codex (your ChatGPT plan) works in the **Developer
+   container**:
    - **Files:** it sees the build's scratch workspace and nothing else on this Mac.
    - **Network:** its only route out is an allowlist of its own vendor's hosts.
    - **Feed:** its actions stream into the build's live feed in the Workshop, where **Stop** ends it at once.
@@ -124,8 +125,30 @@ skill to **Improve** it).
    build is ready, the menu bar says so and, if spoken replies are on, Aura tells you.
 
 **Keys** live only in the macOS Keychain: Settings (the gear in the chat header) → Keys. A key is
-never shown again (only a masked hint), and never written to a file, a log or the chat. The
-Anthropic key is passed to Claude Code's container only.
+never shown again (only a masked hint), and never written to a file, a log or the chat.
+
+**Your own plans only.** Claude Code runs on your Claude plan: run `claude setup-token` in Terminal once, and
+paste the token it prints in Settings → Keys. The token is passed to Claude Code's container only, and no API
+key ever is, so nothing is billed per use. (Until 2026-11-23 Claude Code used a dedicated API key with a $2 cap;
+a key still stored from then is listed only so you can remove it.) Codex uses your ChatGPT sign-in. The limits
+for both are time (10 minutes per round) and rounds.
+
+### Claude Code and Codex from the chat box
+
+Ask Aura to have Claude Code or Codex do a job in your vault ("have Claude Code tidy my Conversations notes"), or
+pick **Claude Code** or **Codex** with the `</>` button at the left of the chat box: then your messages go to it,
+through Aura, until you switch back.
+
+1. **What it gets.** Aura writes the task. Its card shows the task, the Developer, and exactly what leaves
+   this Mac: the task and a copy of one vault folder (how many files, how large). Send it, or Deny (the
+   default).
+2. **It works on the copy**, in the Developer container: it sees nothing else on this Mac, not even the
+   conversation, and reaches only its own vendor. Its progress shows as one live line; **Stop** ends it.
+3. **Every file it changed** comes back on one card, each with its diff and its own **Deny / Allow** (every
+   file starts at Deny). Only the files you allow are written, and only where the vault's file is unchanged
+   since the copy was made. Aura then tells you what was written and what Claude Code said it did.
+
+It can change only your vault, never Aura's own code (the constitution's Integrity Rule).
 
 ### Connections (Sprint 7, in progress)
 
@@ -174,11 +197,11 @@ notification when Aura answers you.
 | `src/aura/persona.py` | Aura's identity and system prompt |
 | `src/aura/config.py` | Settings from env / `.env` |
 | `src/aura/audit.py` | JSONL audit log |
-| `src/aura/tools/` | `vault.py` (whitelist + file tools), `vault_map.py` (the vault's layout), `web.py` (search), `sandbox.py` (Docker runner), `workshop.py` (skill tools) |
+| `src/aura/tools/` | `vault.py` (whitelist + file tools), `vault_map.py` (the vault's layout), `web.py` (search), `sandbox.py` (Docker runner), `workshop.py` (skill tools), `developer.py` (`ask_developer`) |
 | `src/aura/identity.py`, `voice.py`, `speech.py` | Persona store, voice settings, Kokoro neural speech |
 | `src/aura/skills.py` | Skill manifests, the registry and approvals, skill tools |
 | `src/aura/governor/` | Security Governor: `scan.py` (static), `provenance.py` (PyPI/OSV), `workshop.py` (staging, audit, deploy, uninstall), `continuous.py` (re-checks of installed skills) |
-| `src/aura/developer/` | The Developer: `engines.py` (Claude Code, Codex), `container.py` + `egress.py` (the isolated container and its egress allowlist), `workspace.py` (the scratch workspace), `workflow.py` (specification → build → audit → repair → review) |
+| `src/aura/developer/` | The Developer: `engines.py` (Claude Code, Codex), `container.py` + `egress.py` (the isolated container and its egress allowlist), `workspace.py` (the scratch workspace), `workflow.py` (specification → build → audit → repair → review), `vault_tasks.py` (jobs in the vault: the copy, the changes, what is written) |
 | `src/aura/secrets.py` | Keys and connection credentials in the macOS Keychain |
 | `src/aura/connections/` | Settings → Connections: `oauth.py` (browser sign-in, PKCE, loopback), `google.py`, `slack.py`, `discord.py` |
 | `src/aura/main.py` | Terminal interface |

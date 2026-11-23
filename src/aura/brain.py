@@ -32,7 +32,7 @@ from langgraph.types import Command, Interrupt
 from aura.config import Settings
 from aura.middleware import REJECTION_NOTE, DenialMiddleware, ToolStatusMiddleware
 from aura.persona import MEMORY_PROMPT, system_prompt
-from aura.developer.workflow import describe_build
+from aura.developer.workflow import describe_build, describe_task
 from aura.connections.actions import OUTWARD, describe_outward, inbox_exchange, turn_is_tainted
 from aura.tools import EDITABLE, NEEDS_APPROVAL, Toolbox
 from aura.tools.sandbox import describe_run
@@ -146,6 +146,8 @@ class Aura:
                 return describe_run(str(args.get("code", "")), self.toolbox.sandbox.timeout)
             if tool_call["name"] == "develop_skill":
                 return describe_build(args, self.toolbox.developer)
+            if tool_call["name"] == "ask_developer":
+                return describe_task(args, self.toolbox.developer, vault)
             if tool_call["name"] in (*OUTWARD, "web_search"):
                 return describe_outward(tool_call["name"], args)
             return vault.describe_change(tool_call["name"], args)
@@ -220,14 +222,22 @@ class Aura:
     # stream() and resume() validate eagerly, then return the run's event iterator, so a caller
     # (e.g. the HTTP server) learns about a bad request before it starts streaming a reply.
 
-    def stream(self, text: str) -> Iterator[Event]:
+    def stream(self, text: str, developer: str | None = None) -> Iterator[Event]:
         """Send a message; yield Aura's reply, tool status lines, and possibly a final
-        ApprovalNeeded (answer it with `resume`)."""
+        ApprovalNeeded (answer it with `resume`). `developer` ("claude" or "codex"): the user chose
+        that Developer in the chat box, so Aura hands the message to it (ask_developer)."""
         if self._pending:
             raise RuntimeError("An approval is pending; answer it with resume() first.")
         if self.toolbox.connections.signature() != self._connected:  # an account was connected or removed
             self.reload_tools()
         self._turn_notices: set[str] = set()  # each notice is said once per turn
+        if developer is not None:
+            engine = self.toolbox.developer.engines.get(developer)
+            if engine is None:
+                raise ValueError(f"unknown developer '{developer}'")
+            text += (f"\n\n[I chose {engine.label} for this message in the chat box. Call ask_developer now "
+                     f'(engine "{engine.name}"), with a complete task that includes whatever it needs from our '
+                     "conversation. Its approval card is where I confirm: don't describe the plan or ask me first.]")  # fmt: skip
         messages: list[Any] = [{"role": "user", "content": text}]
         fresh = self.toolbox.live.inbox.unseen_by_model() if self.primary else []
         if fresh:  # live messages since the last turn: a private read (R2), framed as untrusted (R5)

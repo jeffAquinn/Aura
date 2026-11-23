@@ -10,6 +10,7 @@ exits when stdin closes, i.e. when the app quits or crashes. Manual runs: set AU
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 import json
 import logging
@@ -19,10 +20,10 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from dataclasses import asdict
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 import anyio
 import httpx
@@ -152,20 +153,35 @@ def encode(ev: Event) -> str:
 _END = object()
 
 
+KEEPALIVE = 20.0  # seconds: a comment line while a long tool works (the app gives up after 300 s of silence)
+
+
 def stream_turn(
-    events: Iterator[Event], turn: threading.Lock, keeper: Keeper, check_cold: bool
+    events: Iterator[Event], turn: threading.Lock, keeper: Keeper, check_cold: bool,
+    on_abandon: Callable[[], None] = lambda: None,
 ) -> StreamingResponse:
-    """Stream a turn's events as SSE. Holds `turn` until the stream ends or the client leaves."""
+    """Stream a turn's events as SSE. Holds `turn` until the stream ends or the client leaves.
+    `on_abandon`: called if the client leaves mid-turn (e.g. stops a Developer's run)."""
 
     async def body() -> AsyncIterator[str]:
         released = False
+        pending: asyncio.Future | None = None
         try:
             yield sse("thinking")
             if check_cold and await anyio.to_thread.run_sync(keeper.loaded) is False:
                 yield sse("waking")
             try:
                 # The agent loop is synchronous; step it in a worker thread, one event at a time.
-                while (ev := await anyio.to_thread.run_sync(next, events, _END)) is not _END:
+                # A step can take minutes (Claude Code at work): keep the connection alive meanwhile.
+                while True:
+                    pending = asyncio.ensure_future(anyio.to_thread.run_sync(next, events, _END))
+                    while not pending.done():
+                        await asyncio.wait({pending}, timeout=KEEPALIVE)
+                        if not pending.done():
+                            yield ": working\n\n"
+                    ev, pending = pending.result(), None
+                    if ev is _END:
+                        break
                     yield encode(ev)
             except openai.APIConnectionError:
                 yield sse("error", {"message": "Aura can't reach its language model. Make sure Ollama is running, then try again."})
@@ -177,6 +193,10 @@ def stream_turn(
             yield sse("done")
         finally:
             if not released:  # the client went away mid-turn (e.g. Stop)
+                on_abandon()
+                if pending is not None and not pending.done():
+                    with anyio.CancelScope(shield=True):  # let the step end before closing the run
+                        await asyncio.wait({pending})
                 try:
                     events.close()  # type: ignore[attr-defined]  # stop the agent run
                 except (AttributeError, ValueError):
@@ -196,6 +216,7 @@ def stream_turn(
 
 class ChatIn(BaseModel):
     text: str = Field(min_length=1, max_length=20_000)
+    developer: Literal["claude", "codex"] | None = None  # chosen in the chat box: hand this to that Developer
 
 
 class VoiceIn(BaseModel):
@@ -325,11 +346,11 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
             return busy()
         app.state.last_active = time.monotonic()
         try:
-            events = aura.stream(body.text)
+            events = aura.stream(body.text, developer=body.developer)
         except RuntimeError as e:  # an approval is pending
             turn.release()
             return _error(409, str(e))
-        return stream_turn(events, turn, keeper, check_cold=True)
+        return stream_turn(events, turn, keeper, check_cold=True, on_abandon=aura.toolbox.developer.stop_tasks)
 
     @app.post("/v1/approvals")
     def approvals(body: ApprovalsIn) -> Response:
@@ -344,7 +365,7 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
         except ValueError as e:  # wrong number of decisions; the approval stays pending
             turn.release()
             return _error(422, str(e))
-        return stream_turn(events, turn, keeper, check_cold=False)
+        return stream_turn(events, turn, keeper, check_cold=False, on_abandon=aura.toolbox.developer.stop_tasks)
 
     @app.post("/v1/conversation/new")
     def new_conversation() -> Response:

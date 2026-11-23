@@ -48,7 +48,8 @@ class ToolStatusMiddleware(AgentMiddleware):
 
     def wrap_tool_call(self, request: ToolCallRequest, handler: Callable) -> Any:
         call = request.tool_call
-        emit({"status": status_line(call["name"], call["args"])})
+        if line := status_line(call["name"], call["args"]):  # "" for a tool that announces itself
+            emit({"status": line})
         result = handler(request)
         if isinstance(result, ToolMessage) and isinstance(result.artifact, dict):
             if result.artifact.get("fallback"):

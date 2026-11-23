@@ -76,6 +76,19 @@ struct SpeechPlannerTests {
             "I'd like Claude Code to build the pdf text skill. Only the specification on the card goes to Anthropic. I need your approval.")
     }
 
+    @Test func developerHandOffsAndTheirChangesAreSaidPlainly() {
+        let handOff = PendingAction(tool: "ask_developer", description: "have Claude Code work on a copy of your whole vault (…):",
+                                    args: ["task": .string("Tidy the notes."), "engine": .string("Claude Code")])
+        #expect(SpeechPlanner.approvalSentence([handOff]) ==
+            "I'd like Claude Code to work on a copy of your vault. The card shows exactly what it gets. I need your approval.")
+        let changes = ["a.md", "b.md"].map {
+            PendingAction(tool: "apply_change", description: "change '\($0)' (+1 −0):\n    │ +x",
+                          args: ["path": .string($0), "change": .string("modify"), "engine": .string("codex")])
+        }
+        #expect(SpeechPlanner.approvalSentence(changes) ==
+            "Codex is done. It made 2 changes in your vault; allow or deny each one on the card.")
+    }
+
     @Test func codeRunsGetASpokenStatusUpdate() {
         let card = PendingAction(tool: "run_python", description: "run Python in the sandbox (no internet, vault read-only, 30-second limit):\n    │ print(1)")
         #expect(SpeechPlanner.approvalSentence([card]) ==

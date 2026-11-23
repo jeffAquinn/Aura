@@ -26,6 +26,7 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
+SHOWN_LINES = 12  # of each approval's detail (a specification, a diff) in a Slack message
 ALLOW = {"allow", "yes", "y", "approve", "approved", "ok", "okay", "go", "go ahead", "send it", "do it", "👍"}
 DENY = {"deny", "no", "n", "don't", "dont", "stop", "cancel", "👎"}
 MAX_REPLY = 11_000  # Slack's markdown_text takes up to 12,000 characters
@@ -133,6 +134,8 @@ class RemoteChat:
             asks = []
             for action in self._pending.actions:
                 first, *rest = action.description.splitlines() or [action.tool]
+                if len(rest) > SHOWN_LINES:  # e.g. a long diff: the Mac panel shows all of it
+                    rest = [*rest[:SHOWN_LINES], f"… {len(rest) - SHOWN_LINES} more lines (the Mac panel shows them all)"]
                 asks.append(f"• {first}" + "".join(f"\n> {line.strip().lstrip('│').strip()}" for line in rest))
             reply = (reply + "\n\n" if reply else "") + "**I need your OK to:**\n" + "\n".join(asks) + \
                 "\n\nReply **allow** or **deny**."  # fmt: skip

@@ -51,6 +51,15 @@ public struct SpeechPlanner: Sendable {
         if actions.allSatisfy({ $0.tool == "run_python" }) {
             return "I'm preparing to run a Python script in the sandbox, and I need your approval."
         }
+        if actions.allSatisfy({ $0.tool == "apply_change" }), let first = actions.first {
+            let engine = EngineInfo.named(EngineInfo.engineName(first.args?["engine"]?.string))?.label ?? "The Developer"
+            let files = actions.count == 1 ? "one change" : "\(actions.count) changes"
+            return "\(engine) is done. It made \(files) in your vault; allow or deny each one on the card."
+        }
+        if actions.count == 1, actions[0].tool == "ask_developer" {
+            let engine = EngineInfo.named(EngineInfo.engineName(actions[0].args?["engine"]?.string))?.label ?? "a Developer"
+            return "I'd like \(engine) to work on a copy of your vault. The card shows exactly what it gets. I need your approval."
+        }
         if actions.count == 1, let build = actions[0].build {
             let engine = EngineInfo.named(build.engine)
             let skill = build.skill.replacingOccurrences(of: "_", with: " ")

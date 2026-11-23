@@ -32,12 +32,17 @@ class KeySpec:
     pattern: str = ""  # a full-match regex, when the shape is known exactly
     example: str = ""  # what it looks like, for the error message
     last4_only: bool = False  # its hint shows only the last 4 characters (no fixed prefix to show)
+    retired: bool = False  # no longer used: listed only while still stored (so it can be removed), never set
 
 
 KEYS = {
     k.name: k
     for k in (
-        KeySpec("anthropic_api_key", "Anthropic API key (Claude Code, the Developer)", "sk-ant-"),
+        # Claude Code uses the user's Claude plan: a long-lived token from `claude setup-token`.
+        KeySpec("claude_oauth_token", "Claude sign-in token (Claude Code, your Claude plan)", "sk-ant-oat", min_length=40,
+                example="sk-ant-oat01-…, the token `claude setup-token` prints"),
+        KeySpec("anthropic_api_key", "Anthropic API key (no longer used: Claude Code uses your Claude plan)", "sk-ant-",
+                retired=True),
         KeySpec("tavily_api_key", "Tavily API key (web search)", "tvly-"),
         KeySpec("google_client_id", "Google OAuth client ID", suffix=".apps.googleusercontent.com", min_length=40,
                 group="google"),
@@ -102,6 +107,8 @@ class Secrets:
         spec = self._spec(name)
         if not spec.user_settable:
             raise SecretError(f"{spec.label} is written only by Aura's sign-in, not by hand.")
+        if spec.retired:
+            raise SecretError(f"Aura doesn't use the {spec.label.split(' (')[0]} any more.")
         value = value.strip()
         if (not value.startswith(spec.prefix) or not value.endswith(spec.suffix) or len(value) < spec.min_length
                 or any(c.isspace() for c in value) or (spec.pattern and not re.fullmatch(spec.pattern, value))):  # fmt: skip
@@ -137,8 +144,10 @@ class Secrets:
             if spec.group != group or not spec.user_settable:
                 continue
             value = self.get(spec.name)
+            if spec.retired and value is None:
+                continue
             out.append({"name": spec.name, "label": spec.label, "set": value is not None,
-                        "hint": self.hint(spec, value) if value else None})  # fmt: skip
+                        "hint": self.hint(spec, value) if value else None, "retired": spec.retired})  # fmt: skip
         return out
 
     @staticmethod

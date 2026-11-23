@@ -40,6 +40,7 @@ class Engine:
     label: str
     vendor: str
     hosts: tuple[str, ...]
+    plan: str = "its own plan"  # how it's paid for, in the user's terms ("your Claude plan")
     caps_cost: bool  # whether a dollar budget is enforced by the engine itself
 
     def problem(self, secrets: Secrets) -> str | None:
@@ -70,35 +71,38 @@ class Engine:
 
 
 class ClaudeCode(Engine):
-    """Claude Code with a dedicated API key (Gemma's decision): --bare, so none of the user's own
-    Claude Code setup applies, and a hard dollar cap that Claude Code enforces itself."""
+    """Claude Code on the user's Claude plan (the user's choice, 2026-11-23; it replaced Gemma's
+    dedicated API key). It signs in with a long-lived token from `claude setup-token`, kept in the
+    Keychain and passed only into the Developer container. No --bare: that mode accepts only an API
+    key. The container gives the isolation --bare gave (no hooks, plugins, CLAUDE.md or memory of
+    the user's: its home folder is empty and thrown away), and an API key is never passed, so
+    nothing is billed per use."""
 
-    name, label, vendor = "claude", "Claude Code", "Anthropic"
+    name, label, vendor, plan = "claude", "Claude Code", "Anthropic", "your Claude plan"
     hosts = ("api.anthropic.com",)
-    caps_cost = True
+    caps_cost = False  # a plan, not a bill: the limits are time and rounds, as for Codex
 
     def problem(self, secrets: Secrets) -> str | None:
-        if not secrets.get("anthropic_api_key"):
-            return "Add an Anthropic API key in Settings → Keys."
+        if not secrets.get("claude_oauth_token"):
+            return "Sign in with your Claude plan in Settings → Keys (run `claude setup-token` in Terminal)."
         return None
 
     def command(self, prompt: str, budget_usd: float) -> list[str]:
         return [
-            "claude", "-p", prompt, "--bare", "--no-session-persistence",
+            "claude", "-p", prompt, "--no-session-persistence",
             "--output-format", "stream-json", "--verbose",
             "--permission-mode", "dontAsk", "--permission-prompts", "none",
             "--allowedTools", "Read", "Glob", "Grep", "Edit", "Write", "Bash",
             "--disallowedTools", "WebFetch", "WebSearch", "Agent",
             "--strict-mcp-config", "--mcp-config", '{"mcpServers": {}}',
-            "--max-budget-usd", f"{budget_usd:.2f}",
         ]  # fmt: skip
 
     def env_names(self) -> list[str]:
-        return ["ANTHROPIC_API_KEY", "DISABLE_TELEMETRY", "DISABLE_ERROR_REPORTING",
+        return ["CLAUDE_CODE_OAUTH_TOKEN", "DISABLE_TELEMETRY", "DISABLE_ERROR_REPORTING",
                 "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "DISABLE_AUTOUPDATER"]  # fmt: skip
 
     def env_values(self, secrets: Secrets) -> dict[str, str]:
-        return {"ANTHROPIC_API_KEY": secrets.get("anthropic_api_key") or "", "DISABLE_TELEMETRY": "1",
+        return {"CLAUDE_CODE_OAUTH_TOKEN": secrets.get("claude_oauth_token") or "", "DISABLE_TELEMETRY": "1",
                 "DISABLE_ERROR_REPORTING": "1", "CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC": "1",
                 "DISABLE_AUTOUPDATER": "1"}  # fmt: skip
 
@@ -142,7 +146,7 @@ class Codex(Engine):
     leak test showed it), so it runs only in the Developer container, with its sign-in copied in for
     the run. ChatGPT-side extras (apps, plugins, browser and computer use) are switched off."""
 
-    name, label, vendor = "codex", "Codex", "OpenAI"
+    name, label, vendor, plan = "codex", "Codex", "OpenAI", "your ChatGPT plan"
     hosts = ("chatgpt.com", "auth.openai.com", "api.openai.com")
     caps_cost = False
     OFF = ("apps", "plugins", "remote_plugin", "browser_use", "browser_use_external", "computer_use",

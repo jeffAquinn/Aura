@@ -9,6 +9,7 @@ final class FakeTransport: AuraTransport, @unchecked Sendable {
     var failChat: Error?
     var hangChat = false
     private(set) var sent: [String] = []
+    private(set) var developers: [String?] = []  // the chat box's choice, per message
     private(set) var approvals: [[Bool]] = []
     private(set) var newConversations = 0
 
@@ -27,6 +28,13 @@ final class FakeTransport: AuraTransport, @unchecked Sendable {
 
     func chat(_ text: String) -> AsyncThrowingStream<AuraEvent, Error> {
         sent.append(text)
+        developers.append(nil)
+        return play(chatScripts.isEmpty ? [] : chatScripts.removeFirst())
+    }
+
+    func chat(_ text: String, developer: String?) -> AsyncThrowingStream<AuraEvent, Error> {
+        sent.append(text)
+        developers.append(developer)
         return play(chatScripts.isEmpty ? [] : chatScripts.removeFirst())
     }
 
@@ -65,6 +73,57 @@ struct ChatStoreTests {
         #expect(roles(s) == [.user, .aura])
         #expect(s.items.map(\.text) == ["Hi", "Hello."])
         #expect(s.phase == .idle)
+    }
+
+    @Test func aMessageCanGoToClaudeCodeAndTheChoiceStays() async {
+        let fake = FakeTransport(chat: [[.thinking, .done], [.thinking, .done]])
+        let s = store(fake)
+        s.developer = "claude"
+        s.send("Tidy my notes.")
+        await s.turnTask?.value
+        s.send("And the Map.")
+        await s.turnTask?.value
+        #expect(fake.developers == ["claude", "claude"] && s.developer == "claude")
+        #expect(s.items[0].developer == "claude")
+        #expect(s.conversationText().hasPrefix("You (to Claude Code): Tidy my notes."))
+        s.developer = nil
+        s.send("Thanks.")
+        await s.turnTask?.value
+        #expect(fake.developers.last == .some(nil) && s.items.last { $0.role == .user }?.developer == nil)
+    }
+
+    @Test func aDevelopersProgressIsOneLineThatKeepsUpdating() async {
+        let s = store(FakeTransport(chat: [[.thinking,
+            .status("[Tool: Developer] Handing the task to Claude Code..."),
+            .status("[Tool: Developer] · Claude Code: Reading Map_of_the_Ascent.md"),
+            .status("[Tool: Developer] · Claude Code: Writing 01_The_Absolute_R/forms.md"),
+            .text("Done."), .done]]))
+        s.send("Go.")
+        await s.turnTask?.value
+        #expect(roles(s) == [.user, .status, .status, .aura])
+        #expect(s.items[2].text == "[Tool: Developer] · Claude Code: Writing 01_The_Absolute_R/forms.md")
+    }
+
+    @Test func filesADeveloperChangedArriveAsOneCardWithAnEntryPerFile() async {
+        let actions = [
+            PendingAction(tool: "apply_change", description: "change 'Map_of_the_Ascent.md' (+1 −0):\n    │ @@ -1,2 +1,3 @@\n    │  # Map\n    │ +- Forms",
+                          args: ["path": .string("Map_of_the_Ascent.md"), "change": .string("modify"), "engine": .string("claude")]),
+            PendingAction(tool: "apply_change", description: "delete 'forms.md' (31 B, −2 lines)",
+                          args: ["path": .string("forms.md"), "change": .string("delete"), "engine": .string("claude")]),
+        ]
+        let fake = FakeTransport(chat: [[.thinking, .approval(actions), .done]], approve: [[.thinking, .done]])
+        let s = store(fake)
+        s.send("Go.")
+        await s.turnTask?.value
+        let card = s.items.last!
+        #expect(card.isFileChanges && s.phase == .awaitingApproval)
+        let changes = card.actions.compactMap(FileChange.init)
+        #expect(changes.map(\.path) == ["Map_of_the_Ascent.md", "forms.md"] && changes.map(\.kind) == [.modify, .delete])
+        #expect(changes[0].diff == ["@@ -1,2 +1,3 @@", " # Map", "+- Forms"] && changes[0].detail == "+1 −0")
+        #expect(changes[1].diff.isEmpty && changes[1].detail == "31 B, −2 lines" && changes[1].verb == "Deleted")
+        s.decide([true, false])  // each file on its own
+        await s.turnTask?.value
+        #expect(fake.approvals == [[true, false]])
     }
 
     @Test func toolStatusSplitsTheReplyIntoChipAndBubble() async {

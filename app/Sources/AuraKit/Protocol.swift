@@ -15,6 +15,8 @@ public struct PendingAction: Codable, Sendable, Equatable {
 
     /// A Developer build Aura is asking to start (a develop_skill call), if this is one.
     public var build: BuildProposal? { BuildProposal(self) }
+    /// A job in the vault Aura is asking to hand to Claude Code or Codex, if this is one.
+    public var developerTask: DeveloperTask? { DeveloperTask(self) }
 }
 
 /// Any JSON value (tool arguments arrive untyped).
@@ -48,6 +50,62 @@ public enum JSONValue: Codable, Sendable, Equatable {
 }
 
 /// The Specification Approval card's subject: who would build what, from which specification.
+/// One file a Developer changed in the vault (an apply_change action): what it would do, and the diff.
+public struct FileChange: Sendable, Equatable {
+    public enum Kind: String, Sendable { case create, modify, delete, createFolder = "create_folder", deleteFolder = "delete_folder" }
+    public let path: String
+    public let kind: Kind
+    public let headline: String  // "change 'Map_of_the_Ascent.md' (+1 −0)"
+    public let diff: [String]  // "+added", "-removed", " context", "@@ … @@"
+
+    public init?(_ action: PendingAction) {
+        guard action.tool == "apply_change" else { return nil }
+        let args = action.args ?? [:]
+        path = args["path"]?.string ?? ""
+        kind = Kind(rawValue: args["change"]?.string ?? "") ?? .modify
+        let lines = action.description.components(separatedBy: "\n")
+        headline = (lines.first ?? "").trimmingCharacters(in: CharacterSet(charactersIn: ":"))
+        diff = lines.dropFirst().compactMap { line in
+            line.hasPrefix("    │ ") ? String(line.dropFirst(6)) : line.hasPrefix("    │") ? "" : nil
+        }
+    }
+
+    /// The detail after the path: "(+1 −0)", "(1.2 KB, +40 lines)".
+    public var detail: String {
+        guard let open = headline.range(of: " (", options: .backwards), headline.hasSuffix(")") else { return "" }
+        return String(headline[open.upperBound..<headline.index(before: headline.endIndex)])
+    }
+
+    public var verb: String {
+        switch kind {
+        case .create: "New"
+        case .modify: "Changed"
+        case .delete: "Deleted"
+        case .createFolder: "New folder"
+        case .deleteFolder: "Removed folder"
+        }
+    }
+}
+
+/// Aura asking to hand a job in the vault to Claude Code or Codex (an ask_developer action).
+public struct DeveloperTask: Sendable, Equatable {
+    public let engine: String  // "claude" | "codex"
+    public let task: String
+    /// The server's card text: who gets what, and the limits (first line), then what leaves this Mac.
+    public let summary: String
+    public let notes: [String]
+
+    public init?(_ action: PendingAction) {
+        guard action.tool == "ask_developer" else { return nil }
+        let args = action.args ?? [:]
+        engine = EngineInfo.engineName(args["engine"]?.string)
+        task = (args["task"]?.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        let lines = action.description.components(separatedBy: "\n").filter { !$0.hasPrefix("    │") }
+        summary = (lines.first ?? "").trimmingCharacters(in: CharacterSet(charactersIn: ":"))
+        notes = lines.dropFirst().map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+    }
+}
+
 public struct BuildProposal: Sendable, Equatable {
     public let skill: String
     public let specification: String

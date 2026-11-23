@@ -28,11 +28,13 @@ from typing import Any
 
 from aura.audit import AuditLog
 from aura.config import Settings
+from aura.developer import vault_tasks as vt
 from aura.developer import workspace as ws
 from aura.developer.engines import ENGINES, Engine, EngineEvent
 from aura.governor.workshop import Task, Workshop
 from aura.secrets import Secrets
 from aura.skills import NAME
+from aura.tools.vault import Vault, human_size
 
 EXAMPLE = Path(__file__).resolve().parents[3] / "examples" / "skills" / "pdf_text"
 
@@ -51,7 +53,7 @@ def describe_build(args: dict[str, Any], developer: Developer | None) -> str:
     rounds = developer.repair_rounds if developer else 2
     minutes = int((developer.timeout if developer else 600) // 60)
     cost = (f"${developer.budget_usd if developer else 2.0:.2f} total, " if engine and engine.caps_cost
-            else "your ChatGPT plan, ")  # fmt: skip
+            else f"{engine.plan if engine else 'its plan'}, ")  # fmt: skip
     what = f"improve the installed skill '{name}'" if improve else f"build the new skill '{name}'"
     lines = [
         f"have {label} {what} ({cost}{minutes} minutes per round, up to {rounds} repair rounds):",
@@ -60,6 +62,33 @@ def describe_build(args: dict[str, Any], developer: Developer | None) -> str:
         "    The result must pass the Security Governor; you review it in the Workshop before anything is installed.",
     ]
     lines += [f"    │ {line}" for line in str(args.get("specification", "")).strip().splitlines()]
+    return "\n".join(lines)
+
+
+def engine_name(value: Any) -> str:
+    """"Claude Code" / "claude-code" / "OpenAI Codex" -> "claude" / "codex" (the model's spellings vary)."""
+    v = str(value or "claude").strip().lower()
+    return "codex" if "codex" in v else "claude" if "claude" in v else v
+
+
+def describe_task(args: dict[str, Any], developer: Developer | None, vault: Vault) -> str:
+    """A vault task's approval card: who gets what (the task and a copy of one folder, measured),
+    the limits, and the task itself, verbatim."""
+    engines = developer.engines if developer else ENGINES
+    engine = engines.get(engine_name(args.get("engine")))
+    label, vendor, plan = (engine.label, engine.vendor, engine.plan) if engine else (str(args.get("engine")), "its vendor", "")
+    minutes = int((developer.timeout if developer else 600) // 60)
+    folder = str(args.get("folder") or ".")
+    try:
+        name, files, size = vt.measure(vault, folder)
+        where = "your whole vault" if name == "." else f"'{name}/' in your vault"
+        sent = (f"    Sent to {vendor}: this task and a copy of {where} ({_count(files, 'file')}, {human_size(size)}), "
+                f"which {label} reads. Nothing else from your Mac or this conversation.")  # fmt: skip
+    except vt.VaultTaskError as e:
+        where, sent = f"'{folder}' in your vault", f"    This will be refused: {e}."
+    lines = [f"have {label} work on a copy of {where} ({plan + ', ' if plan else ''}up to {minutes} minutes):", sent,
+             "    Then you allow or deny each file it changed. Nothing is written to your vault before that."]  # fmt: skip
+    lines += [f"    │ {line}" for line in str(args.get("task", "")).strip().splitlines()]
     return "\n".join(lines)
 
 
@@ -110,6 +139,23 @@ class Build:
                 "feed": list(self.feed), "created": self.created, "finished": self.finished}  # fmt: skip
 
 
+@dataclass
+class VaultTask:
+    """A job in the vault (ask_developer): run once, then kept until the user has decided on every
+    change it brought back."""
+
+    id: str
+    engine: str
+    task: str
+    copy: vt.Copy | None = None
+    changes: list[vt.Change] = field(default_factory=list)
+    summary: str = ""  # the Developer's own closing words
+    error: str | None = None
+    stopped: bool = False
+    timed_out: bool = False
+    stop: threading.Event = field(default_factory=threading.Event, repr=False)
+
+
 class Developer:
     def __init__(self, settings: Settings, workshop: Workshop, container: Any, secrets: Secrets, audit: AuditLog,
                  engines: dict[str, Engine] | None = None, budget_usd: float = 2.0, timeout: float = 600,
@@ -125,8 +171,11 @@ class Developer:
         self.repair_rounds = repair_rounds
         self.example = example
         self.builds: dict[str, Build] = {}
+        self.tasks: dict[str, VaultTask] = {}  # vault tasks awaiting the user's decisions, by tool call
         self.on_ready: Callable[[Build], None] = lambda b: None  # e.g. a spoken status line
         self._busy = threading.Lock()
+        for stale in settings.dev_dir.glob("v-*"):  # vault tasks left by an earlier run: never answered
+            shutil.rmtree(stale, ignore_errors=True)
 
     # ── status ──────────────────────────────────────────────────────────────────────────────
 
@@ -158,6 +207,8 @@ class Developer:
             raise DeveloperError(f"{e.label} isn't ready: {problem}")
         if self.running():
             raise DeveloperError("another build is running; wait for it or stop it in the Workshop")
+        if self._busy.locked():
+            raise DeveloperError("Claude Code or Codex is busy with a task in the vault; try again when it's done")
         return e
 
     def start(self, skill: str, specification: str, engine: str = "claude", improve: bool = False,
@@ -182,6 +233,75 @@ class Developer:
         build.stop.set()
         build.say("Stopping…")
         return build
+
+    # ── vault tasks (ask_developer) ─────────────────────────────────────────────────────────
+
+    def run_task(self, key: str, task: str, engine: str, folder: str, vault: Vault,
+                 on_status: Callable[[str], None] = lambda s: None) -> VaultTask:  # fmt: skip
+        """Copy the folder, let the engine work on the copy (blocking, up to the time limit), and
+        collect its changes. `key` (the tool call) finds the result again when the user decides."""
+        if key in self.tasks:
+            return self.tasks[key]
+        engine = engine_name(engine)
+        try:
+            vt.check_task(task)
+        except vt.VaultTaskError as e:
+            raise DeveloperError(str(e)) from e
+        if engine not in self.engines:
+            raise DeveloperError(f"unknown developer '{engine}' (choose: {', '.join(self.engines)})")
+        e = self.engines[engine]
+        if problem := (self.container.problem() or e.problem(self.secrets)):
+            raise DeveloperError(f"{e.label} isn't ready: {problem}")
+        if self.running() or not self._busy.acquire(blocking=False):
+            raise DeveloperError("Claude Code or Codex is busy with another job (see the Workshop); try again when it's done")
+        try:
+            t = VaultTask(id="v-" + uuid.uuid4().hex[:8], engine=engine, task=task.strip())
+            root = self.settings.dev_dir / t.id
+            try:
+                t.copy = vt.prepare(vault, folder, root / "work")
+            except (vt.VaultTaskError, OSError) as err:
+                shutil.rmtree(root, ignore_errors=True)
+                raise DeveloperError(str(err)) from err
+            self.tasks[key] = t
+            self.audit.record("vault_task_started", task=t.id, engine=engine, folder=t.copy.folder,
+                              files=len(t.copy.files), bytes=t.copy.bytes, task_chars=len(t.task))  # fmt: skip
+            on_status(f"{e.label} is working on a copy of {_count(len(t.copy.files), 'file')}…")
+            said: list[str] = []
+
+            def on_event(event: EngineEvent) -> None:
+                if event.kind == "status" and event.text:
+                    on_status(f"{e.label}: {event.text}")
+                elif event.kind == "message" and event.text:
+                    said.append(event.text)
+
+            outcome = self.container.run(e, root / "work", root, vt.prompt(t.task), 0.0, self.timeout, on_event, t.stop)
+            t.stopped, t.timed_out, t.error = outcome.stopped or t.stop.is_set(), outcome.timed_out, outcome.error
+            t.summary = (outcome.result if outcome.result not in ("", "done") else (said[-1] if said else ""))[:2000]
+            if not (t.stopped or t.error):
+                t.changes = vt.collect(vault, t.copy, root / "work")
+            self.audit.record("vault_task_ran", task=t.id, engine=engine, changes=len(t.changes), stopped=t.stopped,
+                              timed_out=t.timed_out, error=bool(t.error))  # fmt: skip
+            return t
+        finally:
+            self._busy.release()
+
+    def finish_task(self, key: str, vault: Vault, allowed: list[bool] | None = None) -> list[str]:
+        """Write the changes the user allowed (none when `allowed` is None), then drop the copy."""
+        t = self.tasks.pop(key, None)
+        if t is None:
+            return []
+        try:
+            if allowed is None or t.copy is None:
+                return []
+            return vt.apply(vault, t.copy, self.settings.dev_dir / t.id / "work", t.changes, allowed)
+        finally:
+            shutil.rmtree(self.settings.dev_dir / t.id, ignore_errors=True)
+            self.audit.record("vault_task_finished", task=t.id, allowed=sum(allowed or []), changes=len(t.changes))
+
+    def stop_tasks(self) -> None:
+        """Stop any vault task that's running (e.g. the user pressed Stop in the chat)."""
+        for t in self.tasks.values():
+            t.stop.set()
 
     # ── the workflow ────────────────────────────────────────────────────────────────────────
 
@@ -215,7 +335,8 @@ class Developer:
                 build.stage, build.message = "failed", f"The ${build.budget_usd:.2f} budget is used up."
                 return
             outcome = self.container.run(engine, work, root, prompt, budget, self.timeout, self._listener(build), build.stop)
-            build.cost_usd += outcome.cost_usd
+            if engine.caps_cost:  # a plan's notional cost isn't a bill: only a capped engine counts it
+                build.cost_usd += outcome.cost_usd
             if outcome.stopped or build.stop.is_set():
                 build.stage, build.message = "stopped", "Stopped. Nothing was installed."
                 return

@@ -239,7 +239,7 @@ struct KeyRow: View {
                 }
             }
             if entering {
-                SecureField("Paste the key", text: $value)
+                SecureField(secret.placeholder, text: $value)
                     .textFieldStyle(.roundedBorder)
                     .focused($focused)
                     .onSubmit(save)
@@ -260,7 +260,9 @@ struct KeyRow: View {
                     if secret.set {
                         Button("Remove", role: .destructive) { confirmRemove = true }
                     }
-                    Button(secret.set ? "Replace…" : "Add…") { entering = true; focused = true }
+                    if !secret.isRetired {
+                        Button(secret.set ? "Replace…" : "Add…") { entering = true; focused = true }
+                    }
                 }
                 .controlSize(.small)
             }

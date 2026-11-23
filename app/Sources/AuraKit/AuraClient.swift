@@ -3,6 +3,8 @@ import Foundation
 /// What the chat UI needs from the server. `AuraClient` is the real one; tests use a fake.
 public protocol AuraTransport: Sendable {
     func chat(_ text: String) -> AsyncThrowingStream<AuraEvent, Error>
+    /// A message the user handed to a Developer in the chat box ("claude" or "codex"; nil: Aura decides).
+    func chat(_ text: String, developer: String?) -> AsyncThrowingStream<AuraEvent, Error>
     func approve(_ approvals: [Bool]) -> AsyncThrowingStream<AuraEvent, Error>
     /// The same, where an answer can approve with edits (the Specification Approval card).
     func approve(decisions: [ApprovalDecision]) -> AsyncThrowingStream<AuraEvent, Error>
@@ -47,6 +49,7 @@ public protocol AuraTransport: Sendable {
 
 /// Defaults so test fakes only implement what they exercise.
 extension AuraTransport {
+    public func chat(_ text: String, developer: String?) -> AsyncThrowingStream<AuraEvent, Error> { chat(text) }
     public func settings() async throws -> AppSettings { throw AuraClientError.badResponse }
     public func registerVoices(_ voices: [VoiceInfo]) async throws {}
     public func updateVoice(_ patch: VoicePatch) async throws -> VoiceProfile { throw AuraClientError.badResponse }
@@ -113,6 +116,11 @@ public final class AuraClient: AuraTransport {
 
     public func chat(_ text: String) -> AsyncThrowingStream<AuraEvent, Error> {
         stream("/v1/chat", body: ["text": text])
+    }
+
+    public func chat(_ text: String, developer: String?) -> AsyncThrowingStream<AuraEvent, Error> {
+        struct Body: Encodable, Sendable { let text: String; let developer: String? }  // nil: left out
+        return stream("/v1/chat", body: Body(text: text, developer: developer))
     }
 
     public func approve(_ approvals: [Bool]) -> AsyncThrowingStream<AuraEvent, Error> {

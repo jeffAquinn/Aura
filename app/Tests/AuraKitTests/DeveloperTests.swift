@@ -33,7 +33,7 @@ final class FakeDeveloper: AuraTransport, @unchecked Sendable {
     var stopped: [String] = []
     var plain: [[Bool]] = []
     var edited: [[ApprovalDecision]] = []
-    var keys = [SecretInfo(name: "anthropic_api_key", label: "Anthropic API key", set: false)]
+    var keys = [SecretInfo(name: "claude_oauth_token", label: "Claude sign-in token", set: false)]
     var saved: [(String, String)] = []
 
     func chat(_ text: String) -> AsyncThrowingStream<AuraEvent, Error> { AsyncThrowingStream { $0.finish() } }
@@ -63,11 +63,11 @@ final class FakeDeveloper: AuraTransport, @unchecked Sendable {
     }
     func secrets() async throws -> [SecretInfo] { keys }
     func setSecret(_ name: String, value: String) async throws -> SecretInfo {
-        guard value.hasPrefix("sk-ant-") else {
-            throw AuraClientError.http(status: 422, message: "That doesn't look like an Anthropic API key (it should start with 'sk-ant-').")
+        guard value.hasPrefix("sk-ant-oat") else {
+            throw AuraClientError.http(status: 422, message: "That doesn't look like a Claude sign-in token (it should look like sk-ant-oat01-…, the token `claude setup-token` prints).")
         }
         saved.append((name, value))
-        let info = SecretInfo(name: name, label: "Anthropic API key", set: true, hint: "sk-ant-…" + value.suffix(4))
+        let info = SecretInfo(name: name, label: "Claude sign-in token", set: true, hint: "sk-ant-oat…" + value.suffix(4))
         keys = [info]
         return info
     }
@@ -153,8 +153,8 @@ struct SpecificationApprovalTests {
 @MainActor
 struct BuildStoreTests {
     static let developerJSON = """
-    {"engines": [{"name": "claude", "label": "Claude Code", "vendor": "Anthropic", "caps_cost": true,
-                  "problem": "Add an Anthropic API key in Settings → Keys."},
+    {"engines": [{"name": "claude", "label": "Claude Code", "vendor": "Anthropic", "caps_cost": false,
+                  "problem": "Sign in with your Claude plan in Settings → Keys (run `claude setup-token` in Terminal)."},
                  {"name": "codex", "label": "Codex", "vendor": "OpenAI", "caps_cost": false, "problem": null}],
      "builds": [{"id": "b-1234abcd", "skill": "word_count", "engine": "codex", "improve": false,
                  "specification": "## Goal ...", "stage": "ready", "round": 2, "max_rounds": 3, "cost_usd": 0.0,
@@ -174,7 +174,9 @@ struct BuildStoreTests {
         #expect(build.awaitsReview && !build.isRunning && build.taskId == "9f8e7d6c" && build.costLabel == "your ChatGPT plan")
         #expect(build.history.map(\.passed) == [false, true] && build.history[1].risk == "green")
         #expect(build.feed[0].time == ISO8601DateFormatter().date(from: "2026-11-22T10:00:00Z"))
-        #expect(info.limits(for: info.engines[0]) == "$2.00 total, 10 minutes per round, up to 2 repair rounds")
+        #expect(info.limits(for: info.engines[0]) == "no dollar cap, 10 minutes per round, up to 2 repair rounds")
+        #expect(info.engines[0].costNote == "Claude Code counts against your Claude plan's usage.")
+        #expect(BuildInfo(id: "b", skill: "s", engine: "claude", stage: "ready", budgetUsd: 0).costLabel == "your Claude plan")
         #expect(BuildInfo(id: "b", skill: "s", stage: "developing", costUsd: 0.4231, budgetUsd: 2).costLabel == "$0.42 of $2.00")
 
         let task = try decoder.decode(TaskInfo.self, from: Data("""
@@ -230,19 +232,25 @@ struct KeysTests {
         chat.transport = fake
         await chat.loadSecrets()
         #expect(chat.secrets.map(\.set) == [false])
-        let refused = await chat.saveSecret("anthropic_api_key", value: "tvly-wrong-key-0123456789")
-        #expect(refused == "That doesn't look like an Anthropic API key (it should start with 'sk-ant-').")
-        let saved = await chat.saveSecret("anthropic_api_key", value: "  sk-ant-api03-abcdefghijklmnopqrstWXYZ\n")
-        #expect(saved == nil && fake.saved.map(\.1) == ["sk-ant-api03-abcdefghijklmnopqrstWXYZ"])  // trimmed
-        #expect(chat.secrets == [SecretInfo(name: "anthropic_api_key", label: "Anthropic API key", set: true, hint: "sk-ant-…WXYZ")])
+        let refused = await chat.saveSecret("claude_oauth_token", value: "sk-ant-api03-an-api-key-not-the-token")
+        #expect(refused?.hasPrefix("That doesn't look like a Claude sign-in token") == true)
+        let token = "sk-ant-oat01-" + "abcdefghijklmnopqrstWXYZ"  // split: never shaped like a real token in the source
+        let saved = await chat.saveSecret("claude_oauth_token", value: "  \(token)\n")
+        #expect(saved == nil && fake.saved.map(\.1) == [token])  // trimmed
+        #expect(chat.secrets == [SecretInfo(name: "claude_oauth_token", label: "Claude sign-in token", set: true, hint: "sk-ant-oat…WXYZ")])
     }
 
     @Test func listingsNeverCarryTheValue() throws {
         let listing = try decoder.decode([SecretInfo].self, from: Data("""
-        [{"name": "anthropic_api_key", "label": "Anthropic API key (Claude Code, the Developer)", "set": true, "hint": "sk-ant-…WXYZ"},
+        [{"name": "claude_oauth_token", "label": "Claude sign-in token (Claude Code, your Claude plan)", "set": true,
+          "hint": "sk-ant-oat…WXYZ", "retired": false},
+         {"name": "anthropic_api_key", "label": "Anthropic API key (no longer used)", "set": true, "hint": "sk-ant-…1234",
+          "retired": true},
          {"name": "tavily_api_key", "label": "Tavily API key (web search)", "set": false, "hint": null}]
         """.utf8))
-        #expect(listing[0].hint == "sk-ant-…WXYZ" && listing[1].hint == nil)
-        #expect(listing[0].source?.host() == "console.anthropic.com")
+        #expect(listing[0].hint == "sk-ant-oat…WXYZ" && listing[2].hint == nil)
+        #expect(listing[0].purpose.contains("claude setup-token") && listing[0].placeholder.contains("sk-ant-oat01-"))
+        #expect(!listing[0].isRetired && listing[1].isRetired && !listing[2].isRetired)  // an older server omits it
+        #expect(listing[2].source?.host() == "app.tavily.com")
     }
 }

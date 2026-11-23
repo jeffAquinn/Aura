@@ -38,7 +38,7 @@ __all__ = ["NEEDS_APPROVAL", "PRIVATE_READS", "Toolbox", "emit", "status_line"]
 # Tools that run code, change the vault, or change Aura's persona: each pauses for the user's
 # approval first (code execution was added by Gemma's Sprint 4 review).
 NEEDS_APPROVAL = ("write_file", "create_folder", "delete_path", "update_persona", "run_python", "develop_skill",
-                  *OUTWARD)  # Sprint 7: Gemma's floors: sending, posting, drafting, adding events
+                  "ask_developer", *OUTWARD)  # Sprint 7: Gemma's floors: sending, posting, drafting, adding events
 # Approvals that may be edited on the card before approving: tool -> the fields the user may change.
 EDITABLE: dict[str, tuple[str, ...]] = {"develop_skill": ("specification", "engine")}
 
@@ -58,6 +58,7 @@ GROUP = {
     "list_skills": "Workshop",
     "propose_skill": "Workshop",
     "develop_skill": "Developer",
+    "ask_developer": "Developer",
     "list_connections": "Connections",
     "gmail_read": "Gmail", "gmail_draft": "Gmail",
     "calendar_read": "Calendar", "calendar_add": "Calendar",
@@ -83,6 +84,7 @@ _DOING: dict[str, Callable[[dict], str]] = {
     "list_skills": lambda a: "Looking through my skills...",
     "propose_skill": lambda a: f"Staging the '{a.get('name')}' skill for audit...",
     "develop_skill": lambda a: f"Starting {'Codex' if a.get('engine') == 'codex' else 'Claude Code'} on the '{a.get('name')}' skill...",
+    "ask_developer": lambda a: "",  # announces itself, once (it runs again when the user decides on its changes)
     "list_connections": lambda a: "Checking my connections...",
     "gmail_read": lambda a: "Opening an email..." if a.get("message_id") else f"Searching Gmail for '{a.get('query') or 'your inbox'}'...",
     "gmail_draft": lambda a: f"Saving a draft to {a.get('to')}...",
@@ -103,7 +105,7 @@ def status_line(tool_name: str, args: dict) -> str:
     if tool_name.startswith("skill_"):  # installed skills: Gemma's spoken status line
         return f"[Tool: Skill_Tool] Running the {tool_name[len('skill_'):]} skill..."
     doing = _DOING.get(tool_name, lambda a: "Working...")(args)
-    return f"[Tool: {GROUP.get(tool_name, tool_name)}] {doing}"
+    return f"[Tool: {GROUP.get(tool_name, tool_name)}] {doing}" if doing else ""
 
 
 @dataclass
@@ -164,6 +166,7 @@ class Toolbox:
         from aura.developer.workflow import Developer
         from aura.governor.workshop import Workshop
         from aura.skills import SkillManager
+        from aura.tools.developer import developer_tools
         from aura.tools.workshop import workshop_tools
 
         skills = SkillManager(settings.skills_dir, settings.data_dir, sandbox, audit)
@@ -171,6 +174,7 @@ class Toolbox:
         continuous = ContinuousAudit(skills, audit, settings.data_dir / "continuous_audit.json")
         developer = Developer(settings, workshop, container or DevContainer(sandbox, secrets, audit), secrets, audit)
         tools += workshop_tools(workshop, developer)
+        tools += developer_tools(developer, vault)
         slack, discord = SlackConnection(secrets, audit), DiscordConnection(secrets, audit)
         connections = Connections(GoogleConnection(secrets, audit), slack, discord)
         inbox = Inbox()

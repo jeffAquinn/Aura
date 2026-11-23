@@ -121,6 +121,51 @@ struct SnapshotTests {
         ]))
     }
 
+    @Test func claudeCodeFromTheChatBox() throws {
+        let task = "Move forms.md into 01_The_Absolute_R/ and add it to the Map of the Ascent's index."
+        let handOff = PendingAction(tool: "ask_developer", description: """
+            have Claude Code work on a copy of your whole vault (your Claude plan, up to 10 minutes):
+                Sent to Anthropic: this task and a copy of your whole vault (4 files, 4.1 KB), which Claude Code reads. Nothing else from your Mac or this conversation.
+                Then you allow or deny each file it changed. Nothing is written to your vault before that.
+                │ \(task)
+            """, args: ["task": .string(task), "engine": .string("claude")])
+        let changes = [
+            PendingAction(tool: "apply_change", description: """
+                change 'Map_of_the_Ascent.md' (+1 −0):
+                    │ @@ -24,3 +24,4 @@
+                    │  ## Index
+                    │  - [The Architecture of Emergence](<Conversations/The_Architecture_of_Emergence.md>)
+                    │ +- [The Forms](<01_The_Absolute_R/forms.md>)
+                """, args: ["path": .string("Map_of_the_Ascent.md"), "change": .string("modify"), "engine": .string("claude")]),
+            PendingAction(tool: "apply_change", description: "create '01_The_Absolute_R/forms.md' (31 B, +2 lines):\n    │ +# The Forms\n    │ +The Good, the True.",
+                          args: ["path": .string("01_The_Absolute_R/forms.md"), "change": .string("create"), "engine": .string("claude")]),
+            PendingAction(tool: "apply_change", description: "delete 'forms.md' (31 B, −2 lines)",
+                          args: ["path": .string("forms.md"), "change": .string("delete"), "engine": .string("claude")]),
+        ]
+        var ask = item(.user, "File my forms note where it belongs.")
+        ask.developer = "claude"
+        let store = ChatStore(items: [
+            ask,
+            item(.approval, actions: [handOff], decisions: [true]),
+            item(.status, "[Tool: Developer] Handing the task to Claude Code..."),
+            item(.status, "[Tool: Developer] · Claude Code: Writing 01_The_Absolute_R/forms.md"),
+            item(.approval, actions: changes),
+        ], phase: .awaitingApproval)
+        store.developer = "claude"
+        try render("30-claude-code-from-chat", store)
+        let card = FileChangesCard(item: item(.approval, actions: changes), store: store, openAll: true)
+        try renderWide("31-file-changes", width: 520, card.padding())
+        try renderWide("32-file-changes-dark", width: 520, dark: true, card.padding())
+        try renderWide("34-developer-chips", width: 300, HStack { DeveloperChip(developer: nil); DeveloperChip(developer: "claude"); DeveloperChip(developer: "codex") }.padding())
+        try render("35-hand-off-pending", ChatStore(items: [ask, item(.approval, actions: [handOff])], phase: .awaitingApproval), dark: true)
+        let parsed = try #require(handOff.developerTask)
+        #expect(parsed.engine == "claude" && parsed.task == task && parsed.notes.count == 2)
+        #expect(parsed.summary == "have Claude Code work on a copy of your whole vault (your Claude plan, up to 10 minutes)")
+        var answered = item(.approval, actions: changes, decisions: [true, true, false])
+        answered.edited = false
+        try renderWide("33-file-changes-answered", width: 520, FileChangesCard(item: answered, store: store).padding())
+    }
+
     @Test func offlineAndErrorStatesUsePlainLanguage() throws {
         let store = ChatStore(
             items: [item(.user, "Hello?"), item(.error, FriendlyMessage.turnFailed(URLError(.cannotConnectToHost)))],

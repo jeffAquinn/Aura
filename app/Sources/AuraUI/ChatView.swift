@@ -274,17 +274,25 @@ struct ItemView: View {
     var body: some View {
         switch item.role {
         case .user:
-            HStack {
-                Spacer(minLength: 56)
-                Text(item.text)
-                    .font(chat.font())
-                    .textSelection(.enabled)
-                    .lineSpacing(2)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
-                    .foregroundStyle(bubbles.userText)
-                    .background(bubbles.user, in: .rect(cornerRadius: 16))
-                    .contextMenu { MessageMenu(item: item, store: store) }
+            VStack(alignment: .trailing, spacing: 3) {
+                HStack {
+                    Spacer(minLength: 56)
+                    Text(item.text)
+                        .font(chat.font())
+                        .textSelection(.enabled)
+                        .lineSpacing(2)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 8)
+                        .foregroundStyle(bubbles.userText)
+                        .background(bubbles.user, in: .rect(cornerRadius: 16))
+                        .contextMenu { MessageMenu(item: item, store: store) }
+                }
+                if let developer = item.developer {  // handed to Claude Code or Codex in the chat box
+                    Label("To \(EngineInfo.named(developer)?.label ?? developer)", systemImage: DeveloperPicker.symbol)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .padding(.trailing, 6)
+                }
             }
         case .aura:
             AuraMessage(item: item, store: store, avatar: avatar)
@@ -292,7 +300,11 @@ struct ItemView: View {
             ToolStatusView(text: item.text)
                 .contextMenu { MessageMenu(item: item, store: store) }
         case .approval:
-            if item.actions.count == 1, let build = item.actions[0].build {
+            if item.isFileChanges {
+                FileChangesCard(item: item, store: store)
+            } else if item.actions.count == 1, let task = item.actions[0].developerTask {
+                DeveloperTaskCard(item: item, task: task, store: store)
+            } else if item.actions.count == 1, let build = item.actions[0].build {
                 SpecificationApprovalCard(item: item, proposal: build, store: store)
             } else {
                 ApprovalCard(item: item, store: store)
@@ -498,6 +510,7 @@ struct ToolStatusView: View {
         if text.contains("[Tool: Slack]") { return "number" }
         if text.contains("[Tool: Discord]") { return "bubble.left.and.bubble.right" }
         if text.contains("[Tool: Connections]") { return "link" }
+        if text.contains("[Tool: Developer]") { return DeveloperPicker.symbol }
         return "folder"
     }
 
@@ -507,6 +520,7 @@ struct ToolStatusView: View {
         if s.hasPrefix("[Tool:"), let end = s.firstIndex(of: "]") {
             s = String(s[s.index(after: end)...]).trimmingCharacters(in: .whitespaces)
         }
+        if s.hasPrefix("· ") { s = String(s.dropFirst(2)) }  // a Developer's live progress line
         if s.hasSuffix("...") { s = String(s.dropLast(3)) + "…" }
         return s
     }
@@ -592,6 +606,7 @@ struct InputBar: View {
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 8) {
+            DeveloperPicker(store: store)
             TextField(placeholder, text: $draft, axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(chat.font())
@@ -606,7 +621,7 @@ struct InputBar: View {
                 RoundButton(symbol: "arrow.up", enabled: canSend, action: send).help("Send")
             }
         }
-        .padding(.leading, 14)
+        .padding(.leading, 8)
         .padding(.trailing, 6)
         .padding(.vertical, 6)
         .background(Color.primary.opacity(0.06), in: .rect(cornerRadius: 18))
@@ -620,13 +635,280 @@ struct InputBar: View {
 
     private var placeholder: String {
         if store.transport == nil { return "Aura is offline" }
-        return store.phase == .awaitingApproval ? "Answer the approval request first" : "Ask \(store.persona.name)…"
+        if store.phase == .awaitingApproval { return "Answer the approval request first" }
+        if let developer = store.developer, let engine = EngineInfo.named(developer) {
+            return "Ask \(engine.label), through \(store.persona.name)…"
+        }
+        return "Ask \(store.persona.name)…"
     }
 
     private func send() {
         guard canSend else { return }
         store.send(draft)
         draft = ""
+    }
+}
+
+/// Who the next message goes to: Aura (who may still decide to bring in a Developer), or straight to
+/// Claude Code or Codex through Aura. Either way, sending a task and every file it changes need the
+/// user's approval. The choice stays until it's changed.
+struct DeveloperPicker: View {
+    let store: ChatStore
+    static let symbol = "chevron.left.forwardslash.chevron.right"
+
+    var body: some View {
+        Menu {
+            Picker("Send to", selection: Binding(get: { store.developer ?? "" },
+                                                 set: { store.developer = $0.isEmpty ? nil : $0 })) {
+                Text(store.persona.name).tag("")
+                ForEach(EngineInfo.known) { engine in
+                    Text("\(engine.label) (\(engine.plan))").tag(engine.name)
+                }
+            }
+            .pickerStyle(.inline)
+        } label: {
+            DeveloperChip(developer: store.developer)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help(store.developer == nil ? "Send to \(store.persona.name), or hand it to Claude Code or Codex"
+              : "Messages go to \(EngineInfo.named(store.developer ?? "")?.label ?? "a Developer"), through \(store.persona.name)")
+    }
+}
+
+/// The chat box's choice, at a glance: a quiet code symbol, or the chosen Developer's name.
+struct DeveloperChip: View {
+    let developer: String?
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Image(systemName: DeveloperPicker.symbol)
+            if let developer, let engine = EngineInfo.named(developer) {
+                Text(engine.label).lineLimit(1)
+            }
+        }
+        .font(.system(size: 11, weight: .semibold))
+        .foregroundStyle(developer == nil ? Color.secondary : Color.accentColor)
+        .padding(.horizontal, 7)
+        .frame(height: 26)
+        .background(developer == nil ? Color.clear : Color.accentColor.opacity(0.14), in: .capsule)
+    }
+}
+
+/// Aura asks to hand a job to Claude Code or Codex: who gets what (the task, and a measured copy of
+/// a vault folder), then the task itself. Deny is the default (Return).
+struct DeveloperTaskCard: View {
+    let item: ChatStore.Item
+    let task: DeveloperTask
+    let store: ChatStore
+    @Environment(\.chatText) private var chat
+
+    private var label: String { EngineInfo.named(task.engine)?.label ?? "a Developer" }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("\(store.persona.name) wants to hand this to \(label):", systemImage: DeveloperPicker.symbol)
+                .font(.subheadline.weight(.semibold))
+            Text(task.task)
+                .font(chat.font(0.95))
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(10)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.primary.opacity(0.05), in: .rect(cornerRadius: 8))
+            VStack(alignment: .leading, spacing: 4) {
+                Text(task.summary.prefix(1).uppercased() + task.summary.dropFirst())
+                ForEach(task.notes, id: \.self) { Text($0) }
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+            if let decisions = item.decisions {
+                Label(decisions.isEmpty ? ApprovalCard.outcome(decisions) : decisions.contains(true) ? "Sent to \(label)" : "Denied: nothing was sent",
+                      systemImage: decisions.contains(true) ? "checkmark.circle" : "xmark.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                HStack(spacing: 8) {
+                    Spacer()
+                    Button("Send to \(label)") { store.decide([true]) }
+                    Button("Deny") { store.decide([false]) }
+                        .keyboardShortcut(.defaultAction)
+                }
+                .controlSize(.regular)
+            }
+        }
+        .padding(12)
+        .background(.orange.opacity(0.10), in: .rect(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.orange.opacity(0.4), lineWidth: 0.75))
+        .padding(.leading, 32)
+    }
+}
+
+/// Allow or deny one file: drawn in SwiftUI (compact, and it renders in snapshots).
+struct AllowDenySwitch: View {
+    @Binding var allowed: Bool
+
+    var body: some View {
+        HStack(spacing: 0) {
+            segment("Deny", selected: !allowed) { allowed = false }
+            segment("Allow", selected: allowed) { allowed = true }
+        }
+        .padding(2)
+        .background(Color.primary.opacity(0.08), in: .capsule)
+        .accessibilityElement(children: .contain)
+        .accessibilityValue(allowed ? "Allowed" : "Denied")
+    }
+
+    private func segment(_ title: String, selected: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Text(title)
+                .font(.caption.weight(.semibold))
+                .padding(.horizontal, 9)
+                .padding(.vertical, 3)
+                .foregroundStyle(selected ? (title == "Allow" ? Color.white : Color.primary) : Color.secondary)
+                .background(selected ? (title == "Allow" ? Color.green : Color.primary.opacity(0.14)) : Color.clear,
+                            in: .capsule)
+                .contentShape(.capsule)
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+/// The files a Developer changed in the vault, each with its diff and its own Allow / Deny. Every
+/// file starts at Deny, Return denies them all, and applying the allowed ones takes a click.
+struct FileChangesCard: View {
+    let item: ChatStore.Item
+    let store: ChatStore
+    @State private var allowed: [Bool] = []
+    @State private var open: Set<Int>
+
+    /// `openAll`: show every diff from the start (snapshots and previews).
+    init(item: ChatStore.Item, store: ChatStore, openAll: Bool = false) {
+        self.item = item
+        self.store = store
+        _open = State(initialValue: openAll ? Set(item.actions.indices) : [])
+    }
+
+    private var changes: [FileChange] { item.actions.compactMap(FileChange.init) }
+    private var engine: String {
+        EngineInfo.named(EngineInfo.engineName(item.actions.first?.args?["engine"]?.string))?.label ?? "The Developer"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("\(engine) changed \(changes.count == 1 ? "1 file" : "\(changes.count) files"). Allow each one you want in your vault:",
+                  systemImage: "doc.badge.gearshape")
+                .font(.subheadline.weight(.semibold))
+            ForEach(Array(changes.enumerated()), id: \.offset) { i, change in
+                row(i, change)
+            }
+            if let decisions = item.decisions {
+                Label(decisions.isEmpty ? ApprovalCard.outcome(decisions)
+                      : "Allowed \(decisions.filter { $0 }.count) of \(decisions.count)",
+                      systemImage: decisions.contains(true) ? "checkmark.circle" : "xmark.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                HStack(spacing: 8) {
+                    Button("Allow All") { allowed = Array(repeating: true, count: changes.count) }
+                        .disabled(decisions.allSatisfy { $0 })
+                    Spacer()
+                    Button("Deny All") { store.decide(Array(repeating: false, count: changes.count)) }
+                        .keyboardShortcut(.defaultAction)  // safety first, as on every approval card
+                    Button(applyTitle) { store.decide(decisions) }
+                        .disabled(!decisions.contains(true))
+                }
+                .controlSize(.regular)
+            }
+        }
+        .padding(12)
+        .background(.orange.opacity(0.10), in: .rect(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.orange.opacity(0.4), lineWidth: 0.75))
+        .padding(.leading, 32)
+        .onAppear { if allowed.count != changes.count { allowed = Array(repeating: false, count: changes.count) } }
+    }
+
+    private var decisions: [Bool] { changes.indices.map { allowed.indices.contains($0) && allowed[$0] } }
+
+    private var applyTitle: String {
+        let n = decisions.filter { $0 }.count
+        return n == 0 ? "Apply Allowed" : n == decisions.count ? "Apply All" : "Apply \(n) of \(decisions.count)"
+    }
+
+    @ViewBuilder
+    private func row(_ i: Int, _ change: FileChange) -> some View {
+        let decided = item.decisions.flatMap { $0.indices.contains(i) ? $0[i] : nil }
+        VStack(alignment: .leading, spacing: 3) {
+            HStack(spacing: 6) {
+                Button {
+                    if open.contains(i) { open.remove(i) } else { open.insert(i) }
+                } label: {
+                    Image(systemName: open.contains(i) ? "chevron.down" : "chevron.right")
+                        .font(.caption.weight(.semibold))
+                        .frame(width: 12)
+                }
+                .buttonStyle(.plain)
+                .disabled(change.diff.isEmpty)
+                .opacity(change.diff.isEmpty ? 0.3 : 1)
+                .help(change.diff.isEmpty ? "" : open.contains(i) ? "Hide the changes" : "Show the changes")
+                Text(change.verb).font(.caption.weight(.semibold)).foregroundStyle(color(change.kind))
+                Text(change.detail).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                Spacer(minLength: 4)
+                if let decided {
+                    Label(decided ? "Allowed" : "Denied", systemImage: decided ? "checkmark.circle.fill" : "xmark.circle")
+                        .font(.caption)
+                        .foregroundStyle(decided ? .green : .secondary)
+                } else {
+                    AllowDenySwitch(allowed: Binding(get: { allowed.indices.contains(i) && allowed[i] },
+                                                     set: { if allowed.indices.contains(i) { allowed[i] = $0 } }))
+                }
+            }
+            Text(change.path)  // whole, on its own line: the user decides on exactly this file
+                .font(.system(.callout, design: .monospaced))
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.leading, 18)
+            if open.contains(i) {
+                DiffView(lines: change.diff)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func color(_ kind: FileChange.Kind) -> Color {
+        switch kind {
+        case .create, .createFolder: .green
+        case .modify: .blue
+        case .delete, .deleteFolder: .red
+        }
+    }
+}
+
+/// A unified diff: additions green, removals red, hunk headers quiet.
+struct DiffView: View {
+    let lines: [String]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                Text(line.isEmpty ? " " : line)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundStyle(line.hasPrefix("@@") || line.hasPrefix("…") ? Color.secondary : Color.primary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.horizontal, 6)
+                    .background(background(line))
+            }
+        }
+        .textSelection(.enabled)
+        .padding(.vertical, 4)
+        .background(Color.primary.opacity(0.04), in: .rect(cornerRadius: 6))
+        .padding(.leading, 18)
+    }
+
+    private func background(_ line: String) -> Color {
+        line.hasPrefix("+") ? .green.opacity(0.14) : line.hasPrefix("-") ? .red.opacity(0.14) : .clear
     }
 }
 

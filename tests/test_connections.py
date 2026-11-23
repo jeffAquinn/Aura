@@ -124,7 +124,7 @@ def test_credentials_are_checked_and_kept_in_the_keychain(tmp_path):
     assert CLIENT_SECRET not in json.dumps(status)
     with pytest.raises(SecretError, match="written only by Aura's sign-in"):
         conn.secrets.set("google_tokens", '{"refresh_token": "forged"}')  # the app can never plant a token
-    assert [s["name"] for s in conn.secrets.listing()] == ["anthropic_api_key", "tavily_api_key"]  # Keys ≠ connections
+    assert [s["name"] for s in conn.secrets.listing()] == ["claude_oauth_token", "tavily_api_key"]  # Keys ≠ connections
 
 
 # ── sign-in ─────────────────────────────────────────────────────────────────────────────────

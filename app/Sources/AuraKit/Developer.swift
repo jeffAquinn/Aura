@@ -21,18 +21,34 @@ public struct EngineInfo: Codable, Sendable, Equatable, Identifiable {
 
     /// The two engines, for cards drawn before the Workshop has loaded the real state.
     public static let known = [
-        EngineInfo(name: "claude", label: "Claude Code", vendor: "Anthropic", capsCost: true),
+        EngineInfo(name: "claude", label: "Claude Code", vendor: "Anthropic", capsCost: false),
         EngineInfo(name: "codex", label: "Codex", vendor: "OpenAI", capsCost: false),
     ]
+
+    /// "Claude Code" / "claude-code" / "OpenAI Codex" -> "claude" / "codex" (as the server reads them).
+    public static func engineName(_ raw: String?) -> String {
+        let v = (raw ?? "claude").lowercased()
+        return v.contains("codex") ? "codex" : v.contains("claude") ? "claude" : v
+    }
 
     public static func named(_ name: String, in engines: [EngineInfo] = known) -> EngineInfo? {
         engines.first { $0.name == name } ?? known.first { $0.name == name }
     }
 
+    /// The user's own plan it runs on: Claude Code on the Claude plan, Codex on the ChatGPT plan.
+    public var plan: String { Self.plan(name) }
+
+    public static func plan(_ name: String) -> String {
+        switch name {
+        case "claude": "your Claude plan"
+        case "codex": "your ChatGPT plan"
+        default: "its own plan"
+        }
+    }
+
     /// How the build is paid for, in the user's terms.
     public var costNote: String {
-        capsCost ? "Billed to your Anthropic API key; \(label) itself stops at the cap."
-            : "\(label) counts against your ChatGPT plan's usage."
+        capsCost ? "Billed per use; \(label) itself stops at the cap." : "\(label) counts against \(plan)'s usage."
     }
 }
 
@@ -78,7 +94,7 @@ public struct BuildInfo: Codable, Sendable, Equatable, Identifiable {
     public let round: Int
     public let maxRounds: Int
     public let costUsd: Double
-    public let budgetUsd: Double  // 0 for Codex (the ChatGPT plan)
+    public let budgetUsd: Double  // 0: the engine runs on the user's plan
     public let message: String
     public let taskId: String?  // the passing round's Audit Card
     public let history: [BuildRound]
@@ -126,9 +142,9 @@ public struct BuildInfo: Codable, Sendable, Equatable, Identifiable {
         }
     }
 
-    /// "$0.42 of $2.00", or the ChatGPT plan for Codex.
+    /// "$0.42 of $2.00" for a capped engine; otherwise the plan it ran on ("your Claude plan").
     public var costLabel: String {
-        budgetUsd > 0 ? String(format: "$%.2f of $%.2f", costUsd, budgetUsd) : "your ChatGPT plan"
+        budgetUsd > 0 ? String(format: "$%.2f of $%.2f", costUsd, budgetUsd) : EngineInfo.plan(engine)
     }
 }
 
@@ -230,19 +246,23 @@ public struct SecretInfo: Codable, Sendable, Equatable, Identifiable {
     public let name: String
     public let label: String
     public let set: Bool
-    public let hint: String?  // "sk-ant-…WXYZ"
+    public let hint: String?  // "sk-ant-oat…WXYZ"
+    /// No longer used: shown only while still stored, so it can be removed (never replaced).
+    public let retired: Bool?
 
-    public init(name: String, label: String, set: Bool, hint: String? = nil) {
+    public init(name: String, label: String, set: Bool, hint: String? = nil, retired: Bool? = nil) {
         self.name = name
         self.label = label
         self.set = set
         self.hint = hint
+        self.retired = retired
     }
+
+    public var isRetired: Bool { retired ?? false }
 
     /// Where to get one.
     public var source: URL? {
         switch name {
-        case "anthropic_api_key": URL(string: "https://console.anthropic.com/settings/keys")
         case "tavily_api_key": URL(string: "https://app.tavily.com/home")
         default: nil
         }
@@ -250,9 +270,15 @@ public struct SecretInfo: Codable, Sendable, Equatable, Identifiable {
 
     public var purpose: String {
         switch name {
-        case "anthropic_api_key": "Claude Code builds skills with it (its isolated container only)."
+        case "claude_oauth_token":
+            "Claude Code works on your Claude plan, in its isolated container only. To get the token, run "
+                + "\"claude setup-token\" in Terminal, sign in, and paste the token it prints."
+        case "anthropic_api_key": "Not used any more: Claude Code uses your Claude plan. You can remove it."
         case "tavily_api_key": "Web search (otherwise DuckDuckGo)."
         default: ""
         }
     }
+
+    /// What to paste, for the field's placeholder.
+    public var placeholder: String { name == "claude_oauth_token" ? "Paste the token (sk-ant-oat01-…)" : "Paste the key" }
 }
