@@ -115,12 +115,18 @@ def fake_ddg(query: str, n: int) -> list[Hit]:
 
 
 def make_aura(
-    settings: Settings, *script: AIMessage, report_usage: bool = False, tavily=None, **overrides: Any
+    settings: Settings, *script: AIMessage, report_usage: bool = False, tavily=None, fresh: bool = True,
+    **overrides: Any,
 ) -> tuple[Aura, ScriptedModel]:
+    """`fresh`: start a new conversation even if the data folder has one saved (a test that builds
+    several Auras in one folder wants each to start clean; a restart test passes False)."""
     s = dataclasses.replace(settings, **overrides)
     search = WebSearch(s.tavily_api_key, AuditLog(s.audit_log), tavily=tavily, duckduckgo=fake_ddg)
     model = ScriptedModel(script=list(script), report_usage=report_usage)
-    return Aura(settings=s, model=model, toolbox=Toolbox.from_settings(s, search=search)), model
+    aura = Aura(settings=s, model=model, toolbox=Toolbox.from_settings(s, search=search))
+    if fresh:
+        aura.new_conversation()
+    return aura, model
 
 
 def tool_turn(*calls: dict) -> AIMessage:

@@ -138,6 +138,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // Tell the server which voices this Mac has, then mirror voice + persona settings.
                 await store.registerVoices(SystemSpeechEngine.catalog())
                 await store.loadSettings()
+                await store.restoreConversation()  // the conversation (and any waiting approval) the server kept
                 AppLog.write("voices registered: \(store.voices.count); speak=\(store.voice.speak); persona=\(store.persona.name)")
             }
         case .failed:  // technical reason is in app.log; the server restarts itself

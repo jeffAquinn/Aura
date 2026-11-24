@@ -68,6 +68,11 @@ struct WorkshopSidebar: View {
 
     var body: some View {
         List(selection: selection) {
+            if !store.recovery.isEmpty {
+                Section("Interrupted by a restart") {
+                    ForEach(store.recovery) { item in RecoveryRow(item: item, store: store) }
+                }
+            }
             Section {
                 if store.builds.isEmpty { Text("None yet").foregroundStyle(.secondary) }
                 ForEach(store.builds) { build in BuildRow(build: build).tag(Optional(build.id)) }
@@ -171,6 +176,33 @@ struct WorkshopSidebar: View {
 }
 
 /// The Continuous Audit's question, when an installed skill turns red.
+/// Work a restart cut short: what it was, what happened, and the user's choices.
+struct RecoveryRow: View {
+    let item: RecoveryItem
+    let store: WorkshopStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Label(item.title, systemImage: "arrow.clockwise.circle")
+                .font(.body.weight(.medium))
+                .foregroundStyle(.orange)
+            Text(item.message).font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if item.scratchKept {
+                Text("Its working files are kept for a day, for diagnosis.").font(.caption2).foregroundStyle(.tertiary)
+            }
+            HStack {
+                if item.actions.contains("retry") {
+                    Button("Retry") { Task { await store.retry(item.id) } }
+                }
+                Button("Dismiss") { Task { await store.dismissRecovery(item.id) } }
+            }
+            .buttonStyle(.link)
+            .font(.caption)
+        }
+        .padding(.vertical, 2)
+    }
+}
+
 struct AlertBanner: View {
     let alert: SkillAlert
     let onKeep: () -> Void

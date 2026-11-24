@@ -138,6 +138,7 @@ public struct BuildInfo: Codable, Sendable, Equatable, Identifiable {
         case "deployed": "Deployed"
         case "rejected": "Rejected"
         case "stopped": "Stopped"
+        case "interrupted": "Interrupted by a restart"
         default: "Couldn't produce a passing skill"
         }
     }
@@ -154,14 +155,17 @@ public struct DeveloperInfo: Codable, Sendable, Equatable {
     public let budgetUsd: Double
     public let repairRounds: Int
     public let timeoutMinutes: Int
+    /// Builds and vault jobs a restart interrupted (absent from servers before the recovery layer).
+    public let recovery: [RecoveryItem]?
 
     public init(engines: [EngineInfo] = EngineInfo.known, builds: [BuildInfo] = [], budgetUsd: Double = 2,
-                repairRounds: Int = 2, timeoutMinutes: Int = 10) {
+                repairRounds: Int = 2, timeoutMinutes: Int = 10, recovery: [RecoveryItem]? = nil) {
         self.engines = engines
         self.builds = builds
         self.budgetUsd = budgetUsd
         self.repairRounds = repairRounds
         self.timeoutMinutes = timeoutMinutes
+        self.recovery = recovery
     }
 
     /// "$2.00 total, 10 minutes per round, up to 2 repair rounds" (the chat card's limits).

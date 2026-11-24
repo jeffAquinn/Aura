@@ -45,6 +45,13 @@ public protocol AuraTransport: Sendable {
     func setChat(_ id: String, _ chat: ChatSwitch) async throws -> ConnectionInfo
     /// Live messages newer than `after`, waiting up to `wait` seconds for one (a long poll).
     func messages(after: Int, wait: Int) async throws -> MessagesPage
+    /// Stop the turn being streamed. Returns once the server has cleaned it up (true), or false
+    /// when nothing was stopped (the caller then closes the stream, which the server treats as a stop).
+    func stopTurn() async throws -> Bool
+    /// The conversation the server kept (after a restart: the history, and any approval still waiting).
+    func conversation() async throws -> ConversationInfo
+    func retryBuild(_ id: String) async throws -> BuildInfo
+    func dismissRecovery(_ id: String) async throws
 }
 
 /// Defaults so test fakes only implement what they exercise.
@@ -88,6 +95,28 @@ extension AuraTransport {
     public func removeLiveTokens(_ id: String) async throws -> ConnectionInfo { throw AuraClientError.badResponse }
     public func setChat(_ id: String, _ chat: ChatSwitch) async throws -> ConnectionInfo { throw AuraClientError.badResponse }
     public func messages(after: Int, wait: Int) async throws -> MessagesPage { MessagesPage(messages: [], latest: after) }
+    public func stopTurn() async throws -> Bool { false }
+    public func conversation() async throws -> ConversationInfo { throw AuraClientError.badResponse }
+    public func retryBuild(_ id: String) async throws -> BuildInfo { throw AuraClientError.badResponse }
+    public func dismissRecovery(_ id: String) async throws {}
+}
+
+/// The ids that bind what the user does to what the server is doing: the turn being streamed
+/// (for Stop) and the approval card on screen (so an answer can never approve a different request).
+final class TurnIDs: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _turn: String?
+    private var _approval: String?
+
+    var turn: String? {
+        get { lock.withLock { _turn } }
+        set { lock.withLock { _turn = newValue } }
+    }
+
+    var approval: String? {
+        get { lock.withLock { _approval } }
+        set { lock.withLock { _approval = newValue } }
+    }
 }
 
 public enum AuraClientError: Error, LocalizedError, Equatable {
@@ -107,6 +136,7 @@ public final class AuraClient: AuraTransport {
     public let baseURL: URL
     private let token: String
     private let session: URLSession
+    private let ids = TurnIDs()
 
     public init(port: Int, token: String, session: URLSession = .shared) {
         baseURL = URL(string: "http://127.0.0.1:\(port)")!
@@ -123,12 +153,40 @@ public final class AuraClient: AuraTransport {
         return stream("/v1/chat", body: Body(text: text, developer: developer))
     }
 
+    struct Answer<A: Encodable & Sendable>: Encodable, Sendable {
+        let approvals: A
+        let approval_id: String?
+    }
+
     public func approve(_ approvals: [Bool]) -> AsyncThrowingStream<AuraEvent, Error> {
-        stream("/v1/approvals", body: ["approvals": approvals])
+        stream("/v1/approvals", body: Answer(approvals: approvals, approval_id: ids.approval))
     }
 
     public func approve(decisions: [ApprovalDecision]) -> AsyncThrowingStream<AuraEvent, Error> {
-        stream("/v1/approvals", body: ["approvals": decisions])
+        stream("/v1/approvals", body: Answer(approvals: decisions, approval_id: ids.approval))
+    }
+
+    public func stopTurn() async throws -> Bool {
+        struct Body: Encodable { let turn_id: String? }
+        struct Reply: Decodable { let stopped: Bool }
+        guard let turn = ids.turn else { return false }
+        var r = request("/v1/stop", body: Body(turn_id: turn))
+        r.timeoutInterval = 45  // the server waits for the turn's cleanup (up to 30 s)
+        return try Self.decoder.decode(Reply.self, from: await send(r)).stopped
+    }
+
+    public func conversation() async throws -> ConversationInfo {
+        let info = try Self.decoder.decode(ConversationInfo.self, from: await send(request("/v1/conversation")))
+        ids.approval = info.pending?.approvalId
+        return info
+    }
+
+    public func retryBuild(_ id: String) async throws -> BuildInfo {
+        try Self.decoder.decode(BuildInfo.self, from: await send(request("/v1/builds/\(id)/retry", body: [String: String]())))
+    }
+
+    public func dismissRecovery(_ id: String) async throws {
+        _ = try await send(request("/v1/recovery/\(id)/dismiss", body: [String: String]()))
     }
 
     public func newConversation() async throws {
@@ -354,6 +412,7 @@ public final class AuraClient: AuraTransport {
     private func stream(_ path: String, body: some Encodable & Sendable) -> AsyncThrowingStream<AuraEvent, Error> {
         let request = request(path, body: body)
         let session = session
+        let ids = ids
         return AsyncThrowingStream { continuation in
             let task = Task {
                 do {
@@ -366,6 +425,9 @@ public final class AuraClient: AuraTransport {
                     var parser = SSEParser()
                     for try await line in bytes.lines {
                         guard let event = parser.feed(line) else { continue }
+                        if event == .thinking { ids.turn = parser.turnID }
+                        if case .approval = event { ids.approval = parser.approvalID }
+                        if event == .done { ids.turn = nil }
                         continuation.yield(event)
                         if event == .done { break }
                     }

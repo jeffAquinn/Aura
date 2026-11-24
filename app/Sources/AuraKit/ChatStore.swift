@@ -141,11 +141,40 @@ public final class ChatStore {
         run(edited ? transport.approve(decisions: decisions) : transport.approve(decisions.map(\.approved)))
     }
 
-    /// Stop the reply being generated (closes the stream; the server frees the turn) and stop
-    /// speaking it.
+    /// Stop the reply being generated and stop speaking it. The server stops the turn (and a
+    /// Developer's container) and, once it is cleaned up, ends the stream with `stopped`. If the
+    /// server can't be asked, the stream is closed instead, which the server treats the same way.
     public func stop() {
+        speech?.stop()
+        guard isBusy, let transport, let task = turnTask else {
+            turnTask?.cancel()
+            return
+        }
+        Task {
+            let stopped = (try? await transport.stopTurn()) ?? false
+            if !stopped { task.cancel() }
+        }
+    }
+
+    /// Close the stream at once (the server is gone, or the conversation is being replaced).
+    private func cancelTurn() {
         turnTask?.cancel()
         speech?.stop()
+    }
+
+    /// After the app (re)connects: show the conversation the server kept, any approval still
+    /// waiting for an answer, and what a restart cut short. Only into an empty chat.
+    public func restoreConversation() async {
+        guard items.isEmpty, phase == .idle, let info = try? await transport?.conversation() else { return }
+        guard items.isEmpty else { return }  // the user started typing meanwhile
+        items = info.messages.map { Item(role: $0.role == "user" ? .user : .aura, text: $0.text) }
+        if let note = info.recoveryNote {
+            items.append(Item(role: .status, text: note))
+        }
+        if let pending = info.pending, !pending.actions.isEmpty {
+            items.append(Item(role: .approval, text: "", actions: pending.actions))
+            phase = .awaitingApproval
+        }
     }
 
     // MARK: - live messages (Slack, Discord)
@@ -224,7 +253,7 @@ public final class ChatStore {
 
     /// The server went away (it restarts with fresh state): end the turn, expire any open card.
     public func connectionLost(_ reason: String) {
-        stop()
+        cancelTurn()
         if let i = items.lastIndex(where: { $0.role == .approval && $0.decisions == nil }) {
             items[i].decisions = []  // expired
         }
@@ -234,7 +263,7 @@ public final class ChatStore {
     }
 
     public func newConversation() async {
-        stop()
+        cancelTurn()
         await turnTask?.value
         try? await transport?.newConversation()
         items.removeAll()
@@ -285,7 +314,11 @@ public final class ChatStore {
                 items.append(Item(role: .aura, text: text))
                 speakingItem = items[items.count - 1].id
             }
-            speech?.reply(items[items.count - 1].text, final: false)
+            // A sentence can only end at one of these: re-planning on every chunk would re-parse
+            // the whole reply each time (quadratic on a long reply).
+            if text.contains(where: { ".!?:;\n".contains($0) }) {
+                speech?.reply(items[items.count - 1].text, final: false)
+            }
             phase = .streaming
         case let .approval(actions):
             finishSpokenSegment()
@@ -304,6 +337,10 @@ public final class ChatStore {
         case let .build(id, skill):
             items.append(Item(role: .build, text: skill, actions: [PendingAction(tool: "build", description: id)]))
             onBuildStarted(id)
+        case let .stopped(partial):
+            items.append(Item(role: .status, text: partial
+                ? "Stopped. Whatever Aura had already done stays done."
+                : "Stopped."))
         case .done:
             break
         }

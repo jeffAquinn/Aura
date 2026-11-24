@@ -58,7 +58,13 @@ def events(r: httpx.Response) -> list[tuple[str, dict]]:
 
 
 def kinds(evs: list[tuple[str, dict]]) -> list[str]:
-    return [k for k, _ in evs]
+    """Event kinds in order; consecutive text pieces count as one (a reply may arrive in any
+    number of pieces: the secret masker holds back a token until it's whole)."""
+    out: list[str] = []
+    for k, _ in evs:
+        if not (k == "text" and out and out[-1] == "text"):
+            out.append(k)
+    return out
 
 
 def said(evs: list[tuple[str, dict]]) -> str:
@@ -241,6 +247,11 @@ def test_health_reports_state(settings):
         "vault": str(settings.vault_dir.resolve()),
         "busy": False,
         "awaiting_approval": False,
+        "active_turn": None,
+        "last_failure": None,
+        "interrupted_at_start": 0,
+        "recoverable": 0,
+        "recovery_note": None,
     }
 
 

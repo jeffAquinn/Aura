@@ -7,6 +7,9 @@ which streams `Event`s and pauses with an `ApprovalNeeded` event before any chan
 
 from __future__ import annotations
 
+import hashlib
+import json
+import threading
 import uuid
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
@@ -22,11 +25,11 @@ from langchain.agents.middleware import (
     ToolCallLimitMiddleware,
     dynamic_prompt,
 )
+from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_openai import ChatOpenAI
-from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command, Interrupt
 
 from aura.config import Settings
@@ -38,6 +41,13 @@ from aura.tools import EDITABLE, NEEDS_APPROVAL, Toolbox
 from aura.tools.sandbox import describe_run
 
 TOOL_CALLS_PER_TURN = 8
+CHECKPOINTS_KEPT = 8  # per conversation: only the latest is ever read (no time travel)
+TRANSCRIPT_CHARS = 20_000  # of one message, when the app restores the conversation
+# What the model reads for a tool call that never got its result (the turn was stopped, or Aura
+# restarted). Its effects, if any, stay: this says so instead of pretending either way.
+CUT_SHORT = ("This was cut short (the user stopped the turn, or Aura restarted) before it finished, so it may "
+             "have partly run. Don't assume either way; check before relying on it, and don't repeat it unless "
+             "the user asks.")  # fmt: skip
 
 # Layer 1, the Soul: Aura's constitutional directive (Gemma's mandate, verbatim). It is the very
 # first thing the model reads in every conversation. No tool, setting or persona change can
@@ -76,9 +86,33 @@ class Action:
 
 @dataclass(frozen=True)
 class ApprovalNeeded:
-    """The run is paused until `Aura.resume` is called with one decision per action."""
+    """The run is paused until `Aura.resume` is called with one decision per action. The answer
+    names `approval_id`, which binds it to this turn, conversation, tools and arguments."""
 
     actions: tuple[Action, ...]
+    approval_id: str = ""
+
+
+class TurnCancelled(Exception):
+    """Raised inside the model's token stream once the turn is stopped: ends the HTTP stream to the
+    model at once, instead of waiting for it to finish generating."""
+
+
+class _StopOnCancel(BaseCallbackHandler):
+    raise_error = True  # a callback's exception normally is only logged
+    run_inline = True
+
+    def __init__(self, cancel: threading.Event):
+        self.cancel = cancel
+
+    def on_llm_new_token(self, token: str, **kwargs: Any) -> None:
+        if self.cancel.is_set():
+            raise TurnCancelled
+
+
+class StaleApproval(RuntimeError):
+    """The answer is for an approval that is no longer the one waiting (a new conversation, a
+    newer request, an answer already given, or permissions changed since it was asked)."""
 
 
 @dataclass(frozen=True)
@@ -159,9 +193,12 @@ class Aura:
         # private data (mail, calendar, Drive, Slack, Discord) the search waits for the user too.
         tainted = InterruptOnConfig(allowed_decisions=["approve", "reject"], description=describe,
                                     when=lambda request: turn_is_tainted(request.state["messages"]))  # fmt: skip
-        # Conversation memory (and paused approvals): checkpointed per thread_id. Kept across
-        # agent rebuilds, so deploying a skill doesn't forget the conversation.
-        self._checkpointer = InMemorySaver()
+        # Conversation memory (and paused approvals): checkpointed per thread_id in SQLite, so it
+        # survives agent rebuilds (deploying a skill) and restarts of the server.
+        self._checkpointer = self.toolbox.checkpointer()
+        self.role = "mac" if primary else "slack"
+        self.turn_id: str | None = None  # the server's correlation id for the turn running now
+        self.recovery_note: str | None = None  # what a restart left unfinished (shown once by the app)
 
         def build(tools: list) -> Any:
             return create_agent(
@@ -184,7 +221,7 @@ class Aura:
                         trim_tokens_to_summarize=int(budget * 0.6),
                     ),
                     ToolCallLimitMiddleware(run_limit=TOOL_CALLS_PER_TURN),
-                    ToolStatusMiddleware(),
+                    ToolStatusMiddleware(self.toolbox.masker),
                     HumanInTheLoopMiddleware(interrupt_on={
                         **{name: editable if name in EDITABLE else approval for name in NEEDS_APPROVAL},
                         "web_search": tainted}),
@@ -198,7 +235,14 @@ class Aura:
         if primary:
             self.toolbox.workshop.on_deployed = self.reload_tools
             self.toolbox.continuous.on_change = self.reload_tools  # the server wraps this in its turn lock
-        self.new_conversation()
+        self._pending: Interrupt | None = None
+        self.approval_id: str | None = None
+        saved = self.toolbox.state.get_meta(f"conversation:{self.role}")
+        if saved:
+            self.thread_id = saved  # the conversation from before the restart
+            self._restore()
+        else:
+            self.new_conversation()
 
     def reload_tools(self) -> None:
         """Rebuild the agent with the current tools (e.g. a newly deployed skill). Memory is kept."""
@@ -206,8 +250,130 @@ class Aura:
         self._agent = self._build(self.toolbox.all_tools())
 
     def new_conversation(self) -> None:
+        old = getattr(self, "thread_id", None)
+        if old:  # an approval card of the old conversation can no longer be answered
+            if self._pending is not None:  # e.g. a vault review: its working copy is dropped
+                self._settle("The user started a new conversation before answering; nothing was carried out.")
+            self.toolbox.state.stale_approvals(old, "the conversation was reset")
+            self._checkpointer.delete_thread(old)  # forgotten means forgotten, on disk too
         self.thread_id = uuid.uuid4().hex
-        self._pending: Interrupt | None = None
+        self._pending = None
+        self.approval_id = None
+        self.recovery_note = None
+        self.toolbox.state.set_meta(f"conversation:{self.role}", self.thread_id)
+
+    # ── durability: restart recovery and runs cut short ────────────────────────────────────
+
+    def _restore(self) -> None:
+        """After a restart: an approval that can still be answered safely is waiting again; any
+        other unfinished run is settled, so nothing runs twice and the history stays valid."""
+        state = self._agent.get_state(self._config)
+        if state.interrupts:
+            interrupt = state.interrupts[0]
+            record = self.toolbox.state.approval_for(interrupt.id)
+            problem = None
+            if record and record["state"] == "submitted":
+                problem = ("Aura restarted while carrying out an action you had approved. Whether it finished is "
+                           "unknown, so it was not repeated.")  # fmt: skip
+            elif record and record["state"] != "pending":
+                problem = "An approval request went stale while Aura was restarting; it was not carried out."
+            elif self._needs_lost_task(state):
+                problem = ("Aura restarted, and the developer's working copy for the changes you were reviewing "
+                           "couldn't be kept. Nothing was written to your vault.")  # fmt: skip
+            if problem is None:
+                self._pending = interrupt
+                self.approval_id = record["id"] if record else self._register(interrupt, self._actions(interrupt))
+                return
+            if record:
+                self.toolbox.state.settle_approval(record["id"], "unrecoverable", problem)
+            self._settle(problem)
+            self.recovery_note = problem
+            self.toolbox.audit.record("approval_unrecoverable", conversation=self.thread_id, reason=problem)
+        elif state.next:
+            self._settle(CUT_SHORT)
+            self.recovery_note = "Aura restarted while it was working on your last message; it may have partly run."
+
+    def _needs_lost_task(self, state: Any) -> bool:
+        """Is the pending approval a vault job's per-file review whose working copy is gone?"""
+        names = {a.get("name") for a in state.interrupts[0].value.get("action_requests", [])}
+        if "apply_change" not in names:
+            return False
+        return not any(tc["id"] in self.toolbox.developer.tasks for tc in self._dangling(state))
+
+    @staticmethod
+    def _dangling(state: Any) -> list[dict[str, Any]]:
+        msgs = state.values.get("messages", [])
+        answered = {m.tool_call_id for m in msgs if isinstance(m, ToolMessage)}
+        last = next((m for m in reversed(msgs) if isinstance(m, AIMessage)), None)
+        return [tc for tc in (last.tool_calls if last else []) if tc["id"] not in answered]
+
+    def _settle(self, note: str = CUT_SHORT) -> bool:
+        """End an unfinished run without running anything: every tool call that has no result yet
+        gets `note` as its result, and a waiting approval is dropped. Returns whether anything
+        needed settling. (No model call: this is safe at startup and before a new message.)"""
+        state = self._agent.get_state(self._config)  # includes the writes of steps that finished
+        # A run closed mid-step: a tool that finished has its result only as a pending write of a
+        # step that was never committed, and a new message would discard it. Commit it.
+        saved = self._checkpointer.get_tuple(self._config)
+        committed = {m.id for m in (saved.checkpoint["channel_values"].get("messages", []) if saved else [])}
+        uncommitted = [m for m in state.values.get("messages", []) if m.id not in committed]
+        if not (state.interrupts or state.next or uncommitted):
+            return False
+        dangling = self._dangling(state)
+        for tc in dangling:
+            if tc["name"] == "ask_developer":  # its working copy: dropped, nothing written
+                self.toolbox.developer.finish_task(tc["id"], self.toolbox.vault)
+        self._agent.update_state(self._config, {"messages": [*uncommitted, *(
+            ToolMessage(note, tool_call_id=tc["id"], name=tc["name"], status="error") for tc in dangling)]},
+            as_node="tools")  # fmt: skip
+        if self.approval_id:
+            self.toolbox.state.settle_approval(self.approval_id, "stale", note)
+        self._pending, self.approval_id = None, None
+        return True
+
+    def _permissions(self) -> str:
+        """What Aura may do right now: an approval asked under other permissions goes stale."""
+        try:
+            skills = sorted(s.name for s in self.toolbox.skills.scan() if s.loaded)
+        except Exception:  # noqa: BLE001
+            skills = []
+        return json.dumps({"connections": self.toolbox.connections.signature(), "skills": skills}, default=str)
+
+    def _actions(self, interrupt: Interrupt) -> tuple[Action, ...]:
+        return tuple(Action(a["name"], a["args"], a.get("description", "")) for a in interrupt.value["action_requests"])
+
+    def _register(self, interrupt: Interrupt, actions: tuple[Action, ...]) -> str:
+        """Bind a new approval to its turn, conversation, tools and argument digest."""
+        approval_id = "a-" + uuid.uuid4().hex[:16]
+        digest = hashlib.sha256(json.dumps([self.thread_id, interrupt.id, [(a.tool, a.args) for a in actions]],
+                                           sort_keys=True, default=str).encode()).hexdigest()  # fmt: skip
+        self.toolbox.state.add_approval(approval_id, self.turn_id, self.thread_id, interrupt.id, digest,
+                                        [a.tool for a in actions], self._permissions())  # fmt: skip
+        return approval_id
+
+    def pending(self) -> dict[str, Any] | None:
+        """The approval waiting now (for the app to show again after a restart), or None."""
+        if self._pending is None:
+            return None
+        return {"approval_id": self.approval_id,
+                "actions": [{"tool": a.tool, "args": a.args, "description": a.description}
+                            for a in self._actions(self._pending)]}  # fmt: skip
+
+    def transcript(self, limit: int = 200) -> list[dict[str, str]]:
+        """The conversation as the user saw it: their messages and Aura's replies (no tool calls,
+        no memory summaries). Long messages are cut with a marker."""
+        out: list[dict[str, str]] = []
+        for m in self._agent.get_state(self._config).values.get("messages", []):
+            if isinstance(m, HumanMessage) and m.additional_kwargs.get("lc_source") != "summarization":
+                role, text = "user", m.text.split("\n\n[I chose ", 1)[0]
+            elif isinstance(m, AIMessage) and m.text:
+                role, text = "aura", m.text
+            else:
+                continue
+            if len(text) > TRANSCRIPT_CHARS:
+                text = text[:TRANSCRIPT_CHARS] + f"\n… [cut: {len(text) - TRANSCRIPT_CHARS} more characters]"
+            out.append({"role": role, "text": text})
+        return out[-limit:]
 
     @property
     def _config(self) -> RunnableConfig:
@@ -222,12 +388,15 @@ class Aura:
     # stream() and resume() validate eagerly, then return the run's event iterator, so a caller
     # (e.g. the HTTP server) learns about a bad request before it starts streaming a reply.
 
-    def stream(self, text: str, developer: str | None = None) -> Iterator[Event]:
+    def stream(self, text: str, developer: str | None = None, turn_id: str | None = None,
+               cancel: threading.Event | None = None) -> Iterator[Event]:
         """Send a message; yield Aura's reply, tool status lines, and possibly a final
         ApprovalNeeded (answer it with `resume`). `developer` ("claude" or "codex"): the user chose
         that Developer in the chat box, so Aura hands the message to it (ask_developer)."""
         if self._pending:
             raise RuntimeError("An approval is pending; answer it with resume() first.")
+        self.turn_id = turn_id
+        self._settle()  # the last turn was stopped mid-way: give its open tool calls a result
         if self.toolbox.connections.signature() != self._connected:  # an account was connected or removed
             self.reload_tools()
         self._turn_notices: set[str] = set()  # each notice is said once per turn
@@ -242,15 +411,18 @@ class Aura:
         fresh = self.toolbox.live.inbox.unseen_by_model() if self.primary else []
         if fresh:  # live messages since the last turn: a private read (R2), framed as untrusted (R5)
             messages += inbox_exchange(fresh)
-        return self._run({"messages": messages})
+        return self._run({"messages": messages}, cancel=cancel)
 
-    def resume(self, approvals: Sequence[bool | dict[str, Any]]) -> Iterator[Event]:
+    def resume(self, approvals: Sequence[bool | dict[str, Any]], approval_id: str | None = None,
+               turn_id: str | None = None, cancel: threading.Event | None = None) -> Iterator[Event]:
         """Answer the pending ApprovalNeeded, one decision per action, and continue the run. A
         decision is True/False, or {"approve": true, "args": {...}} to approve with edited
         arguments (only the fields EDITABLE allows, e.g. a build's specification)."""
         pending = self._pending
         if pending is None:
             raise RuntimeError("Nothing is waiting for approval.")
+        if approval_id is not None and approval_id != self.approval_id:
+            raise StaleApproval("That approval card is out of date: it isn't the request Aura is waiting on.")
         actions = pending.value["action_requests"]
         if len(approvals) != len(actions):
             raise ValueError(f"Expected {len(actions)} decisions, got {len(approvals)}.")
@@ -258,7 +430,16 @@ class Aura:
         for action, edit in zip(actions, edits):
             if edit is not None and (not isinstance(edit, dict) or not set(edit) <= set(EDITABLE.get(action["name"], ()))):
                 raise ValueError(f"{action['name']} can't be edited that way.")
-        self._pending = None  # only once the answer is known to be valid
+        record = self.toolbox.state.approval(self.approval_id) if self.approval_id else None
+        if record and record["signature"] != self._permissions():
+            self._settle("The user's permissions changed before they answered, so this was not carried out. "
+                         "Ask again if it's still wanted.")  # fmt: skip
+            raise StaleApproval("Your permissions changed since Aura asked, so that request was cancelled. Ask again.")
+        answering = self.approval_id
+        if answering and not self.toolbox.state.claim_approval(answering):  # exactly one answer runs
+            raise StaleApproval("That approval was already answered.")
+        self.turn_id = turn_id
+        self._pending, self.approval_id = None, None  # only once the answer is known to be valid
         decisions = []
         for action, answer, edit in zip(actions, approvals, edits):
             ok = bool(answer.get("approve")) if isinstance(answer, dict) else bool(answer)
@@ -272,7 +453,7 @@ class Aura:
                 decisions.append({"type": "edit", "edited_action": {"name": action["name"], "args": {**action["args"], **edit}}})
             else:
                 decisions.append({"type": "approve"} if ok else {"type": "reject", "message": REJECTION_NOTE})
-        return self._run(Command(resume={pending.id: {"decisions": decisions}}))
+        return self._run(Command(resume={pending.id: {"decisions": decisions}}), answering=answering, cancel=cancel)
 
     def chat(self, text: str, approve: Callable[[Action], bool] = lambda _: False) -> str:
         """Non-interactive convenience: run a full turn, deciding approvals with `approve`
@@ -289,40 +470,71 @@ class Aura:
             events = self.resume([approve(a) for a in pending.actions]) if pending else None
         return "".join(said)
 
-    def _run(self, payload: Any) -> Iterator[Event]:
-        for mode, data in self._agent.stream(
-            payload, self._config, stream_mode=["messages", "custom"]
-        ):
-            if mode == "custom":
-                if "status" in data:
-                    yield Status(data["status"])
-                elif "notice" in data and data["notice"] not in self._turn_notices:
-                    self._turn_notices.add(data["notice"])
-                    yield Text(data["notice"] + "\n\n")
-                elif "reply" in data:
-                    yield Text(data["reply"])
-                elif "voice" in data:
-                    yield Changed("voice", data["voice"])
-                elif "persona" in data:
-                    yield Changed("persona", data["persona"])
-                elif "task" in data:  # an audit or a build started: the chat shows a card for it
-                    yield Changed("task", data["task"])
-                continue
-            chunk, meta = data
-            # Only the agent's own model node; skips e.g. the summarizer's internal LLM call.
-            # Streaming backends emit AIMessageChunks; non-streaming ones emit one AIMessage.
-            if meta.get("langgraph_node") == "model" and isinstance(chunk, AIMessage):
-                if chunk.text:
-                    yield Text(chunk.text)
+    def _run(self, payload: Any, answering: str | None = None, cancel: threading.Event | None = None) -> Iterator[Event]:
+        """`cancel`: the turn's token. Checked at every chunk (a model writing a long tool call
+        streams no text), so a stop ends the run at the next chunk; the step's open tool calls are
+        settled before the next message (_settle), and no approval is raised by a stopped run."""
+        config = {**self._config, "callbacks": [_StopOnCancel(cancel)]} if cancel is not None else self._config
+        run = self._agent.stream(payload, config, stream_mode=["messages", "custom"])
+        try:
+            for mode, data in run:
+                if cancel is not None and cancel.is_set():
+                    return
+                yield from self._event(mode, data)
+        except TurnCancelled:
+            return
+        finally:
+            try:
+                run.close()
+            except TurnCancelled:
+                pass
+        if cancel is not None and cancel.is_set():
+            return
+        if answering:  # the approved continuation ran to the end
+            self.toolbox.state.settle_approval(answering, "done")
+        prune_checkpoints(self._checkpointer, self.thread_id)
         interrupts = self._agent.get_state(self._config).interrupts
         if interrupts:
             self._pending = interrupts[0]
-            yield ApprovalNeeded(
-                tuple(
-                    Action(a["name"], a["args"], a.get("description", ""))
-                    for a in self._pending.value["action_requests"]
-                )
-            )
+            actions = self._actions(self._pending)
+            self.approval_id = self._register(self._pending, actions)
+            yield ApprovalNeeded(actions, self.approval_id)
+
+    def _event(self, mode: str, data: Any) -> Iterator[Event]:
+        """One item of the agent's stream, as what interfaces receive (often nothing)."""
+        if mode == "custom":
+            if "status" in data:
+                yield Status(data["status"])
+            elif "notice" in data and data["notice"] not in self._turn_notices:
+                self._turn_notices.add(data["notice"])
+                yield Text(data["notice"] + "\n\n")
+            elif "reply" in data:
+                yield Text(data["reply"])
+            elif "voice" in data:
+                yield Changed("voice", data["voice"])
+            elif "persona" in data:
+                yield Changed("persona", data["persona"])
+            elif "task" in data:  # an audit or a build started: the chat shows a card for it
+                yield Changed("task", data["task"])
+            return
+        chunk, meta = data
+        # Only the agent's own model node; skips e.g. the summarizer's internal LLM call.
+        # Streaming backends emit AIMessageChunks; non-streaming ones emit one AIMessage.
+        if meta.get("langgraph_node") == "model" and isinstance(chunk, AIMessage) and chunk.text:
+            yield Text(chunk.text)
+
+
+def prune_checkpoints(saver: Any, thread_id: str, keep: int = CHECKPOINTS_KEPT) -> None:
+    """Bound the conversation store: drop all but the latest `keep` checkpoints of a thread (ids
+    are time-ordered) and their pending writes. The latest, and any interrupt on it, are kept."""
+    conn, lock = getattr(saver, "conn", None), getattr(saver, "lock", None)
+    if conn is None or lock is None:
+        return
+    with lock:
+        old = "SELECT checkpoint_id FROM checkpoints WHERE thread_id = ? ORDER BY checkpoint_id DESC LIMIT -1 OFFSET ?"
+        conn.execute(f"DELETE FROM writes WHERE thread_id = ? AND checkpoint_id IN ({old})", (thread_id, thread_id, keep))
+        conn.execute(f"DELETE FROM checkpoints WHERE thread_id = ? AND checkpoint_id IN ({old})", (thread_id, thread_id, keep))
+        conn.commit()
 
 
 def _brief(args: dict[str, Any]) -> dict[str, Any]:

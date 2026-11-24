@@ -57,9 +57,11 @@ class RemoteChat:
     """Runs the owner's Slack messages through Aura, one at a time, between the Mac's own turns."""
 
     def __init__(self, make_aura: Callable[[], Any], turn: Any, post: Callable[[str, str, str | None], Any],
-                 inbox: Any, settings_path: Path):  # fmt: skip
+                 inbox: Any, settings_path: Path, lifecycle: Any = None, masker: Any = None):  # fmt: skip
         self._make_aura = make_aura
         self._turn = turn  # the server's lock: one turn at a time, Mac or Slack
+        self._lifecycle = lifecycle  # when given (the server), turns get ids and can be stopped
+        self._masker = masker
         self._post = post  # (channel, markdown, thread_ts) as the Aura bot
         self.inbox = inbox
         self._path = settings_path
@@ -104,31 +106,63 @@ class RemoteChat:
                 self._say(ask, f"Sorry, something went wrong on the Mac ({type(e).__name__}). Try again in a moment.")
 
     def handle(self, ask: Ask) -> None:
-        with self._turn:  # waits while the Mac panel's turn runs
+        from aura.brain import Action, ApprovalNeeded, StaleApproval
+
+        turn = None
+        if self._lifecycle is not None:  # waits while the Mac panel's turn runs
+            turn = self._lifecycle.begin("slack", "slack", self._aura.thread_id if self._aura else "slack", blocking=True)
+        else:
+            self._turn.acquire()
+        outcome, error = None, None
+        try:
             aura = self._aura or self._make_aura()
             self._aura = aura
+            if self._pending is None and aura.awaiting_approval:  # it survived a restart
+                waiting = aura.pending()
+                self._pending = ApprovalNeeded(tuple(Action(a["tool"], a["args"], a["description"])
+                                                     for a in waiting["actions"]), waiting["approval_id"])  # fmt: skip
             if self._pending is not None:
                 word = answer_word(ask.text)
                 if word is None:
                     self._say(ask, "I'm still waiting for your answer on the request above. Reply **allow** or **deny**.")
                     return
-                actions = self._pending.actions
-                self._pending = None
-                events = aura.resume([word == "allow"] * len(actions))
+                pending, self._pending = self._pending, None
+                try:
+                    events = aura.resume([word == "allow"] * len(pending.actions), approval_id=pending.approval_id or None,
+                                         turn_id=turn and turn.id, cancel=turn and turn.cancel)  # fmt: skip
+                except StaleApproval as e:
+                    self._say(ask, f"{e} Nothing was done.")
+                    return
             else:
                 aura.reload_tools()  # skills deployed and accounts connected since the last message
-                events = aura.stream(ask.text)
-            self._finish(aura, events, ask)
+                events = aura.stream(ask.text, turn_id=turn and turn.id, cancel=turn and turn.cancel)
+            self._finish(aura, events, ask, turn)
+        except Exception as e:
+            outcome, error = "failed", f"{type(e).__name__}: {e}"
+            raise
+        finally:
+            if turn is not None:
+                self._lifecycle.end(turn, outcome, error)
+            else:
+                self._turn.release()
 
-    def _finish(self, aura: Any, events: Any, ask: Ask) -> None:
-        from aura.brain import ApprovalNeeded, Text
+    def _finish(self, aura: Any, events: Any, ask: Ask, turn: Any = None) -> None:
+        from aura.brain import ApprovalNeeded, Status, Text
 
         said: list[str] = []
         for event in events:
             if isinstance(event, Text):
                 said.append(event.text)
+                if turn is not None:
+                    turn.chars += len(event.text)
+            elif isinstance(event, Status) and turn is not None:
+                turn.tools += 1
             elif isinstance(event, ApprovalNeeded):
                 self._pending = event
+            if turn is not None and turn.cancelled:  # stopped from the Mac: end at this step
+                events.close()
+                said.append("\n\n(Stopped from the Mac before I finished.)")
+                break
         reply = "".join(said).strip()
         if self._pending is not None:
             asks = []
@@ -142,6 +176,8 @@ class RemoteChat:
         self._say(ask, reply or "…")
 
     def _say(self, ask: Ask, text: str) -> None:
+        if self._masker is not None:
+            text = self._masker.mask(text)
         if len(text) > MAX_REPLY:
             text = text[:MAX_REPLY] + "\n… (cut: it was too long for one Slack message)"
         try:

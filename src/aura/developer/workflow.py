@@ -18,6 +18,7 @@ from __future__ import annotations
 import json
 import shutil
 import threading
+import time
 import uuid
 from collections import deque
 from collections.abc import Callable
@@ -32,11 +33,16 @@ from aura.developer import vault_tasks as vt
 from aura.developer import workspace as ws
 from aura.developer.engines import ENGINES, Engine, EngineEvent
 from aura.governor.workshop import Task, Workshop
+from aura.masking import PATTERNS_ONLY, Masker
 from aura.secrets import Secrets
+from aura.state import StateStore, cap
 from aura.skills import NAME
 from aura.tools.vault import Vault, human_size
 
 EXAMPLE = Path(__file__).resolve().parents[3] / "examples" / "skills" / "pdf_text"
+RUNNING = ("queued", "developing", "auditing", "repairing")
+KEEP_SCRATCH = 24 * 3600.0  # seconds a failed or interrupted job's scratch folder is kept, for diagnosis
+CREDENTIAL_COPIES = ("codex", "codex.sum")  # an engine's per-run sign-in copy: never kept
 
 
 class DeveloperError(ValueError):
@@ -92,6 +98,13 @@ def describe_task(args: dict[str, Any], developer: Developer | None, vault: Vaul
     return "\n".join(lines)
 
 
+def _epoch(stamp: str) -> float:
+    try:
+        return datetime.fromisoformat(stamp).timestamp()
+    except ValueError:
+        return 0.0
+
+
 def _count(n: int, noun: str) -> str:
     return f"{n} {noun}" + ("" if n == 1 else "s")
 
@@ -109,7 +122,7 @@ class Build:
     improve: bool
     budget_usd: float
     max_rounds: int
-    stage: str = "queued"  # queued → developing → auditing → (repairing →)* ready | failed | stopped
+    stage: str = "queued"  # queued → developing → auditing → (repairing →)* ready | failed | stopped | interrupted
     round: int = 0
     cost_usd: float = 0.0
     message: str = "Waiting to start…"
@@ -118,17 +131,24 @@ class Build:
     feed: deque = field(default_factory=lambda: deque(maxlen=300))  # live status lines
     created: str = field(default_factory=_now)
     finished: str | None = None
+    decision: str | None = None  # "deployed" | "rejected": the user's decision on the Audit Card
+    recoverable: bool = False  # interrupted by a restart: the Workshop offers Retry
+    scratch: str | None = None  # a failed or interrupted build's scratch folder, kept for diagnosis
     stop: threading.Event = field(default_factory=threading.Event, repr=False)
+    sink: Callable[[str], None] | None = field(default=None, repr=False)  # the durable feed
 
     def say(self, text: str) -> None:
+        text = cap(text, 500) or ""
         self.feed.append({"t": _now(), "text": text})
+        if self.sink is not None:
+            self.sink(text)
 
     def origin(self, label: str) -> dict[str, Any]:
         return {"build": self.id, "engine": label, "round": self.round, "cost_usd": round(self.cost_usd, 4),
                 "specification": self.specification, "improve": self.improve}  # fmt: skip
 
     def public(self, workshop: Workshop | None = None) -> dict[str, Any]:
-        stage = self.stage
+        stage = self.decision or self.stage
         if stage == "ready" and workshop and self.task_id in workshop.tasks:
             decided = workshop.tasks[self.task_id].stage  # the user's decision, once made
             stage = {"deployed": "deployed", "rejected": "rejected"}.get(decided, stage)
@@ -136,7 +156,21 @@ class Build:
                 "specification": self.specification, "stage": stage, "round": self.round,
                 "max_rounds": self.max_rounds, "cost_usd": round(self.cost_usd, 4), "budget_usd": self.budget_usd,
                 "message": self.message, "task_id": self.task_id, "history": self.history,
-                "feed": list(self.feed), "created": self.created, "finished": self.finished}  # fmt: skip
+                "feed": list(self.feed), "created": self.created, "finished": self.finished,
+                "recoverable": self.recoverable, "scratch_kept": self.scratch is not None}  # fmt: skip
+
+    def record(self) -> dict[str, Any]:
+        """What the state store keeps (the feed is kept separately, bounded)."""
+        return {"id": self.id, "skill": self.skill, "engine": self.engine, "specification": self.specification,
+                "improve": self.improve, "budget_usd": self.budget_usd, "max_rounds": self.max_rounds,
+                "stage": self.stage, "round": self.round, "cost_usd": self.cost_usd, "message": self.message,
+                "task_id": self.task_id, "history": self.history, "created": self.created, "finished": self.finished,
+                "decision": self.decision, "recoverable": self.recoverable, "scratch": self.scratch}  # fmt: skip
+
+    @classmethod
+    def restore(cls, data: dict[str, Any]) -> Build:
+        names = {f for f in cls.__dataclass_fields__ if f not in ("feed", "stop", "sink")}
+        return cls(**{k: v for k, v in data.items() if k in names})
 
 
 @dataclass
@@ -155,11 +189,30 @@ class VaultTask:
     timed_out: bool = False
     stop: threading.Event = field(default_factory=threading.Event, repr=False)
 
+    def record(self, key: str) -> dict[str, Any]:
+        """Metadata only: hashes, paths and counts, never file contents or diffs."""
+        copy = self.copy
+        return {"key": key, "id": self.id, "engine": self.engine, "task": cap(self.task, 300),
+                "copy": copy and {"folder": copy.folder, "files": copy.files, "folders": sorted(copy.folders),
+                                  "bytes": copy.bytes},
+                "changes": [{k: v for k, v in vars(c).items() if k != "diff"} for c in self.changes],
+                "summary": self.summary, "error": cap(self.error, 500), "stopped": self.stopped,
+                "timed_out": self.timed_out}  # fmt: skip
+
+    @classmethod
+    def restore(cls, data: dict[str, Any]) -> VaultTask:
+        c = data.get("copy")
+        copy = vt.Copy(c["folder"], dict(c["files"]), set(c["folders"]), int(c["bytes"])) if c else None
+        return cls(id=data["id"], engine=data["engine"], task=data.get("task", ""), copy=copy,
+                   changes=[vt.Change(**ch) for ch in data.get("changes", [])], summary=data.get("summary", ""),
+                   error=data.get("error"), stopped=bool(data.get("stopped")), timed_out=bool(data.get("timed_out")))  # fmt: skip
+
 
 class Developer:
     def __init__(self, settings: Settings, workshop: Workshop, container: Any, secrets: Secrets, audit: AuditLog,
                  engines: dict[str, Engine] | None = None, budget_usd: float = 2.0, timeout: float = 600,
-                 repair_rounds: int = 2, example: Path = EXAMPLE):  # fmt: skip
+                 repair_rounds: int = 2, example: Path = EXAMPLE, state: StateStore | None = None,
+                 masker: Masker | None = None):  # fmt: skip
         self.settings = settings
         self.workshop = workshop
         self.container = container
@@ -174,8 +227,142 @@ class Developer:
         self.tasks: dict[str, VaultTask] = {}  # vault tasks awaiting the user's decisions, by tool call
         self.on_ready: Callable[[Build], None] = lambda b: None  # e.g. a spoken status line
         self._busy = threading.Lock()
-        for stale in settings.dev_dir.glob("v-*"):  # vault tasks left by an earlier run: never answered
-            shutil.rmtree(stale, ignore_errors=True)
+        self.state = state or StateStore(None)
+        self.masker = masker or PATTERNS_ONLY
+        self._recover()
+        self.sweep()
+
+    # ── restart recovery ────────────────────────────────────────────────────────────────────
+
+    def _recover(self) -> None:
+        """Builds and vault tasks from before a restart. Nothing that was running is resumed or
+        rerun: it is marked interrupted, its log kept. A vault task whose changes were waiting
+        for the user's decisions is restored, so the decisions can still be made (each write is
+        still guarded by the hash its file had when it was copied)."""
+        for build_id, stage, data in self.state.records("build"):
+            build = Build.restore(data)
+            build.feed.extend(self.state.events("build", build_id))
+            if stage in RUNNING:
+                build.stage, build.recoverable, build.finished = "interrupted", True, _now()
+                build.message = (f"Aura restarted while this build was {stage}. Nothing was installed; its "
+                                 "log is kept. Retry to build it again.")  # fmt: skip
+                build.scratch = str(self._dir(build)) if self._dir(build).exists() else None
+            elif stage == "ready" and build.decision is None and build.task_id not in self.workshop.tasks:
+                build.stage, build.recoverable = "interrupted", True
+                build.message = ("Aura restarted before you reviewed this build, and its Audit Card couldn't "
+                                 "be kept. Nothing was installed. Retry to build it again.")  # fmt: skip
+            self._attach(build)
+            if build.stage != stage:
+                self._save(build)
+        self.state.prune_records("build", keep_states=RUNNING)
+        for key, state, data in self.state.records("vault_task"):
+            work = self.settings.dev_dir / data["id"] / "work"
+            if state == "awaiting" and work.is_dir():
+                self.tasks[key] = VaultTask.restore(data)
+                continue
+            if state in ("running", "awaiting", "finishing"):
+                why = {"running": "while the developer was working on it",
+                       "awaiting": "and its working copy was gone",
+                       "finishing": "while your allowed changes were being written (some may have been)"}[state]  # fmt: skip
+                data["message"] = f"Aura restarted {why}. Nothing more was written to your vault."
+                data["interrupted"] = _now()
+                self.state.put_record("vault_task", key, "interrupted", data)
+                self.audit.record("vault_task_interrupted", task=data["id"], was=state)
+
+    def sweep(self) -> None:
+        """Clean scratch folders (idempotent, so a cleanup cut short finishes on the next start).
+        Kept: an awaiting vault task's working copy, and a failed or interrupted job's folder for
+        KEEP_SCRATCH. An engine's sign-in copy is never kept."""
+        root = self.settings.dev_dir
+        if not root.is_dir():
+            return
+        keep: dict[str, float] = {}  # folder name -> until (monotonic-free: epoch seconds)
+        for t in self.tasks.values():
+            keep[t.id] = float("inf")
+        for b in self.builds.values():
+            if b.stage in RUNNING:
+                keep[b.id] = float("inf")
+            elif b.scratch and b.finished:
+                keep[b.id] = _epoch(b.finished) + KEEP_SCRATCH
+        for _, state, data in self.state.records("vault_task", ("interrupted",)):
+            keep[data["id"]] = _epoch(data.get("interrupted") or _now()) + KEEP_SCRATCH
+        for folder in root.iterdir():
+            if not folder.is_dir() or not folder.name.startswith(("b-", "v-")):
+                continue
+            for name in CREDENTIAL_COPIES:  # left behind only if a run was cut off
+                target = folder / name
+                shutil.rmtree(target, ignore_errors=True) if target.is_dir() else target.unlink(missing_ok=True)
+            if time.time() >= keep.get(folder.name, 0.0):
+                shutil.rmtree(folder, ignore_errors=True)
+                build = self.builds.get(folder.name)
+                if build is not None and build.scratch:
+                    build.scratch = None
+                    self._save(build)
+
+    def recovery(self) -> list[dict[str, Any]]:
+        """Interrupted work, for the Workshop's recovery section."""
+        out = [{"kind": "build", "id": b.id, "title": f"Build of '{b.skill}' ({self._label(b.engine)})",
+                "message": b.message, "when": b.finished or b.created, "scratch_kept": b.scratch is not None,
+                "actions": ["retry", "dismiss"]}
+               for b in sorted(self.builds.values(), key=lambda b: b.created, reverse=True) if b.recoverable]  # fmt: skip
+        out += [{"kind": "vault_task", "id": key, "title": f"Vault job for {self._label(data['engine'])}: {cap(data.get('task', ''), 80)}",
+                 "message": data.get("message", ""), "when": data.get("interrupted", ""),
+                 "scratch_kept": (self.settings.dev_dir / data["id"]).is_dir(), "actions": ["dismiss"]}
+                for key, _, data in self.state.records("vault_task", ("interrupted",))]  # fmt: skip
+        return out
+
+    def dismiss(self, item_id: str) -> None:
+        """Clear one recovery item (idempotent): its log stays in the audit trail."""
+        if (build := self.builds.get(item_id)) is not None:
+            if build.recoverable or build.scratch:
+                build.recoverable = False
+                if build.scratch:
+                    shutil.rmtree(build.scratch, ignore_errors=True)
+                    build.scratch = None
+                self._save(build)
+            return
+        found = self.state.record("vault_task", item_id)
+        if found is None:
+            raise DeveloperError("nothing to dismiss with that id")
+        state, data = found
+        if state != "interrupted":
+            raise DeveloperError("that job isn't interrupted")
+        shutil.rmtree(self.settings.dev_dir / data["id"], ignore_errors=True)
+        self.state.delete_record("vault_task", item_id)
+
+    def retry(self, build_id: str) -> Build:
+        old = self.builds.get(build_id)
+        if old is None or not old.recoverable:
+            raise DeveloperError("only an interrupted build can be retried")
+        build = self.start(old.skill, old.specification, old.engine, old.improve)
+        self.dismiss(build_id)
+        return build
+
+    def task_decided(self, task_id: str, stage: str) -> None:
+        """The user decided on an Audit Card: remember it on the build (it outlives a restart)."""
+        for build in self.builds.values():
+            if build.task_id == task_id and stage in ("deployed", "rejected"):
+                build.decision = stage
+                self._save(build)
+
+    def _label(self, engine: str) -> str:
+        return self.engines[engine].label if engine in self.engines else engine
+
+    def _attach(self, build: Build) -> None:
+        build.sink = lambda text, build_id=build.id: self.state.add_event("build", build_id, text)
+        self.builds[build.id] = build
+
+    def _save(self, build: Build) -> None:
+        self.state.put_record("build", build.id, build.stage, build.record())
+
+    def _stage(self, build: Build, stage: str, message: str | None = None, say: bool = False) -> None:
+        """Every transition is saved before the work it starts."""
+        build.stage = stage
+        if message is not None:
+            build.message = message
+            if say:
+                build.say(message)
+        self._save(build)
 
     # ── status ──────────────────────────────────────────────────────────────────────────────
 
@@ -217,7 +404,8 @@ class Developer:
         build = Build(id="b-" + uuid.uuid4().hex[:8], skill=skill, engine=engine, specification=specification.strip(),
                       improve=improve, budget_usd=self.budget_usd if e.caps_cost else 0.0,
                       max_rounds=1 + self.repair_rounds)  # fmt: skip
-        self.builds[build.id] = build
+        self._attach(build)
+        self._save(build)  # persisted before any work starts
         self.audit.record("build_started", build=build.id, skill=skill, engine=engine, improve=improve,
                           specification_chars=len(build.specification))  # fmt: skip
         if wait:
@@ -230,8 +418,9 @@ class Developer:
         build = self.builds.get(build_id)
         if build is None:
             raise DeveloperError("no such build")
-        build.stop.set()
-        build.say("Stopping…")
+        if build.stage in RUNNING and not build.stop.is_set():  # idempotent: a second stop changes nothing
+            build.stop.set()
+            build.say("Stopping…")
         return build
 
     # ── vault tasks (ask_developer) ─────────────────────────────────────────────────────────
@@ -242,6 +431,9 @@ class Developer:
         collect its changes. `key` (the tool call) finds the result again when the user decides."""
         if key in self.tasks:
             return self.tasks[key]
+        if self.state.record("vault_task", key) is not None:  # known, but not resumable: never run twice
+            raise DeveloperError("this job was interrupted when Aura restarted and isn't run again; ask for it "
+                                 "again to start a fresh one")  # fmt: skip
         engine = engine_name(engine)
         try:
             vt.check_task(task)
@@ -263,6 +455,7 @@ class Developer:
                 shutil.rmtree(root, ignore_errors=True)
                 raise DeveloperError(str(err)) from err
             self.tasks[key] = t
+            self.state.put_record("vault_task", key, "running", t.record(key))  # before the engine starts
             self.audit.record("vault_task_started", task=t.id, engine=engine, folder=t.copy.folder,
                               files=len(t.copy.files), bytes=t.copy.bytes, task_chars=len(t.task))  # fmt: skip
             on_status(f"{e.label} is working on a copy of {_count(len(t.copy.files), 'file')}…")
@@ -276,9 +469,12 @@ class Developer:
 
             outcome = self.container.run(e, root / "work", root, vt.prompt(t.task), 0.0, self.timeout, on_event, t.stop)
             t.stopped, t.timed_out, t.error = outcome.stopped or t.stop.is_set(), outcome.timed_out, outcome.error
-            t.summary = (outcome.result if outcome.result not in ("", "done") else (said[-1] if said else ""))[:2000]
+            t.error = self.masker.mask(t.error) if t.error else None
+            t.summary = cap(self.masker.mask(outcome.result if outcome.result not in ("", "done")
+                                             else (said[-1] if said else "")), 2000) or ""  # fmt: skip
             if not (t.stopped or t.error):
                 t.changes = vt.collect(vault, t.copy, root / "work")
+            self.state.put_record("vault_task", key, "awaiting", t.record(key))
             self.audit.record("vault_task_ran", task=t.id, engine=engine, changes=len(t.changes), stopped=t.stopped,
                               timed_out=t.timed_out, error=bool(t.error))  # fmt: skip
             return t
@@ -287,8 +483,13 @@ class Developer:
 
     def finish_task(self, key: str, vault: Vault, allowed: list[bool] | None = None) -> list[str]:
         """Write the changes the user allowed (none when `allowed` is None), then drop the copy."""
+        # awaiting → finishing, atomically: a second finish (a retried approval) writes nothing.
+        if not self.state.transition("vault_task", key, ("awaiting", "running"), "finishing"):
+            self.tasks.pop(key, None)
+            return []
         t = self.tasks.pop(key, None)
         if t is None:
+            self.state.delete_record("vault_task", key)
             return []
         try:
             if allowed is None or t.copy is None:
@@ -296,6 +497,7 @@ class Developer:
             return vt.apply(vault, t.copy, self.settings.dev_dir / t.id / "work", t.changes, allowed)
         finally:
             shutil.rmtree(self.settings.dev_dir / t.id, ignore_errors=True)
+            self.state.delete_record("vault_task", key)
             self.audit.record("vault_task_finished", task=t.id, allowed=sum(allowed or []), changes=len(t.changes))
 
     def stop_tasks(self) -> None:
@@ -310,11 +512,19 @@ class Developer:
             try:
                 self._workflow(build, engine)
             except Exception as e:  # noqa: BLE001: any failure ends the build safely, nothing installed
-                build.stage, build.message = "failed", f"The build couldn't finish: {e}"
+                build.stage, build.message = "failed", cap(self.masker.mask(f"The build couldn't finish: {e}"), 600)
             finally:
                 build.finished = _now()
+                folder = self._dir(build)
+                if build.stage == "failed" and folder.exists():  # kept for diagnosis, then swept
+                    for name in CREDENTIAL_COPIES:
+                        target = folder / name
+                        shutil.rmtree(target, ignore_errors=True) if target.is_dir() else target.unlink(missing_ok=True)
+                    build.scratch = str(folder)
+                else:
+                    shutil.rmtree(folder, ignore_errors=True)  # the scratch workspace and run files
+                self._save(build)
                 self._record(build)
-                shutil.rmtree(self._dir(build), ignore_errors=True)  # the scratch workspace and run files
                 if build.stage == "ready":
                     self.on_ready(build)
 
@@ -327,21 +537,20 @@ class Developer:
 
         while build.round < build.max_rounds:
             build.round += 1
-            build.stage = "developing"
-            build.message = f"{engine.label} is writing the skill (round {build.round} of {build.max_rounds})…"
-            build.say(build.message)
+            self._stage(build, "developing", f"{engine.label} is writing the skill (round {build.round} of "
+                                             f"{build.max_rounds})…", say=True)  # fmt: skip
             budget = max(build.budget_usd - build.cost_usd, 0.0)
             if engine.caps_cost and budget < 0.05:
-                build.stage, build.message = "failed", f"The ${build.budget_usd:.2f} budget is used up."
+                self._stage(build, "failed", f"The ${build.budget_usd:.2f} budget is used up.")
                 return
             outcome = self.container.run(engine, work, root, prompt, budget, self.timeout, self._listener(build), build.stop)
             if engine.caps_cost:  # a plan's notional cost isn't a bill: only a capped engine counts it
                 build.cost_usd += outcome.cost_usd
             if outcome.stopped or build.stop.is_set():
-                build.stage, build.message = "stopped", "Stopped. Nothing was installed."
+                self._stage(build, "stopped", "Stopped. Nothing was installed.")
                 return
             if outcome.error:
-                build.stage, build.message = "failed", f"{engine.label} couldn't run: {outcome.error}"
+                self._stage(build, "failed", cap(f"{engine.label} couldn't run: {self.masker.mask(outcome.error)}", 600))
                 return
             if outcome.timed_out:
                 build.say(f"{engine.label} ran out of time ({int(self.timeout // 60)} minutes); auditing what it wrote.")
@@ -350,11 +559,10 @@ class Developer:
             if not findings:
                 return  # ready: the passing task awaits the user's decision
             if build.round >= build.max_rounds:
-                build.stage = "failed"
-                build.message = (f"{engine.label} couldn't produce a skill that passes every check in "
-                                 f"{build.max_rounds} rounds. Nothing was installed.")  # fmt: skip
+                self._stage(build, "failed", f"{engine.label} couldn't produce a skill that passes every check in "
+                                             f"{build.max_rounds} rounds. Nothing was installed.")  # fmt: skip
                 return
-            build.stage = "repairing"
+            self._stage(build, "repairing")
             build.say(f"Round {build.round} didn't pass ({_count(len(findings), 'finding')}); sent back to {engine.label}.")
             prompt = ws.repair_prompt(build.skill, build.round, findings)
 
@@ -364,9 +572,7 @@ class Developer:
             findings = [f"skill/{f} is missing" for f in missing]
             build.history.append({"round": build.round, "task": None, "passed": False, "findings": findings})
             return findings
-        build.stage = "auditing"
-        build.message = f"The Security Governor is auditing round {build.round} (tests included)…"
-        build.say(build.message)
+        self._stage(build, "auditing", f"The Security Governor is auditing round {build.round} (tests included)…", say=True)
         task = self.workshop.propose(build.skill, wait=True, source=ws.collected(work), origin=build.origin(engine.label))
         findings = self._findings(task)
         build.history.append({"round": build.round, "task": task.id, "passed": not findings, "findings": findings,
@@ -374,9 +580,8 @@ class Developer:
         if findings:
             self.workshop.discard(task.id, f"Round {build.round} didn't pass; sent back to {engine.label}.")
             return findings
-        build.stage, build.task_id = "ready", task.id
-        build.message = f"Ready for your review: passed every check in round {build.round}."
-        build.say(build.message)
+        build.task_id = task.id
+        self._stage(build, "ready", f"Ready for your review: passed every check in round {build.round}.", say=True)
         return []
 
     @staticmethod
@@ -398,7 +603,8 @@ class Developer:
     def _listener(self, build: Build) -> Callable[[EngineEvent], None]:
         def on_event(event: EngineEvent) -> None:
             if event.kind in ("status", "message") and event.text:
-                build.say(event.text if event.kind == "status" else f"“{event.text[:400]}”")
+                text = self.masker.mask(event.text)
+                build.say(text if event.kind == "status" else f"“{cap(text, 400)}”")
 
         return on_event
 

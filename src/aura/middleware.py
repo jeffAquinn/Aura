@@ -10,12 +10,22 @@ from langchain_core.messages import AIMessage, BaseMessage, ToolMessage
 from langgraph.runtime import Runtime
 
 from aura.events import emit
+from aura.masking import PATTERNS_ONLY, Masker
 from aura.tools import status_line
 from aura.tools.web import FALLBACK_NOTICE
 
 DENIAL = "[Action Denied by User]. I will not perform that action. How else can I help?"
 # What the model reads in place of the declined tool's result (visible in later turns).
 REJECTION_NOTE = "The user declined this action. Do not retry it unless they ask."
+MAX_TOOL_OUTPUT = 24_000  # characters of one tool result the model reads (about 6k tokens)
+
+
+def bound(text: str, limit: int = MAX_TOOL_OUTPUT) -> str:
+    """Cut a tool result to `limit`, keeping its start and end, with an explicit marker."""
+    if len(text) <= limit:
+        return text
+    head, tail = text[: limit * 3 // 4], text[-(limit // 4):]
+    return f"{head}\n… [cut by Aura: {len(text) - len(head) - len(tail)} characters of this tool's output omitted] …\n{tail}"
 
 
 def _is_rejection(m: BaseMessage) -> bool:
@@ -44,14 +54,22 @@ class DenialMiddleware(AgentMiddleware):
 
 
 class ToolStatusMiddleware(AgentMiddleware):
-    """Announce each tool as it actually runs (after any approval), and flag fallback search."""
+    """Announce each tool as it actually runs (after any approval), and flag fallback search.
+    Every result the model reads is masked (no credential reaches the model, the conversation
+    store or a reply) and bounded (a huge output can't flood the context)."""
+
+    def __init__(self, masker: Masker = PATTERNS_ONLY):
+        super().__init__()
+        self.masker = masker
 
     def wrap_tool_call(self, request: ToolCallRequest, handler: Callable) -> Any:
         call = request.tool_call
         if line := status_line(call["name"], call["args"]):  # "" for a tool that announces itself
             emit({"status": line})
         result = handler(request)
-        if isinstance(result, ToolMessage) and isinstance(result.artifact, dict):
-            if result.artifact.get("fallback"):
+        if isinstance(result, ToolMessage):
+            if isinstance(result.content, str):
+                result.content = bound(self.masker.mask(result.content))
+            if isinstance(result.artifact, dict) and result.artifact.get("fallback"):
                 emit({"notice": FALLBACK_NOTICE})
         return result

@@ -20,7 +20,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import AsyncIterator, Callable, Iterator
+from collections.abc import AsyncIterator, Iterator
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Literal, Protocol
@@ -33,7 +33,9 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
-from aura.brain import Aura, Changed, Event, Status, Text
+from aura.brain import Aura, Changed, Event, StaleApproval, Status, Text
+from aura.lifecycle import Lifecycle, Turn
+from aura.masking import PATTERNS_ONLY, Masker
 from aura.config import Settings
 from aura.governor.continuous import DEEP
 from aura.developer.workflow import DeveloperError
@@ -147,7 +149,7 @@ def encode(ev: Event) -> str:
         return sse("status", {"text": ev.text})
     if isinstance(ev, Changed):
         return sse(ev.kind, ev.data)  # "voice" or "persona"
-    return sse("approval", {"actions": [asdict(a) for a in ev.actions]})
+    return sse("approval", {"actions": [asdict(a) for a in ev.actions], "approval_id": ev.approval_id})
 
 
 _END = object()
@@ -157,23 +159,26 @@ KEEPALIVE = 20.0  # seconds: a comment line while a long tool works (the app giv
 
 
 def stream_turn(
-    events: Iterator[Event], turn: threading.Lock, keeper: Keeper, check_cold: bool,
-    on_abandon: Callable[[], None] = lambda: None,
+    events: Iterator[Event], lifecycle: Lifecycle, turn: Turn, keeper: Keeper, check_cold: bool,
+    masker: Masker = PATTERNS_ONLY,
 ) -> StreamingResponse:
-    """Stream a turn's events as SSE. Holds `turn` until the stream ends or the client leaves.
-    `on_abandon`: called if the client leaves mid-turn (e.g. stops a Developer's run)."""
+    """Stream a turn's events as SSE. The turn ends (and its lock is released) exactly once: when
+    the run ends, when it is stopped (POST /v1/stop: a `stopped` event, then `done`), or when the
+    client leaves. In every case the step in progress is allowed to end before the run is closed,
+    so no worker is left running behind a released turn."""
 
     async def body() -> AsyncIterator[str]:
-        released = False
         pending: asyncio.Future | None = None
+        state, error = None, None
+        texts = masker.stream()  # a secret split across two chunks is still caught
         try:
-            yield sse("thinking")
+            yield sse("thinking", {"turn_id": turn.id})
             if check_cold and await anyio.to_thread.run_sync(keeper.loaded) is False:
                 yield sse("waking")
             try:
                 # The agent loop is synchronous; step it in a worker thread, one event at a time.
                 # A step can take minutes (Claude Code at work): keep the connection alive meanwhile.
-                while True:
+                while not turn.cancelled:
                     pending = asyncio.ensure_future(anyio.to_thread.run_sync(next, events, _END))
                     while not pending.done():
                         await asyncio.wait({pending}, timeout=KEEPALIVE)
@@ -182,26 +187,38 @@ def stream_turn(
                     ev, pending = pending.result(), None
                     if ev is _END:
                         break
+                    if isinstance(ev, Text):
+                        turn.chars += len(ev.text)
+                        if safe := texts.feed(ev.text):
+                            yield sse("text", {"text": safe})
+                        continue
+                    if rest := texts.flush():
+                        yield sse("text", {"text": rest})
+                    if isinstance(ev, Status):
+                        turn.tools += 1
                     yield encode(ev)
+                if rest := texts.flush():
+                    yield sse("text", {"text": rest})
+                if turn.cancelled:
+                    state = "stopped"
+                    yield sse("stopped", {"turn_id": turn.id, "tools": turn.tools, "partial": bool(turn.tools or turn.chars)})
             except openai.APIConnectionError:
+                state, error = "failed", "the language model was unreachable"
                 yield sse("error", {"message": "Aura can't reach its language model. Make sure Ollama is running, then try again."})
             except Exception as e:
                 log.exception("turn failed: %s", e)  # the detail stays in server.log
+                state, error = "failed", f"{type(e).__name__}: {masker.mask(str(e))}"
                 yield sse("error", {"message": "Something went wrong while Aura was working. Please try again."})
-            turn.release()
-            released = True
+            await _close(events, pending)
+            lifecycle.end(turn, state, error)
             yield sse("done")
         finally:
-            if not released:  # the client went away mid-turn (e.g. Stop)
-                on_abandon()
-                if pending is not None and not pending.done():
-                    with anyio.CancelScope(shield=True):  # let the step end before closing the run
-                        await asyncio.wait({pending})
-                try:
-                    events.close()  # type: ignore[attr-defined]  # stop the agent run
-                except (AttributeError, ValueError):
-                    pass
-                turn.release()
+            if not turn.released.is_set():  # the client went away mid-turn (e.g. Stop): same as a stop
+                turn.cancel.set()
+                lifecycle.on_cancel()
+                with anyio.CancelScope(shield=True):  # let the step end before closing the run
+                    await _close(events, pending)
+                lifecycle.end(turn, "abandoned")
             keeper.warm_soon()  # the turn used the model: restart its 30-minute timer
 
     return StreamingResponse(
@@ -209,6 +226,16 @@ def stream_turn(
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
+
+
+async def _close(events: Iterator[Event], pending: asyncio.Future | None) -> None:
+    """The cleanup boundary: wait for the step in progress, then close the agent run."""
+    if pending is not None and not pending.done():
+        await asyncio.wait({pending})
+    try:
+        events.close()  # type: ignore[attr-defined]  # stop the agent run
+    except (AttributeError, ValueError, RuntimeError):
+        pass
 
 
 # ── the API ─────────────────────────────────────────────────────────────────────────────────
@@ -267,6 +294,11 @@ class EditedApproval(BaseModel):
 
 class ApprovalsIn(BaseModel):
     approvals: list[bool | EditedApproval]
+    approval_id: str | None = Field(default=None, max_length=64)  # binds the answer to the card it answers
+
+
+class StopIn(BaseModel):
+    turn_id: str | None = Field(default=None, max_length=64)  # None: whatever turn is running
 
 
 class SecretIn(BaseModel):
@@ -309,6 +341,9 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
     app.add_middleware(Guard, token=token)
     turn = threading.Lock()  # one turn at a time: Aura has a single user and conversation
     app.state.turn = turn
+    lifecycle = Lifecycle(aura.toolbox.state, turn, on_cancel=aura.toolbox.developer.stop_tasks)
+    app.state.lifecycle = lifecycle
+    masker = aura.toolbox.masker
     app.state.last_active = 0.0  # time.monotonic() of the last chat or approval
 
     def idle(quiet_for: float = 300) -> bool:
@@ -327,6 +362,10 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
     def busy() -> JSONResponse:
         return _error(409, "Aura is busy with another turn.")
 
+    def lifecycle_state() -> dict:
+        return {**lifecycle.status(), "recoverable": len(aura.toolbox.developer.recovery()),
+                "recovery_note": aura.recovery_note}  # fmt: skip
+
     @app.get("/v1/health")
     def health() -> dict:
         s, tb = aura.settings, aura.toolbox
@@ -338,34 +377,59 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
             "vault": str(tb.vault.root),
             "busy": turn.locked(),
             "awaiting_approval": aura.awaiting_approval,
+            **lifecycle_state(),
         }
 
     @app.post("/v1/chat")
     def chat(body: ChatIn) -> Response:
-        if not turn.acquire(blocking=False):
+        t = lifecycle.begin("chat", "mac", aura.thread_id)
+        if t is None:
             return busy()
         app.state.last_active = time.monotonic()
         try:
-            events = aura.stream(body.text, developer=body.developer)
-        except RuntimeError as e:  # an approval is pending
-            turn.release()
+            events = aura.stream(body.text, developer=body.developer, turn_id=t.id, cancel=t.cancel)
+        except (RuntimeError, ValueError) as e:  # an approval is pending
+            lifecycle.end(t, "refused", str(e))
             return _error(409, str(e))
-        return stream_turn(events, turn, keeper, check_cold=True, on_abandon=aura.toolbox.developer.stop_tasks)
+        return stream_turn(events, lifecycle, t, keeper, check_cold=True, masker=masker)
 
     @app.post("/v1/approvals")
     def approvals(body: ApprovalsIn) -> Response:
-        if not turn.acquire(blocking=False):
+        t = lifecycle.begin("approval", "mac", aura.thread_id)
+        if t is None:
             return busy()
         app.state.last_active = time.monotonic()
         try:
-            events = aura.resume([a.model_dump() if isinstance(a, EditedApproval) else a for a in body.approvals])
+            events = aura.resume([a.model_dump() if isinstance(a, EditedApproval) else a for a in body.approvals],
+                                 approval_id=body.approval_id, turn_id=t.id, cancel=t.cancel)  # fmt: skip
+        except StaleApproval as e:  # an old card, an answer already given, or permissions changed
+            lifecycle.end(t, "refused", str(e))
+            return JSONResponse({"error": str(e), "stale": True, "pending": aura.pending()}, status_code=409)
         except RuntimeError as e:  # nothing pending
-            turn.release()
+            lifecycle.end(t, "refused", str(e))
             return _error(409, str(e))
         except ValueError as e:  # wrong number of decisions; the approval stays pending
-            turn.release()
+            lifecycle.end(t, "refused", str(e))
             return _error(422, str(e))
-        return stream_turn(events, turn, keeper, check_cold=False, on_abandon=aura.toolbox.developer.stop_tasks)
+        return stream_turn(events, lifecycle, t, keeper, check_cold=False, masker=masker)
+
+    @app.post("/v1/stop")
+    def stop(body: StopIn) -> dict:
+        """Stop the running turn (the Mac panel's or Slack's) and wait until it has been cleaned
+        up: the step in progress ends, a Developer's container is stopped, the turn is released.
+        Idempotent: stopping nothing, or a turn that already ended, changes nothing."""
+        return lifecycle.stop(body.turn_id)
+
+    @app.get("/v1/approvals/pending")
+    def pending_approval() -> dict:
+        """The approval waiting now, e.g. after a restart, so the app can show its card again."""
+        return {"pending": aura.pending()}
+
+    @app.get("/v1/conversation")
+    def conversation() -> dict:
+        """The current conversation (it survives restarts), what's waiting, and what a restart cut short."""
+        return {"conversation": aura.thread_id, "messages": aura.transcript(), "pending": aura.pending(),
+                "recovery_note": aura.recovery_note}  # fmt: skip
 
     @app.post("/v1/conversation/new")
     def new_conversation() -> Response:
@@ -524,7 +588,8 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
     remote = RemoteChat(
         make_aura=lambda: _Aura(settings=aura.settings, model=aura.llm, toolbox=aura.toolbox, primary=False),
         turn=turn, post=lambda channel, text, thread: slack_connection.post_as_bot(channel, text, thread),
-        inbox=live.inbox, settings_path=aura.settings.data_dir / "slack_chat.json")  # fmt: skip
+        inbox=live.inbox, settings_path=aura.settings.data_dir / "slack_chat.json", lifecycle=lifecycle,
+        masker=masker)  # fmt: skip
     app.state.remote = remote
     if slack_listener is not None:
         slack_listener.chat = remote
@@ -643,7 +708,31 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
         builds = sorted(developer.builds.values(), key=lambda b: b.created, reverse=True)
         return {"engines": developer.engines_status(), "builds": [b.public(workshop) for b in builds],
                 "budget_usd": developer.budget_usd, "repair_rounds": developer.repair_rounds,
-                "timeout_minutes": int(developer.timeout // 60)}  # fmt: skip
+                "timeout_minutes": int(developer.timeout // 60), "recovery": developer.recovery()}  # fmt: skip
+
+    @app.get("/v1/recovery")
+    def recovery() -> dict:
+        """Builds and vault jobs a restart interrupted (the Workshop's recovery section)."""
+        return {"items": developer.recovery()}
+
+    @app.post("/v1/recovery/{item_id}/dismiss")
+    def dismiss(item_id: str) -> Response:
+        try:
+            developer.dismiss(item_id)
+        except DeveloperError as e:
+            return _error(404, str(e))
+        return JSONResponse({"items": developer.recovery()})
+
+    @app.post("/v1/builds/{build_id}/retry", status_code=202)
+    def retry_build(build_id: str) -> Response:
+        """The user's click on an interrupted build's Retry: the same specification, engine and limits."""
+        try:
+            build = developer.retry(build_id)
+        except DeveloperError as e:
+            return _error(409, str(e))
+        aura.toolbox.audit.record("approval", tool="develop_skill", args={"name": build.skill, "engine": build.engine},
+                                  decision="retried in the Workshop", retry_of=build_id)  # fmt: skip
+        return JSONResponse(build.public(workshop), status_code=202)
 
     @app.post("/v1/builds", status_code=202)
     def start_build(body: BuildIn) -> Response:
@@ -715,6 +804,7 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
             return busy()
         try:
             t = workshop.decide(task_id, body.approve)
+            developer.task_decided(task_id, t.stage)
         except WorkshopError as e:
             return _error(409, str(e))
         finally:
@@ -738,6 +828,7 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
             "tasks_running": sum(t.stage in ("staging", "auditing") for t in workshop.tasks.values()),
             "alerts": aura.toolbox.continuous.alerts(),
             "continuous_audit": aura.toolbox.continuous.state(),
+            **lifecycle_state(),
         }
 
     @app.post("/v1/warmup", status_code=202)

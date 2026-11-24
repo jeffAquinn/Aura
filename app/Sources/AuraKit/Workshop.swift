@@ -272,6 +272,8 @@ public final class WorkshopStore {
     public private(set) var buildError: String?
 
     public var builds: [BuildInfo] { developer?.builds ?? [] }
+    /// Work a restart interrupted: builds (Retry or Dismiss) and vault jobs (Dismiss).
+    public var recovery: [RecoveryItem] { developer?.recovery ?? [] }
     public var engines: [EngineInfo] { developer?.engines ?? EngineInfo.known }
     public var selectedBuild: BuildInfo? { selectedBuildID.flatMap { id in builds.first { $0.id == id } } }
     /// The audits to list: a build's failed rounds were wiped and aren't presented.
@@ -358,6 +360,23 @@ public final class WorkshopStore {
 
     public func stopBuild(_ id: String) async {
         await act { _ = try await $0.stopBuild(id) }
+    }
+
+    /// Retry an interrupted build: the same specification, Developer and limits (the user's click).
+    public func retry(_ id: String) async {
+        guard let t = transport() else { return }
+        do {
+            let build = try await t.retryBuild(id)
+            await refresh()
+            select(build.id)
+            onAlertsChanged()
+        } catch {
+            lastError = FriendlyMessage.describe(error)
+        }
+    }
+
+    public func dismissRecovery(_ id: String) async {
+        await act { try await $0.dismissRecovery(id) }
     }
 
     /// From a ready build to its Audit Card (Code Review).

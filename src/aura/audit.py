@@ -8,15 +8,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from aura.masking import PATTERNS_ONLY, Masker
+
 
 class AuditLog:
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, masker: Masker = PATTERNS_ONLY):
         self.path = path
+        self.masker = masker  # the Toolbox swaps in one that also knows the Keychain's values
         self._lock = threading.Lock()  # tool calls may run in parallel threads
 
     def record(self, event: str, **fields: Any) -> None:
         entry = {"ts": datetime.now(timezone.utc).isoformat(timespec="seconds"), "event": event}
-        entry.update(fields)
+        entry.update(self.masker.mask_value(fields))  # never a credential, even one pasted into a message
         line = json.dumps(entry, ensure_ascii=False, default=str)
         with self._lock:
             self.path.parent.mkdir(parents=True, exist_ok=True)

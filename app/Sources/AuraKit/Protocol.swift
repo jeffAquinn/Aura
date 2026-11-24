@@ -163,7 +163,49 @@ public enum AuraEvent: Sendable, Equatable {
     case task(id: String, skill: String)
     /// A Developer build started (after the Specification Approval card); it continues in the Workshop.
     case build(id: String, skill: String)
+    /// The turn was stopped (POST /v1/stop) after its cleanup; `partial`: something already ran.
+    case stopped(partial: Bool)
     case done
+}
+
+/// The conversation as the server keeps it: it survives a restart of the server.
+public struct ConversationInfo: Codable, Sendable, Equatable {
+    public struct Message: Codable, Sendable, Equatable {
+        public let role: String  // "user" | "aura"
+        public let text: String
+    }
+
+    public let messages: [Message]
+    public let pending: PendingApproval?
+    public let recoveryNote: String?
+}
+
+/// An approval that is still waiting (e.g. across a restart), bound to its id.
+public struct PendingApproval: Codable, Sendable, Equatable {
+    public let approvalId: String?
+    public let actions: [PendingAction]
+}
+
+/// Work a restart interrupted: a build (retry or dismiss) or a vault job (dismiss).
+public struct RecoveryItem: Codable, Sendable, Equatable, Identifiable {
+    public let kind: String  // "build" | "vault_task"
+    public let id: String
+    public let title: String
+    public let message: String
+    public let when: String
+    public let scratchKept: Bool
+    public let actions: [String]
+
+    public init(kind: String, id: String, title: String, message: String, when: String = "", scratchKept: Bool = false,
+                actions: [String] = ["dismiss"]) {
+        self.kind = kind
+        self.id = id
+        self.title = title
+        self.message = message
+        self.when = when
+        self.scratchKept = scratchKept
+        self.actions = actions
+    }
 }
 
 /// How Aura sounds. Owned by the server (voice.json); spoken replies are off by default.
@@ -256,6 +298,10 @@ public struct Health: Codable, Sendable, Equatable {
 /// readers drop them).
 public struct SSEParser: Sendable {
     private var kind = "message"
+    /// The correlation id of the turn being streamed (from its `thinking` event).
+    public private(set) var turnID: String?
+    /// The id binding the last approval card to this turn, its tools and their arguments.
+    public private(set) var approvalID: String?
 
     public init() {}
 
@@ -267,7 +313,11 @@ public struct SSEParser: Sendable {
         }
         guard line.hasPrefix("data:") else { return nil }  // blank lines, comments
         defer { kind = "message" }
-        return Self.decode(kind, Data(line.dropFirst(5).utf8))
+        let data = Data(line.dropFirst(5).utf8)
+        struct IDs: Decodable { let turn_id: String?; let approval_id: String? }
+        if kind == "thinking" { turnID = (try? JSONDecoder().decode(IDs.self, from: data))?.turn_id }
+        if kind == "approval" { approvalID = (try? JSONDecoder().decode(IDs.self, from: data))?.approval_id }
+        return Self.decode(kind, data)
     }
 
     static func decode(_ kind: String, _ data: Data) -> AuraEvent? {
@@ -283,6 +333,9 @@ public struct SSEParser: Sendable {
         case "text": return (try? json.decode(TextBody.self, from: data)).map { .text($0.text) }
         case "approval": return (try? json.decode(ApprovalBody.self, from: data)).map { .approval($0.actions) }
         case "error": return (try? json.decode(ErrorBody.self, from: data)).map { .error($0.message) }
+        case "stopped":
+            struct StoppedBody: Decodable { let partial: Bool? }
+            return .stopped(partial: (try? json.decode(StoppedBody.self, from: data))?.partial ?? false)
         case "voice": return (try? json.decode(VoiceProfile.self, from: data)).map { .voice($0) }
         case "task":
             struct TaskBody: Decodable { let id: String; let skill: String; let kind: String? }

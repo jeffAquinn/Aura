@@ -17,6 +17,8 @@ from aura.audit import AuditLog
 from aura.config import Settings
 from aura.events import emit
 from aura.identity import IdentityStore
+from aura.masking import Masker
+from aura.state import StateStore
 from aura.tools.identity import identity_tools
 from aura.tools.sandbox import Sandbox, sandbox_tools
 from aura.tools.vault import Vault, vault_tools
@@ -124,6 +126,26 @@ class Toolbox:
     connections: Connections  # tools via connection_tools (Gemma's floors, taint and framing)
     tools: list[BaseTool] = field(default_factory=list)
     live: LiveMessages = field(default_factory=LiveMessages)  # live messages: started by the server only
+    state: StateStore = field(default_factory=lambda: StateStore(None))  # turns, approvals, builds, vault tasks
+    masker: Masker = field(default_factory=Masker)  # secrets out of tool output, audit entries and replies
+    _checkpointer: Any = field(default=None, repr=False)
+
+    def checkpointer(self) -> Any:
+        """The durable conversation memory (LangGraph's SQLite checkpointer), shared by every Aura
+        on this toolbox; each keeps its own conversation (thread) in it."""
+        if self._checkpointer is None:
+            import sqlite3
+
+            from langgraph.checkpoint.sqlite import SqliteSaver
+
+            path = self.state.path.with_name("conversations.sqlite") if self.state.path else None
+            conn = sqlite3.connect(str(path) if path else ":memory:", check_same_thread=False)
+            if path:
+                conn.execute("PRAGMA journal_mode = WAL")
+            saver = SqliteSaver(conn)
+            saver.setup()  # creates or migrates its own tables (idempotent)
+            self._checkpointer = saver
+        return self._checkpointer
 
     def all_tools(self) -> list[BaseTool]:
         """The built-in tools, every approved and enabled skill, and the tools of whatever is
@@ -145,6 +167,8 @@ class Toolbox:
 
         audit = AuditLog(settings.audit_log)
         secrets = secrets or Secrets(audit_record=audit.record)
+        masker = audit.masker = Masker.for_secrets(secrets)
+        state = StateStore(settings.data_dir / "state.sqlite")
         vault = Vault(settings.vault_dir, audit)
         # Tavily's key: the Keychain's (Settings → Keys) wins, so a key replaced there stays replaced
         # after a restart; .env's is only a fallback from before Sprint 6.
@@ -172,7 +196,8 @@ class Toolbox:
         skills = SkillManager(settings.skills_dir, settings.data_dir, sandbox, audit)
         workshop = Workshop(settings, skills, sandbox, audit, run_suite=run_suite)
         continuous = ContinuousAudit(skills, audit, settings.data_dir / "continuous_audit.json")
-        developer = Developer(settings, workshop, container or DevContainer(sandbox, secrets, audit), secrets, audit)
+        developer = Developer(settings, workshop, container or DevContainer(sandbox, secrets, audit), secrets, audit,
+                              state=state, masker=masker)  # fmt: skip
         tools += workshop_tools(workshop, developer)
         tools += developer_tools(developer, vault)
         slack, discord = SlackConnection(secrets, audit), DiscordConnection(secrets, audit)
@@ -180,4 +205,4 @@ class Toolbox:
         inbox = Inbox()
         live = LiveMessages(inbox, SlackSocket(slack, inbox), DiscordGateway(discord, inbox))
         return cls(audit, vault, search, sandbox, identity, voice, skills, workshop, continuous, secrets, developer,
-                   connections, tools, live)  # fmt: skip
+                   connections, tools, live, state, masker)  # fmt: skip

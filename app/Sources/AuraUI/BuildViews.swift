@@ -52,6 +52,7 @@ struct BuildStageIcon: View {
         case "ready": "checkmark.seal.fill"
         case "deployed": "checkmark.circle.fill"
         case "rejected", "stopped": "minus.circle"
+        case "interrupted": "arrow.clockwise.circle"
         default: "xmark.octagon.fill"
         }
     }
@@ -61,6 +62,7 @@ struct BuildStageIcon: View {
         case "ready": .accentColor
         case "deployed": .green
         case "rejected", "stopped": .secondary
+        case "interrupted": .orange
         default: .red
         }
     }
