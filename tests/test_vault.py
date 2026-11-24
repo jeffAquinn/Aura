@@ -145,6 +145,34 @@ def test_writes_and_deletes_are_audited(env):
     ]
 
 
+def test_project_copy_is_one_way_and_cannot_carry_git_or_links(env):
+    vault, _, root, outside, audit = env
+    source = root.parent / "Aura"
+    (source / "src" / "aura").mkdir(parents=True)
+    (source / "src" / "aura" / "main.py").write_text("version = 1\n")
+    (source / ".git").mkdir()
+    (source / ".git" / "config").write_text("[remote]\n")
+    (source / "outside-link").symlink_to(outside)
+
+    seeded = vault.seed_project_copy(source)
+
+    assert seeded and seeded.copied
+    copy = root / "Aura"
+    assert (copy / "src" / "aura" / "main.py").read_text() == "version = 1\n"
+    assert not (copy / ".git").exists()
+    assert not (copy / "outside-link").exists()
+    assert "Orient." in (copy / "AURA_ENGINEERING.md").read_text()
+    assert "## Change design" in (copy / "CODING_STANDARDS.md").read_text()
+    assert (copy / "docs" / "adr" / "README.md").is_file()
+    (copy / "src" / "aura" / "main.py").write_text("version = 2\n")
+    assert (source / "src" / "aura" / "main.py").read_text() == "version = 1\n"
+    (copy / "GLOSSARY.md").write_text("# My vocabulary\n")
+    again = vault.seed_project_copy(source)
+    assert again and again.path == copy and not again.copied
+    assert (copy / "GLOSSARY.md").read_text() == "# My vocabulary\n"  # docs are never overwritten
+    assert audit.entries()[-1]["event"] == "project_sandbox_seeded"
+
+
 # ── approval prompt text: honest about what will happen ────────────────────────────────────
 
 

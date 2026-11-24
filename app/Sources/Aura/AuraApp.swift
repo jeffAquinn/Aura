@@ -18,7 +18,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: StatusItemController!
     private var panel: AuraPanel!
     private var hotKey: HotKey?
-    private var warmTimer: Timer?
     private var alertTimer: Timer?
     private var menu: NSMenu!
     private var shownAlerts: [String] = []
@@ -128,7 +127,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let client = AuraClient(port: port, token: server.token)
             store.transport = client
             feed.start(client)  // a new server: follow its live messages from the start
-            if panel.isVisible { warm() }
             alertTimer?.invalidate()  // the Continuous Audit runs in the server; show its alerts here
             alertTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated { self?.checkAlerts() }
@@ -162,7 +160,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         for answer in answers.suffix(3) { notifier.post(answer) }  // a burst doesn't flood the screen
     }
 
-    // MARK: - panel + Smart-Warm
+    // MARK: - panel
 
     private func togglePanel() {
         panel.isVisible ? panel.hide() : showPanel()
@@ -171,23 +169,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func showPanel() {
         panel.show(below: statusItem.buttonFrame)
         store.focusRequests += 1
-        store.speech?.warmUp()  // load the voice now, so the first sentence isn't late
-        warm()  // the user is about to type: load the model now
-        warmTimer?.invalidate()
-        warmTimer = Timer.scheduledTimer(withTimeInterval: 600, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated { self?.warm() }  // keep it loaded while the panel is open
-        }
     }
 
     private func panelHidden() {
-        warmTimer?.invalidate()
-        warmTimer = nil
-        warm()  // restart the 30-minute countdown from the moment the panel closed
-    }
-
-    private func warm() {
-        guard let transport = store.transport else { return }
-        Task { try? await transport.warmup() }
+        // Intentionally empty: opening or hiding the panel must not keep a multi-gigabyte model
+        // resident. The first actual request loads it, and the server releases it after idle time.
     }
 
     // MARK: - Continuous Audit alerts

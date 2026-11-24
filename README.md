@@ -28,6 +28,15 @@ text size and the colors of your bubbles and Aura's (violet by default).
 Requires [Ollama](https://ollama.com) serving `gemma4:26b` (or any OpenAI-compatible endpoint), and
 Docker Desktop running for the code interpreter. Configuration: see `.env.example`.
 
+### Memory on smaller Macs
+
+Aura does not load its language model at launch or when the panel opens. It loads only on the first
+chat request, then releases it after five idle minutes by default (`AURA_MODEL_KEEP_ALIVE=5m`; use
+`0` to release it immediately). The default `gemma4:26b` currently reserves about 17 GB while
+loaded, so a 24 GB Mac may be tight during an active turn. For more headroom, install and select a
+smaller Ollama model with `AURA_MODEL`, and set Ollama's `OLLAMA_CONTEXT_LENGTH` lower before
+starting Ollama; `ollama ps` shows the active context allocation.
+
 ## What Aura can do
 
 | Tool | Group | Approval |
@@ -53,8 +62,22 @@ Settings, or "Aura, talk to me").
 `persona.py`) is permanent; the *Expression* (`~/Library/Application Support/Aura/persona.json`)
 changes one field at a time with your approval, is versioned, and can be reset.
 
-File tools are confined to `~/Documents/Aura_Vault`. Everything consequential is recorded in
-`~/Library/Logs/Aura/actions.jsonl`.
+File tools are confined to `~/Documents/Aura_Vault`. On first launch Aura seeds
+`~/Documents/Aura_Vault/Aura/` with a separate copy of this project's files, so it can create and
+edit features there through the same approved file tools (or through the Developer). This is a
+one-way seed, never a sync: later edits stay in the vault copy and never touch the source checkout
+or GitHub. Git metadata and symbolic links are intentionally omitted from the copy. Everything
+consequential is recorded in `~/Library/Logs/Aura/actions.jsonl`.
+
+### Strategic coding in the sandbox
+
+The project copy includes Aura's **Master Programmer Workflow** in `AURA_ENGINEERING.md`, plus a
+`GLOSSARY.md`, `CODING_STANDARDS.md`, and lightweight places for ADRs, specs, reviews, and
+retrospectives. Aura and its Developer use those files to align on terms and intent before coding,
+choose a written spec when a task is larger than one clear slice, verify behavior with the
+project's checks, review against both the spec and standards, and turn recurring mistakes into
+durable guardrails. They are deliberately local documents—not a Git/PR workflow—and every
+proposed file change remains subject to Aura's approval flow.
 
 **The vault's layout: the Codex of Emergence** (Aura's own proposal). Three parts mirror the framework of
 Aura's inquiry, and Aura files each new note where it belongs:

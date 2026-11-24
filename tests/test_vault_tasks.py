@@ -169,6 +169,13 @@ def test_a_task_copies_one_folder_inside_the_vault_within_limits(tmp_path, monke
     assert c.path == "Conversations/two.md"
 
 
+def test_developer_prompt_uses_the_master_programmer_workflow_when_present():
+    prompt = vt.prompt("Improve the project without changing its behavior.")
+    assert "If AURA_ENGINEERING.md is present" in prompt
+    assert "glossary and relevant ADRs" in prompt
+    assert "checks you ran" in prompt and "remaining risks" in prompt
+
+
 # ── from the chat: two approvals, one run ───────────────────────────────────────────────────
 
 

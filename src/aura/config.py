@@ -22,6 +22,9 @@ class Settings:
     # The context window the *server* actually allocates (see `ollama ps`). Ollama silently
     # drops the oldest messages past this, so Aura compacts its memory before reaching it.
     context_tokens: int = 16384
+    # How long Ollama keeps the model resident after an actual chat turn. Aura does not preload
+    # models simply because its panel is visible.
+    model_keep_alive: str = "5m"
     # The most one model call may generate. Without a cap, a model stuck in a loop never stops:
     # Ollama shifts its context and keeps going (seen in a live test: one call ran 23 minutes).
     # Half the window leaves room for the longest memory summary.
@@ -56,6 +59,7 @@ class Settings:
             model=env("AURA_MODEL", d.model),
             reasoning_effort=env("AURA_REASONING_EFFORT", d.reasoning_effort) or None,
             context_tokens=int(env("AURA_CONTEXT_TOKENS", d.context_tokens)),
+            model_keep_alive=env("AURA_MODEL_KEEP_ALIVE", d.model_keep_alive),
             max_reply_tokens=int(env("AURA_MAX_REPLY_TOKENS", d.max_reply_tokens)),
             vault_dir=Path(env("AURA_VAULT_DIR", str(d.vault_dir))).expanduser(),
             tavily_api_key=env("TAVILY_API_KEY") or None,
@@ -75,6 +79,16 @@ class Settings:
     def skills_inbox(self) -> Path:
         """Where new skills wait to be proposed: inside the vault, easy to drop into with Finder."""
         return self.vault_dir / "Skills Inbox"
+
+    @property
+    def project_sandbox_dir(self) -> Path:
+        """The one-time, editable project copy inside the user's vault.
+
+        It deliberately has the same name as the source root (normally ``Aura``), but it is not a
+        worktree and has no Git metadata.  Nothing in the app writes from this path back to
+        ``project_dir``.
+        """
+        return self.vault_dir / self.project_dir.expanduser().resolve().name
 
     @property
     def staging_dir(self) -> Path:

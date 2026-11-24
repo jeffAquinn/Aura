@@ -153,7 +153,13 @@ def prompt(task: str) -> str:
         f"{task.strip()}\n\n"
         "Make the changes directly in the files here. Afterwards the user sees every file you created, changed "
         "or deleted, with its diff, and allows or denies each one, so change only what the task needs. Don't "
-        "use the network. When you're done, reply with a short summary of what you changed and why."
+        "use the network.\n\n"
+        "If AURA_ENGINEERING.md is present, this is an Aura project sandbox: read it before changing code and "
+        "follow its strategic workflow. In particular, use the glossary and relevant ADRs, avoid inventing "
+        "product decisions, verify behavior with the repository's checks, and record evidence and risks for "
+        "non-trivial changes. This workflow does not authorize any access outside this workspace.\n\n"
+        "When you're done, reply with a short summary of what you changed, the checks you ran, and any remaining "
+        "risks or unanswered questions."
     )
 
 

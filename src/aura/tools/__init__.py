@@ -170,6 +170,9 @@ class Toolbox:
         masker = audit.masker = Masker.for_secrets(secrets)
         state = StateStore(settings.data_dir / "state.sqlite")
         vault = Vault(settings.vault_dir, audit)
+        # This is a one-time seed, never a sync.  From this point on all code edits target the
+        # vault's copy; the running checkout and its Git repository remain read-only to Aura.
+        vault.seed_project_copy(settings.project_dir)
         # Tavily's key: the Keychain's (Settings → Keys) wins, so a key replaced there stays replaced
         # after a restart; .env's is only a fallback from before Sprint 6.
         search = search or WebSearch(secrets.get("tavily_api_key") or settings.tavily_api_key, audit)

@@ -167,7 +167,10 @@ class Aura:
             # a stale date. Date only, not time: the prompt prefix stays stable between turns,
             # so the server's prompt cache stays warm.
             # The persona is re-read every turn, so an approved change applies on the next reply.
-            return system_prompt(date.today(), self.settings.model, vault.root, identity.load(), SOUL_DIRECTIVE)
+            return system_prompt(
+                date.today(), self.settings.model, vault.root, identity.load(), SOUL_DIRECTIVE,
+                project_sandbox=self.settings.project_sandbox_dir,
+            )
 
         def describe(tool_call: dict, state: Any, runtime: Any) -> str:
             args = tool_call["args"]

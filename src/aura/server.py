@@ -48,7 +48,7 @@ from aura.tools.sandbox import find_docker
 from aura.tools import vault_map
 from aura.voice import VoiceError
 
-KEEP_ALIVE = "30m"
+KEEP_ALIVE = "5m"
 LOCAL_HOSTS = {"127.0.0.1", "localhost"}
 MIN_TOKEN_CHARS = 32
 log = logging.getLogger("aura.server")
@@ -63,10 +63,12 @@ class Keeper(Protocol):
 
 
 class ModelKeeper:
-    """Keeps the model loaded while the user is around and lets it unload after 30 idle minutes.
+    """Keeps a model briefly after a real turn, then lets Ollama release its memory.
 
-    Uses Ollama's native API beside the OpenAI-compatible base URL. Every call to `warm`
-    (re)starts the 30-minute timer. With a non-Ollama backend, every call is a harmless no-op."""
+    Uses Ollama's native API beside the OpenAI-compatible base URL. Aura never calls ``warm`` at
+    launch or when its panel opens: a 26B model can reserve most of a small Mac's unified memory.
+    Every call after a completed turn restarts the configurable idle timer. With a non-Ollama
+    backend, every call is a harmless no-op."""
 
     def __init__(self, base_url: str, model: str, keep_alive: str = KEEP_ALIVE):
         root = base_url.rstrip("/")
@@ -336,7 +338,7 @@ class BuildIn(BaseModel):
 def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kokoro | None = None) -> FastAPI:
     if len(token) < MIN_TOKEN_CHARS:
         raise ValueError(f"token must be at least {MIN_TOKEN_CHARS} characters")
-    keeper = keeper or ModelKeeper(aura.settings.base_url, aura.settings.model)
+    keeper = keeper or ModelKeeper(aura.settings.base_url, aura.settings.model, aura.settings.model_keep_alive)
     app = FastAPI(title="Aura Server", docs_url=None, redoc_url=None, openapi_url=None)
     app.add_middleware(Guard, token=token)
     turn = threading.Lock()  # one turn at a time: Aura has a single user and conversation
@@ -890,9 +892,6 @@ def main() -> None:
 
         threading.Thread(target=exit_with_app, daemon=True).start()
 
-    profile = aura.toolbox.voice.load()
-    if profile.speak and profile.voice:
-        app.state.kokoro.warm(profile.voice)  # ready before the first reply is spoken
     aura.toolbox.continuous.start(idle=app.state.idle)  # quick pass now; deep pass daily, when idle
     aura.toolbox.live.start()  # Slack and Discord live messages, for whatever is set up
     log.info("listening on 127.0.0.1:%d", sock.getsockname()[1])

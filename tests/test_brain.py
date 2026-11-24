@@ -57,6 +57,7 @@ def test_persona_describes_the_tools_and_their_limits(settings):
     prompt = model.calls[0][0].text
     assert str(settings.vault_dir.name) in prompt
     assert "read-only at /vault" in prompt and "no internet" in prompt
+    assert "Aura project sandbox" in prompt and "never update the root project or GitHub" in prompt
     assert "never ask for permission in chat" in prompt  # no double confirmation
     assert "Never say an action happened unless a tool result confirms it" in prompt
 
@@ -78,6 +79,7 @@ def test_settings_come_from_env(monkeypatch: pytest.MonkeyPatch, tmp_path):
         "AURA_MODEL": "some-model",
         "AURA_REASONING_EFFORT": "",  # empty -> omit the parameter
         "AURA_CONTEXT_TOKENS": "4096",
+        "AURA_MODEL_KEEP_ALIVE": "45s",
         "AURA_MAX_REPLY_TOKENS": "2048",
         "AURA_VAULT_DIR": str(tmp_path / "v"),
         "TAVILY_API_KEY": "tvly-x",
@@ -96,6 +98,7 @@ def test_settings_come_from_env(monkeypatch: pytest.MonkeyPatch, tmp_path):
         model="some-model",
         reasoning_effort=None,
         context_tokens=4096,
+        model_keep_alive="45s",
         max_reply_tokens=2048,
         vault_dir=tmp_path / "v",
         tavily_api_key="tvly-x",
@@ -111,6 +114,21 @@ def test_vault_is_created_on_startup(settings):
     assert not settings.vault_dir.exists()
     make_aura(settings)
     assert settings.vault_dir.is_dir()
+
+
+def test_project_sandbox_is_seeded_in_the_vault_on_startup(settings, tmp_path):
+    source = tmp_path / "Aura"
+    (source / "src").mkdir(parents=True)
+    (source / "src" / "feature.py").write_text("enabled = False\n")
+    aura, _ = make_aura(dataclasses.replace(settings, project_dir=source))
+
+    sandbox = aura.settings.project_sandbox_dir
+    assert sandbox == settings.vault_dir / "Aura"
+    assert (sandbox / "src" / "feature.py").read_text() == "enabled = False\n"
+    assert (sandbox / "AURA_ENGINEERING.md").is_file()
+    assert (sandbox / "docs" / "reviews" / "README.md").is_file()
+    (sandbox / "src" / "feature.py").write_text("enabled = True\n")
+    assert (source / "src" / "feature.py").read_text() == "enabled = False\n"
 
 
 # ── Sprint 1 · Reliability: compaction triggers on token count ─────────────────────────────
