@@ -1,0 +1,13 @@
+name = "synthesize"
+version = "1.0.0"
+purpose = "Read a scope of vault notes, cross-reference them for repeated themes and contradictions, and return a structured Markdown synthesis."
+dependencies = []
+
+[inputs]
+scope = "vault-relative folder or .md/.txt file to read, e.g. 'Conversations'"
+focus = "optional keyword or phrase to concentrate the synthesis on"
+report_title = "optional title for the returned report"
+
+[permissions]
+network = false
+vault = "read"
