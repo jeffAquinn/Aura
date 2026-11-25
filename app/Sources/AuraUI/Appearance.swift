@@ -175,25 +175,25 @@ public struct BubbleColors: Equatable, Sendable {
     public var aura: Color
     public var userTextOverride: Color?
     public var auraTextOverride: Color?
-    public var bubbleOpacity: Double
-    public var textOpacity: Double
+    public var bubbleTransparency: Double
+    public var textTransparency: Double
 
     public static let standard = BubbleColors(user: .accentColor, aura: ChatAppearance.color(hex: ChatAppearance.defaultAura)!)
 
     public init(user: Color, aura: Color, userTextOverride: Color? = nil, auraTextOverride: Color? = nil,
-                bubbleOpacity: Double = 1, textOpacity: Double = 1) {
+                bubbleTransparency: Double = 0, textTransparency: Double = 0) {
         self.user = user
         self.aura = aura
         self.userTextOverride = userTextOverride
         self.auraTextOverride = auraTextOverride
-        self.bubbleOpacity = bubbleOpacity
-        self.textOpacity = textOpacity
+        self.bubbleTransparency = bubbleTransparency
+        self.textTransparency = textTransparency
     }
 
-    public var userText: Color { (userTextOverride ?? ChatAppearance.textColor(on: user)).opacity(textOpacity) }
-    public var auraText: Color { (auraTextOverride ?? ChatAppearance.textColor(on: aura)).opacity(textOpacity) }
-    public var userBackground: Color { user.opacity(bubbleOpacity) }
-    public var auraBackground: Color { aura.opacity(bubbleOpacity) }
+    public var userText: Color { (userTextOverride ?? ChatAppearance.textColor(on: user)).opacity(1 - textTransparency) }
+    public var auraText: Color { (auraTextOverride ?? ChatAppearance.textColor(on: aura)).opacity(1 - textTransparency) }
+    public var userBackground: Color { user.opacity(1 - bubbleTransparency) }
+    public var auraBackground: Color { aura.opacity(1 - bubbleTransparency) }
 }
 
 /// Stored preferences (UserDefaults via @AppStorage) and the color arithmetic behind them.
@@ -204,8 +204,8 @@ public enum ChatAppearance {
     public static let auraBubbleKey = "chatAuraBubble"
     public static let userTextKey = "chatUserText"
     public static let auraTextKey = "chatAuraText"
-    public static let bubbleOpacityKey = "chatBubbleOpacity"
-    public static let textOpacityKey = "chatTextOpacity"
+    public static let bubbleTransparencyKey = "chatBubbleTransparency"
+    public static let textTransparencyKey = "chatTextTransparency"
     public static let avatarSizeKey = "chatAvatarSize"
 
     public static let defaultSize = 13.0  // macOS body text
@@ -224,11 +224,11 @@ public enum ChatAppearance {
     }
 
     public static func bubbles(user: String, aura: String, userText: String = "", auraText: String = "",
-                               bubbleOpacity: Double = 1, textOpacity: Double = 1) -> BubbleColors {
+                               bubbleTransparency: Double = 0, textTransparency: Double = 0) -> BubbleColors {
         BubbleColors(user: color(hex: user) ?? .accentColor,
                      aura: color(hex: aura) ?? color(hex: defaultAura)!,
                      userTextOverride: color(hex: userText), auraTextOverride: color(hex: auraText),
-                     bubbleOpacity: min(max(bubbleOpacity, 0.2), 1), textOpacity: min(max(textOpacity, 0.35), 1))
+                     bubbleTransparency: min(max(bubbleTransparency, 0), 1), textTransparency: min(max(textTransparency, 0), 1))
     }
 
     public static func avatarSize(_ value: String) -> CGFloat {

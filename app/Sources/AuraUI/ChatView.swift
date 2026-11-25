@@ -18,8 +18,8 @@ public struct ChatView: View {
     @AppStorage(ChatAppearance.auraBubbleKey) private var auraBubble = ChatAppearance.defaultAura
     @AppStorage(ChatAppearance.userTextKey) private var userText = ""
     @AppStorage(ChatAppearance.auraTextKey) private var auraText = ""
-    @AppStorage(ChatAppearance.bubbleOpacityKey) private var bubbleOpacity = 1.0
-    @AppStorage(ChatAppearance.textOpacityKey) private var textOpacity = 1.0
+    @AppStorage(ChatAppearance.bubbleTransparencyKey) private var bubbleTransparency = 0.0
+    @AppStorage(ChatAppearance.textTransparencyKey) private var textTransparency = 0.0
 
     public init(store: ChatStore, avatar: Image?, backdrop: Image? = nil, onRestart: @escaping () -> Void,
                 onOpenHOLTerminal: @escaping () -> Void = {}, onOpenWorkstation: @escaping () -> Void = {},
@@ -51,7 +51,7 @@ public struct ChatView: View {
         .frame(minWidth: 360, minHeight: 440)
         .background { AuraThemeBackdrop(starfield: backdrop) }
         .environment(\.chatText, ChatAppearance.textStyle(size: fontSize, style: fontStyle))
-        .environment(\.bubbles, ChatAppearance.bubbles(user: userBubble, aura: auraBubble, userText: userText, auraText: auraText, bubbleOpacity: bubbleOpacity, textOpacity: textOpacity))
+        .environment(\.bubbles, ChatAppearance.bubbles(user: userBubble, aura: auraBubble, userText: userText, auraText: auraText, bubbleTransparency: bubbleTransparency, textTransparency: textTransparency))
     }
 }
 

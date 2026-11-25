@@ -407,12 +407,12 @@ struct ChatAppearanceSettings: View {
     @AppStorage(ChatAppearance.auraBubbleKey) private var auraBubble = ChatAppearance.defaultAura
     @AppStorage(ChatAppearance.userTextKey) private var userText = ""
     @AppStorage(ChatAppearance.auraTextKey) private var auraText = ""
-    @AppStorage(ChatAppearance.bubbleOpacityKey) private var bubbleOpacity = 1.0
-    @AppStorage(ChatAppearance.textOpacityKey) private var textOpacity = 1.0
+    @AppStorage(ChatAppearance.bubbleTransparencyKey) private var bubbleTransparency = 0.0
+    @AppStorage(ChatAppearance.textTransparencyKey) private var textTransparency = 0.0
     @AppStorage(ChatAppearance.avatarSizeKey) private var avatarSize = "small"
 
     private var text: ChatTextStyle { ChatAppearance.textStyle(size: fontSize, style: fontStyle) }
-    private var colors: BubbleColors { ChatAppearance.bubbles(user: userBubble, aura: auraBubble, userText: userText, auraText: auraText, bubbleOpacity: bubbleOpacity, textOpacity: textOpacity) }
+    private var colors: BubbleColors { ChatAppearance.bubbles(user: userBubble, aura: auraBubble, userText: userText, auraText: auraText, bubbleTransparency: bubbleTransparency, textTransparency: textTransparency) }
 
     var body: some View {
         Picker("Font", selection: $fontStyle) {
@@ -431,10 +431,10 @@ struct ChatAppearanceSettings: View {
         BubbleColorRow(title: "Your text color", hex: $userText)
         BubbleColorRow(title: "Aura's text color", hex: $auraText)
         LabeledContent("Bubble transparency") {
-            Slider(value: $bubbleOpacity, in: 0.25...1, step: 0.05)
+            HStack { Slider(value: $bubbleTransparency, in: 0...1, step: 0.05); Text("\(Int(bubbleTransparency * 100))%").frame(width: 34, alignment: .trailing) }
         }
-        LabeledContent("Text opacity") {
-            Slider(value: $textOpacity, in: 0.4...1, step: 0.05)
+        LabeledContent("Text transparency") {
+            HStack { Slider(value: $textTransparency, in: 0...1, step: 0.05); Text("\(Int(textTransparency * 100))%").frame(width: 34, alignment: .trailing) }
         }
         Picker("Chat avatar size", selection: $avatarSize) {
             Text("Small").tag("small")
@@ -451,8 +451,8 @@ struct ChatAppearanceSettings: View {
                 auraBubble = ChatAppearance.defaultAura
                 userText = ""
                 auraText = ""
-                bubbleOpacity = 1
-                textOpacity = 1
+                bubbleTransparency = 0
+                textTransparency = 0
                 avatarSize = "small"
             }
             .controlSize(.small)
@@ -501,14 +501,14 @@ struct BubblePreview: View {
                     .font(text.font())
                     .padding(.horizontal, 10).padding(.vertical, 6)
                     .foregroundStyle(colors.userText)
-                    .background(colors.user, in: .rect(cornerRadius: 14))
+                    .background(colors.userBackground, in: .rect(cornerRadius: 14))
             }
             HStack {
                 Text("Of course. Your notes cover **three** things:")
                     .font(text.font())
                     .padding(.horizontal, 10).padding(.vertical, 6)
                     .foregroundStyle(colors.auraText)
-                    .background(colors.aura, in: .rect(cornerRadius: 14))
+                    .background(colors.auraBackground, in: .rect(cornerRadius: 14))
                 Spacer(minLength: 40)
             }
         }
