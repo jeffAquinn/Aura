@@ -22,6 +22,7 @@ import threading
 import time
 from collections.abc import AsyncIterator, Iterator
 from dataclasses import asdict
+from itertools import chain
 from pathlib import Path
 from typing import Any, Literal, Protocol
 from urllib.parse import urlsplit
@@ -214,6 +215,48 @@ def pull_ollama_model(settings: Settings, model: str) -> None:
     if not isinstance(payload, dict) or payload.get("error") or payload.get("status") != "success":
         detail = payload.get("error") if isinstance(payload, dict) else "unexpected response"
         raise OllamaModelError(f"Ollama could not download '{model}': {detail or 'download did not finish'}.")
+
+
+def automatic_model_choice(
+    routing: ModelRouting, role: str, installed: set[str], anthropic_key_set: bool,
+) -> tuple[ModelChoice, str | None]:
+    """Choose an installed, user-configured model for Aura's automatic picker.
+
+    The requested task role always wins when it can run.  A missing local model falls back only
+    to another *configured local* general-purpose role; Aura never turns a local request into a
+    cloud request just because a local model is unavailable.  This gives automatic mode a useful
+    answer immediately instead of deferring a missing-model failure to a long streaming request.
+    """
+    requested = routing.choice(role)
+    if requested.provider == "anthropic" and anthropic_key_set:
+        return requested, None
+    if requested.provider == "ollama" and requested.model in installed:
+        return requested, None
+
+    # Chat is the least surprising degradation for a specialised task; Startup is the final
+    # local fallback the person deliberately configured.  Do not inspect another specialised
+    # role or promote the task to cloud service without an explicit role choice.
+    for fallback_role in ("chat", "startup"):
+        if fallback_role == role:
+            continue
+        fallback = routing.choice(fallback_role)
+        if fallback.provider == "ollama" and fallback.model in installed:
+            if requested.provider == "ollama":
+                reason = f"the {role.replace('_', ' ')} model '{requested.model}' is not installed"
+            else:
+                reason = f"the {role.replace('_', ' ')} cloud model has no API key"
+            return fallback, f"Auto selected local model '{fallback.model}' because {reason}."
+
+    if requested.provider == "anthropic":
+        raise ValueError(
+            f"Auto mode cannot use the {role.replace('_', ' ')} cloud model without an Anthropic API key. "
+            "Add a key in Settings or choose an installed local model."
+        )
+    available = ", ".join(sorted(installed)) or "none"
+    raise ValueError(
+        f"Auto mode cannot use the {role.replace('_', ' ')} model '{requested.model}' because it is not installed. "
+        f"Installed local models: {available}. Choose or download a local model in Settings."
+    )
 
 
 # ── security ────────────────────────────────────────────────────────────────────────────────
@@ -504,11 +547,27 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
         raise ValueError(f"token must be at least {MIN_TOKEN_CHARS} characters")
     routing = ModelRouting(aura.settings)
     startup_problem: str | None = None
+    startup_choice: ModelChoice | None = None
+
+    def installed_for_automatic_routing() -> set[str]:
+        # An injected model is an offline/test embedding whose local model name is deliberately
+        # not an Ollama installation.  Treat its saved local role choices as usable so the test
+        # double is never replaced with a real network client.
+        if aura._injected_model:
+            return {choice.model for role in ROLES if (choice := routing.choice(role)).provider == "ollama"}
+        return set(installed_ollama_models(aura.settings))
+
     try:
-        aura.select_model(routing.choice("startup"))
+        startup_choice, _ = automatic_model_choice(
+            routing,
+            "startup",
+            installed_for_automatic_routing(),
+            aura.toolbox.secrets.get("anthropic_api_key") is not None,
+        )
+        aura.select_model(startup_choice)
     except ValueError as e:
-        # A missing API key must not make Aura unusable. Keep its local default, tell the settings
-        # panel why the requested cloud startup choice wasn't applied, and retry on a later turn.
+        # An unavailable startup preference must not make Aura unusable. Keep its local default,
+        # tell the settings panel why it was skipped, and re-evaluate it on a later automatic turn.
         startup_problem = str(e)
     supplied_keeper = keeper is not None
     keeper = keeper or ActiveModelKeeper(aura)
@@ -533,12 +592,11 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
             ModelKeeper(aura.settings.base_url, current.model, -1).warm_soon()
 
     def warm_startup_models() -> None:
-        """Preload the user's local startup choice; Sleep Mode may additionally keep one resident."""
-        startup = routing.choice("startup")
-        if startup.provider == "ollama":
-            ModelKeeper(aura.settings.base_url, startup.model, aura.settings.model_keep_alive).warm()
+        """Preload a verified local startup choice; Sleep Mode may additionally keep one resident."""
+        if startup_choice is not None and startup_choice.provider == "ollama":
+            ModelKeeper(aura.settings.base_url, startup_choice.model, aura.settings.model_keep_alive).warm()
         sleep = routing.sleep_mode()
-        if sleep.enabled:
+        if sleep.enabled and sleep.model in installed_ollama_models(aura.settings):
             ModelKeeper(aura.settings.base_url, sleep.model, -1).warm()
 
     # Do this in the server's background, not on the SwiftUI main thread. Test and injected
@@ -605,6 +663,7 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
             return busy()
         app.state.last_active = time.monotonic()
         try:
+            route_notice: str | None = None
             if body.model is not None:
                 if body.developer is not None:
                     raise ValueError("Choose either an Aura chat model or a Developer, not both.")
@@ -614,8 +673,20 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
                 aura.select_model(chosen)
             else:
                 role = infer_role(body.text, body.developer)
-                aura.select_model(routing.choice(role))
+                chosen, route_notice = automatic_model_choice(
+                    routing,
+                    role,
+                    installed_for_automatic_routing(),
+                    aura.toolbox.secrets.get("anthropic_api_key") is not None,
+                )
+                aura.select_model(chosen)
+                if chosen.provider == "ollama" and not aura._injected_model:
+                    # Preload only a model proven to exist locally.  It happens off the request
+                    # thread so the app can still render the turn and offer Stop immediately.
+                    ModelKeeper(aura.settings.base_url, chosen.model, aura.settings.model_keep_alive).warm_soon()
             events = aura.stream(body.text, developer=body.developer, turn_id=t.id, cancel=t.cancel)
+            if route_notice:
+                events = chain((Status(route_notice),), events)
         except (RuntimeError, ValueError) as e:  # an approval is pending, or a selected model is not ready
             lifecycle.end(t, "refused", str(e))
             return _error(409, str(e))

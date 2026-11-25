@@ -53,6 +53,42 @@ def test_task_words_choose_the_corresponding_model_role():
     assert infer_role("Hello Aura") == "chat"
 
 
+def test_automatic_model_falls_back_to_a_verified_general_local_choice(settings):
+    routing = ModelRouting(settings)
+    saved = choices("missing:latest")
+    saved["chat"] = ModelChoice("ollama", "qwen3:8b")
+    saved["startup"] = ModelChoice("ollama", "llama3.2:3b")
+    routing.replace(saved)
+
+    choice, notice = server_module.automatic_model_choice(routing, "coding", {"qwen3:8b"}, False)
+
+    assert choice == ModelChoice("ollama", "qwen3:8b")
+    assert notice == "Auto selected local model 'qwen3:8b' because the coding model 'missing:latest' is not installed."
+
+
+def test_automatic_model_never_escalates_a_missing_local_role_to_cloud(settings):
+    routing = ModelRouting(settings)
+    saved = choices("missing:latest")
+    saved["chat"] = ModelChoice("anthropic", "claude-sonnet-5-5")
+    routing.replace(saved)
+
+    with pytest.raises(ValueError, match="not installed"):
+        server_module.automatic_model_choice(routing, "coding", set(), True)
+
+
+def test_automatic_model_refuses_an_unusable_role_before_opening_a_turn(settings, monkeypatch):
+    routing = ModelRouting(settings)
+    routing.replace(choices("missing:latest"))
+    monkeypatch.setattr(server_module, "installed_ollama_models", lambda _settings: [])
+    aura = server_module.Aura(settings=settings)
+    client = TestClient(create_app(aura, TOKEN, NoopKeeper()), base_url="http://127.0.0.1")
+
+    response = client.post("/v1/chat", json={"text": "Hello"}, headers=AUTH)
+
+    assert response.status_code == 409
+    assert "Auto mode cannot use the chat model 'missing:latest' because it is not installed" in response.json()["error"]
+
+
 def test_models_api_saves_all_roles_and_switches_before_a_turn(settings):
     aura, _ = make_aura(settings)
     client = TestClient(create_app(aura, TOKEN, NoopKeeper()), base_url="http://127.0.0.1")

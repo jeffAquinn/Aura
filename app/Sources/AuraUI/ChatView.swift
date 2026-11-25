@@ -765,11 +765,16 @@ struct InputBar: View {
                 .textFieldStyle(.plain)
                 .font(chat.font())
                 .foregroundStyle(bubbles.userText)
+                // Keep writing assistance local to macOS.  Suggestions and spell checking use
+                // the person's own Writing Tools settings; draft text is never sent anywhere
+                // until they press Send.
+                .autocorrectionDisabled(false)
                 .lineLimit(1...8)
                 .focused($focused)
                 .onSubmit(send)
                 .disabled(store.transport == nil || store.phase == .awaitingApproval)
                 .padding(.vertical, 4)
+                .help("Spell checking and text completion follow your Mac’s Writing Tools settings.")
             if store.isBusy {
                 RoundButton(symbol: "stop.fill", enabled: true, action: store.stop).help("Stop")
             } else {
