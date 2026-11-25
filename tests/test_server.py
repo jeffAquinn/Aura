@@ -252,6 +252,12 @@ def test_health_reports_state(settings):
         "interrupted_at_start": 0,
         "recoverable": 0,
         "recovery_note": None,
+        "runtime_health": {"state": "idle", "provider": "ollama", "model": "gemma4:26b",
+                           "detail": "Model will load on the next turn."},
+        "governance_health": {"state": "healthy", "agent": {"state": "healthy",
+                               "agents": {"active": 0, "suspended": 0, "expired": 0, "due": 0},
+                               "detail": "No agent lifecycle action is due."},
+                              "optional_connection_attention": []},
     }
 
 
@@ -291,7 +297,14 @@ def test_live_warm_sets_a_five_minute_keep_alive():
 # ── the real process ────────────────────────────────────────────────────────────────────────
 
 
+@pytest.mark.live
 def test_server_process_announces_port_serves_and_exits_with_its_parent(tmp_path):
+    """A real ``uv`` child process is an integration check, not an offline audit check.
+
+    Running it from an audit shadow project makes uv create a second virtual environment in that
+    worktree.  It is intentionally kept out of the bounded, offline Governor suite; developers
+    can still run it explicitly with the rest of the live integration checks.
+    """
     proc = subprocess.Popen(
         ["uv", "run", "aura-server"],
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,

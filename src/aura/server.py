@@ -550,14 +550,32 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
     @app.get("/v1/health")
     def health() -> dict:
         s, tb = aura.settings, aura.toolbox
+        loaded = keeper.loaded()
+        # A local daemon that cannot answer its non-generating status endpoint is unavailable.
+        # Cloud providers have no free, provider-neutral readiness probe, so unknown stays honest.
+        model_state = ("unavailable" if startup_problem or (aura.active_model.provider == "ollama" and loaded is None)
+                       else "loaded" if loaded is True else "idle" if loaded is False else "unknown")
+        optional = connections.public()
+        connection_attention = [c["label"] for c in optional
+                                if c.get("problem") or (c.get("live") or {}).get("state") == "problem"]
+        agent_health = workshop.agents.health()
+        governance_attention = bool(connection_attention or agent_health["state"] == "attention"
+                                    or tb.continuous.alerts())
         return {
             "status": "ok",
             "model": aura.active_model.model,
-            "model_loaded": keeper.loaded(),
+            "model_loaded": loaded,
             "search_mode": tb.search.mode,
             "vault": str(tb.vault.root),
             "busy": turn.locked(),
             "awaiting_approval": aura.awaiting_approval,
+            "runtime_health": {"state": model_state, "provider": aura.active_model.provider,
+                               "model": aura.active_model.model,
+                               "detail": (startup_problem or ("The local model service is unavailable." if model_state == "unavailable"
+                                          else "Model loaded." if model_state == "loaded" else "Model will load on the next turn." if model_state == "idle"
+                                          else "Provider readiness cannot be checked without a model request."))},
+            "governance_health": {"state": "attention" if governance_attention else "healthy",
+                                  "agent": agent_health, "optional_connection_attention": connection_attention},
             **lifecycle_state(),
         }
 

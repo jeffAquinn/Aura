@@ -102,6 +102,7 @@ struct HeaderView: View {
                     HStack(spacing: 5) {
                         Circle().fill(dotColor).frame(width: 6, height: 6)
                         Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                        HealthDots(health: store.health)
                     }
                 }
                 Spacer(minLength: 0)
@@ -166,6 +167,40 @@ struct HeaderView: View {
             case .thinking, .streaming: .accentColor
             }
         }
+    }
+}
+
+/// Two compact, evidence-scoped indicators: runtime availability and governance attention.
+/// They never claim the quality or truth of an answer—only what Aura can observe locally.
+private struct HealthDots: View {
+    let health: Health?
+
+    var body: some View {
+        HStack(spacing: 3) {
+            Circle().fill(runtimeColor).frame(width: 6, height: 6)
+                .help(runtimeDetail)
+            Circle().fill(governanceColor).frame(width: 6, height: 6)
+                .help(governanceDetail)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Runtime: \(runtimeDetail). Governance: \(governanceDetail)")
+    }
+
+    private var runtimeColor: Color {
+        switch health?.runtimeHealth?.state {
+        case "unavailable": .red
+        case "idle", "unknown": .orange
+        case "loaded": .green
+        default: .secondary
+        }
+    }
+
+    private var governanceColor: Color { health?.governanceHealth?.state == "attention" ? .orange : health == nil ? .secondary : .green }
+    private var runtimeDetail: String { health?.runtimeHealth?.detail ?? "Runtime state has not been checked yet." }
+    private var governanceDetail: String {
+        guard let governance = health?.governanceHealth else { return "Governance state has not been checked yet." }
+        let connections = governance.optionalConnectionAttention
+        return connections.isEmpty ? governance.agent.detail : "Optional connection attention: \(connections.joined(separator: ", ")). \(governance.agent.detail)"
     }
 }
 

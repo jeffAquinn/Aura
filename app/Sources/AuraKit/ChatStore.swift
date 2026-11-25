@@ -46,6 +46,8 @@ public final class ChatStore {
     public private(set) var items: [Item] = []
     public private(set) var phase: Phase = .idle
     public var connection: Connection = .starting
+    /// Server-observed runtime and governance evidence, refreshed every 30 seconds while connected.
+    public private(set) var health: Health?
     /// The chat box's choice: hand messages to this Developer ("claude", "codex"), or nil (Aura decides).
     public var developer: String?
     /// Optional one-turn Aura-model override selected beside the chat box. nil follows the Chat role.
@@ -54,7 +56,11 @@ public final class ChatStore {
     public var focusRequests = 0
 
     public var transport: (any AuraTransport)? {
-        didSet { if transport != nil { connection = .connected } }
+        didSet {
+            healthPolling?.cancel()
+            if transport != nil { connection = .connected; startHealthPolling() }
+            else { health = nil }
+        }
     }
 
     // Voice and identity (Sprint 4). The server owns them; these mirror it.
@@ -73,8 +79,25 @@ public final class ChatStore {
 
     /// The running (or last) turn; tests and the smoke tool await it.
     @ObservationIgnored public private(set) var turnTask: Task<Void, Never>?
+    @ObservationIgnored private var healthPolling: Task<Void, Never>?
 
     public init() {}
+
+    deinit { healthPolling?.cancel() }
+
+    private func startHealthPolling() {
+        healthPolling = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.refreshHealth()
+                try? await Task.sleep(for: .seconds(30))
+            }
+        }
+    }
+
+    public func refreshHealth() async {
+        guard let transport else { return }
+        health = try? await transport.health()
+    }
 
     /// A store frozen in a given state: for previews and UI snapshot tests.
     public init(items: [Item], phase: Phase = .idle, connection: Connection = .connected) {
@@ -212,6 +235,31 @@ public final class ChatStore {
         }
         modelCatalog = catalog
         return nil
+    }
+
+    /// Refresh only after the user asks; opening Settings does not contact a cloud provider.
+    public func syncCloudModels() async -> String? {
+        guard let transport else { return FriendlyMessage.offline }
+        do {
+            modelCatalog = try await transport.syncCloudModels()
+            return nil
+        } catch let AuraClientError.http(_, message) {
+            return message
+        } catch {
+            return FriendlyMessage.describe(error)
+        }
+    }
+
+    public func updateSleepMode(_ mode: SleepMode) async -> String? {
+        guard let transport else { return FriendlyMessage.offline }
+        do {
+            modelCatalog = try await transport.updateSleepMode(mode)
+            return nil
+        } catch let AuraClientError.http(_, message) {
+            return message
+        } catch {
+            return FriendlyMessage.describe(error)
+        }
     }
 
     /// Downloading is deliberately a direct Settings action. The server permits only a model name

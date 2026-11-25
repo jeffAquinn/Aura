@@ -136,6 +136,24 @@ class AgentRegistry:
     def retired_entries(self) -> list[dict[str, Any]]:
         return self.entries(self.retired)
 
+    def health(self) -> dict[str, Any]:
+        """Governance evidence only; it makes no claim about runtime availability."""
+        entries = self.installed()
+        counts: dict[str, int] = {"active": 0, "suspended": 0, "expired": 0, "due": 0}
+        soon = self._now() + timedelta(days=14)
+        for entry in entries:
+            state = str(entry.get("state", "active"))
+            counts[state] = counts.get(state, 0) + 1
+            review_by = str(entry.get("review_by", ""))
+            try:
+                if state == "active" and review_by and datetime.fromisoformat(review_by) <= soon:
+                    counts["due"] += 1
+            except ValueError:
+                counts["suspended"] += 1
+        attention = counts["suspended"] + counts["expired"] + counts["due"]
+        return {"state": "attention" if attention else "healthy", "agents": counts,
+                "detail": (f"{attention} agent record(s) need review" if attention else "No agent lifecycle action is due.")}
+
     def create(self, name: str, purpose: str, *, origin: str, provenance: str, intent_delta: str = "Unmeasured: newly created candidate.", memory: str = "No memory imported.") -> dict[str, Any]:
         name, purpose = name.strip(), purpose.strip()
         if not NAME.fullmatch(name):

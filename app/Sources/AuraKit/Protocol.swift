@@ -302,7 +302,19 @@ public struct ModelCatalog: Codable, Sendable, Equatable {
     public let ollamaModels: [String]
     public let anthropicModels: [String]
     public let anthropicKeySet: Bool
+    public let sleepMode: SleepMode
     public let startupModelProblem: String?
+}
+
+/// User-controlled local Ollama residency. It never applies to cloud models.
+public struct SleepMode: Codable, Sendable, Equatable {
+    public var enabled: Bool
+    public var model: String
+
+    public init(enabled: Bool = false, model: String) {
+        self.enabled = enabled
+        self.model = model
+    }
 }
 
 public struct ModelRoutingUpdate: Encodable, Sendable {
@@ -319,6 +331,28 @@ public struct Health: Codable, Sendable, Equatable {
     public let vault: String
     public let busy: Bool
     public let awaitingApproval: Bool
+    public let runtimeHealth: RuntimeHealth?
+    public let governanceHealth: GovernanceHealth?
+}
+
+/// Observable service state only. This is deliberately not an epistemic or philosophical claim.
+public struct RuntimeHealth: Codable, Sendable, Equatable {
+    public let state: String  // loaded | idle | unknown | unavailable
+    public let provider: String
+    public let model: String
+    public let detail: String
+}
+
+public struct GovernanceHealth: Codable, Sendable, Equatable {
+    public let state: String  // healthy | attention
+    public let agent: AgentGovernanceHealth
+    public let optionalConnectionAttention: [String]
+}
+
+public struct AgentGovernanceHealth: Codable, Sendable, Equatable {
+    public let state: String
+    public let agents: [String: Int]
+    public let detail: String
 }
 
 /// Line-oriented SSE parser. The server sends exactly one `event:` line and one `data:` line
