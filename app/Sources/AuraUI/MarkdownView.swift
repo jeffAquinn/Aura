@@ -11,7 +11,7 @@ struct MarkdownView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 14) {
             ForEach(blocks) { block in
                 BlockView(block: block)
                     .padding(.leading, CGFloat(block.quoteDepth) * 12)
@@ -38,7 +38,7 @@ private struct BlockView: View {
     @ViewBuilder private var content: some View {
         switch block.kind {
         case .paragraph:
-            Text(styled(block.text, chat)).lineSpacing(3).fixedSize(horizontal: false, vertical: true)
+            Text(styled(block.text, chat)).lineSpacing(4).fixedSize(horizontal: false, vertical: true)
         case let .heading(level):
             Text(styled(block.text, chat))
                 .font(level <= 1 ? chat.font(1.2, weight: .semibold) : level == 2 ? chat.font(1.05, weight: .bold)
@@ -50,7 +50,7 @@ private struct BlockView: View {
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
                     .frame(minWidth: 14, alignment: .trailing)
-                Text(styled(block.text, chat)).lineSpacing(3).fixedSize(horizontal: false, vertical: true)
+                Text(styled(block.text, chat)).lineSpacing(4).fixedSize(horizontal: false, vertical: true)
             }
             .padding(.leading, CGFloat(depth) * 18)
         case let .code(language):

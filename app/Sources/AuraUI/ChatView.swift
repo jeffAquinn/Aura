@@ -429,9 +429,9 @@ struct ItemView: View {
                     Text(item.text)
                         .font(chat.font())
                         .textSelection(.enabled)
-                        .lineSpacing(3)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 10)
+                        .lineSpacing(4)
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 14)
                         .foregroundStyle(bubbles.userText)
                         .background(bubbles.userBackground, in: .rect(cornerRadius: 16))
                         .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(bubbles.userBorder, lineWidth: 1))
@@ -556,8 +556,8 @@ struct AuraMessage: View {
                 MarkdownView(item.text)
                     .foregroundStyle(bubbles.auraText)
                     .tint(bubbles.auraText)  // links: underlined, in the bubble's text color
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 11)
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 15)
                     .background(bubbles.auraBackground, in: .rect(cornerRadius: 16))
                     .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(bubbles.auraBorder, lineWidth: 1))
                     .contextMenu { MessageMenu(item: item, store: store) }
