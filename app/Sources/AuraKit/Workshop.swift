@@ -327,6 +327,9 @@ public final class WorkshopStore {
     public private(set) var agents: [AgentInfo] = []
     public private(set) var agentInbox: [AgentInfo] = []
     public private(set) var retiredAgents: [AgentInfo] = []
+    /// Governance evidence rendered by the Workstation.  It is fetched from the existing
+    /// read-only health endpoint and never grants registry authority.
+    public private(set) var agentHealth: AgentGovernanceHealth?
     public private(set) var agentError: String?
     public private(set) var tasks: [TaskInfo] = []
     public private(set) var status: SystemStatus?
@@ -364,7 +367,7 @@ public final class WorkshopStore {
     }
 
     /// For previews and snapshot tests.
-    public init(skills: [SkillInfo] = [], inbox: [InboxItem] = [], agents: [AgentInfo] = [], agentInbox: [AgentInfo] = [], retiredAgents: [AgentInfo] = [], tasks: [TaskInfo] = [], selected: TaskInfo? = nil,
+    public init(skills: [SkillInfo] = [], inbox: [InboxItem] = [], agents: [AgentInfo] = [], agentInbox: [AgentInfo] = [], retiredAgents: [AgentInfo] = [], agentHealth: AgentGovernanceHealth? = nil, tasks: [TaskInfo] = [], selected: TaskInfo? = nil,
                 status: SystemStatus? = nil, developer: DeveloperInfo? = nil, selectedBuildID: String? = nil) {
         transport = { nil }
         self.skills = skills
@@ -372,6 +375,7 @@ public final class WorkshopStore {
         self.agents = agents
         self.agentInbox = agentInbox
         self.retiredAgents = retiredAgents
+        self.agentHealth = agentHealth
         self.tasks = tasks
         self.selected = selected
         selectedTaskID = selected?.id
@@ -404,6 +408,11 @@ public final class WorkshopStore {
             retiredAgents = agentOverview.retired ?? []
             tasks = try await t.tasks()
             status = try? await t.status()
+            if let health = try? await t.health() {
+                agentHealth = health.governanceHealth?.agent
+            } else {
+                agentHealth = nil
+            }
             developer = try? await t.developer()
             lastError = nil
         } catch {

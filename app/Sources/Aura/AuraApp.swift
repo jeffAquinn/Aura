@@ -25,6 +25,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var buildCheck: Timer?
     private lazy var workshop = WorkshopStore { [weak self] in self?.store.transport }
     private var workshopWindow: NSWindow?
+    private var workstationWindow: NSWindow?
     private lazy var connections = ConnectionsStore(transport: { [weak self] in self?.store.transport },
                                                     openURL: { NSWorkspace.shared.open($0) })  // the user's browser
     private var connectionsWindow: NSWindow?
@@ -270,7 +271,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         add(hotKey == nil ? "Open Aura" : "Open Aura (⌥Space)", #selector(openPanel))
         add("New Conversation", #selector(newConversation))
         add("Open Workshop…", #selector(openWorkshopFromMenu))
-        add("Open Workstation in Finder", #selector(openWorkstation))
+        add("Open Workstation…", #selector(openWorkstation))
         add("Connections…", #selector(openConnectionsFromMenu))
         menu.addItem(.separator())
         add("Open Vault in Finder", #selector(openVault))
@@ -344,18 +345,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    /// The Workstation is Aura's governed registry UI, not a Finder shortcut or file manager.
     @objc private func openWorkstation() {
-        Task {
-            let vault = (try? await store.transport?.health())?.vault
-                ?? FileManager.default.homeDirectoryForCurrentUser.appending(path: "Documents/Aura_Vault").path
-            let workstation = URL(fileURLWithPath: vault).appending(path: "Workstation", directoryHint: .isDirectory)
-            do {
-                try FileManager.default.createDirectory(at: workstation, withIntermediateDirectories: true)
-                NSWorkspace.shared.open(workstation)
-            } catch {
-                AppLog.write("couldn't open Workstation: \(error.localizedDescription)")
-            }
+        if workstationWindow == nil {
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 1080, height: 720),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+                backing: .buffered, defer: false)
+            window.title = "Aura Workstation"
+            window.isReleasedWhenClosed = false
+            window.contentView = NSHostingView(rootView: WorkstationView(store: workshop))
+            window.setFrameAutosaveName("AuraWorkstation")
+            if window.frame.origin == .zero { window.center() }
+            workstationWindow = window
         }
+        NSApp.activate()
+        workstationWindow?.makeKeyAndOrderFront(nil)
+        Task { await workshop.refresh() }
+        AppLog.write("workstation opened")
     }
 
     @objc private func openAuditLog() {

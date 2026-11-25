@@ -369,6 +369,23 @@ struct SnapshotTests {
         try renderWide("19-workshop-build-rows", width: 300, sidebar)
     }
 
+    @Test func workstationShowsRegistryHealthAndEveryAgentCollection() throws {
+        let health = AgentGovernanceHealth(state: "attention",
+                                           agents: ["active": 1, "suspended": 1, "expired": 0, "due": 1],
+                                           detail: "2 agent record(s) need review")
+        let store = WorkshopStore(
+            agents: [
+                AgentInfo(name: "research_scout", version: "1.0.0", purpose: "Summarize public sources.", origin: "imported", error: nil, state: "active", reviewBy: "2027-02-22T00:00:00+00:00"),
+                AgentInfo(name: "old_scout", version: "1.0.0", purpose: "Needs a fresh audit.", origin: "created", error: nil, state: "suspended"),
+            ],
+            agentInbox: [AgentInfo(name: "candidate", version: "1.0.0", purpose: "Awaiting audit.", origin: "imported", error: nil, state: "candidate")],
+            retiredAgents: [AgentInfo(name: "retired_scout", version: "1.0.0", purpose: "Archived history.", origin: "created", error: nil, state: "retired")],
+            agentHealth: health
+        )
+        let size = try renderWide("19b-workstation", width: 1040, WorkstationView(store: store))
+        #expect(size.width == 2080 && size.height > 500)
+    }
+
     @Test func newSkillSheetAndKeys() throws {
         let store = WorkshopStore(developer: DeveloperInfo(engines: [
             EngineInfo(name: "claude", label: "Claude Code", vendor: "Anthropic", capsCost: true, problem: "Add an Anthropic API key in Settings → Keys."),
