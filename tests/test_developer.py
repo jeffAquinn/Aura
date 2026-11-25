@@ -428,14 +428,12 @@ def test_keys_are_validated_and_never_returned():
     assert secrets.delete("claude_oauth_token") and not secrets.delete("claude_oauth_token")
 
 
-def test_the_retired_api_key_is_listed_only_while_stored_so_it_can_be_removed():
+def test_anthropic_api_key_is_available_only_for_cloud_model_calls_not_claude_code():
     secrets = Secrets()
-    assert "anthropic_api_key" not in {s["name"] for s in secrets.listing()}
-    with pytest.raises(SecretError, match="doesn't use the Anthropic API key any more"):
-        secrets.set("anthropic_api_key", "sk-ant-api03-" + "a" * 40)
-    secrets.backend.set_password("local.aura", "anthropic_api_key", "sk-ant-api03-" + "a" * 40)  # from before
+    assert "anthropic_api_key" in {s["name"] for s in secrets.listing()}
+    secrets.set("anthropic_api_key", "sk-ant-api03-" + "a" * 40)
     listed = {s["name"]: s for s in secrets.listing()}["anthropic_api_key"]
-    assert listed["set"] and "no longer used" in listed["label"]
+    assert listed["set"] and "Aura cloud models" in listed["label"]
     assert ClaudeCode().problem(secrets) is not None  # never used in place of the plan's token
     assert secrets.delete("anthropic_api_key")
 
@@ -467,8 +465,8 @@ def test_developer_and_keys_api(env):  # noqa: F811
 
     bad = client.put("/v1/secrets/claude_oauth_token", json={"value": "nope"}, headers=auth)
     assert bad.status_code == 422
-    assert client.put("/v1/secrets/anthropic_api_key", json={"value": "sk-ant-api03-" + "c" * 40},
-                      headers=auth).status_code == 422  # retired  # fmt: skip
+    cloud = client.put("/v1/secrets/anthropic_api_key", json={"value": "sk-ant-api03-" + "c" * 40}, headers=auth)
+    assert cloud.status_code == 200 and "c" * 40 not in cloud.text
     key = "sk-ant-oat01-" + "b" * 40 + "9876"
     ok = client.put("/v1/secrets/claude_oauth_token", json={"value": key}, headers=auth)
     assert ok.status_code == 200 and ok.json()["hint"] == "sk-ant-oat…9876" and key not in ok.text

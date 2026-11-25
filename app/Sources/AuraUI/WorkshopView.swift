@@ -21,12 +21,14 @@ public struct WorkshopView: View {
                               onStop: { Task { await store.stopBuild(build.id) } },
                               onReview: { store.review(build) })
                 } else if let task = store.selected {
-                    AuditCardView(task: task, onDecide: { approve in Task { await store.decide(approve: approve) } })
+                    AuditCardView(task: task,
+                                  onDecide: { approve in Task { await store.decide(approve: approve) } },
+                                  onCancel: { Task { await store.cancelAudit(task.id) } })
                 } else {
                     ContentUnavailableView(
                         "Nothing selected",
                         systemImage: "checkmark.shield",
-                        description: Text("Have a Developer build a new skill, propose one from the Skills Inbox, or ask Aura."))
+                        description: Text("Have a Developer build a skill, audit a Workstation agent candidate, or ask Aura."))
                 }
             }
             .toolbar {
@@ -89,7 +91,11 @@ struct WorkshopSidebar: View {
                     HStack {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(task.skill).font(.body.weight(.medium))
-                            Text(stageLabel(task)).font(.caption).foregroundStyle(.secondary)
+                            Text(task.isRunning ? (task.phase ?? task.message) : stageLabel(task))
+                                .font(.caption).foregroundStyle(.secondary)
+                            if task.isRunning, let progress = task.progress {
+                                ProgressView(value: Double(progress), total: 100).controlSize(.small)
+                            }
                         }
                         Spacer()
                         if task.isRunning { ProgressView().controlSize(.small) }
@@ -110,6 +116,40 @@ struct WorkshopSidebar: View {
                         Button("Audit") { Task { await store.propose(item.name) } }
                             .controlSize(.small)
                             .disabled(item.error != nil)
+                    }
+                }
+            }
+            Section("Agent Inbox") {
+                if store.agentInbox.isEmpty {
+                    Text("Empty").foregroundStyle(.secondary)
+                } else {
+                    ForEach(store.agentInbox) { item in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(item.name)
+                                Text(item.error ?? item.purpose)
+                                    .font(.caption)
+                                    .foregroundStyle(item.error == nil ? Color.secondary : Color.orange)
+                                    .lineLimit(2)
+                            }
+                            Spacer()
+                            Button("Audit") { Task { await store.proposeAgent(item.name) } }
+                                .controlSize(.small)
+                                .disabled(item.error != nil)
+                        }
+                    }
+                }
+            }
+            Section("Recognized Workstation agents") {
+                if store.agents.isEmpty {
+                    Text("None").foregroundStyle(.secondary)
+                } else {
+                    ForEach(store.agents) { agent in
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("\(agent.name) \(agent.version)")
+                            Text("\(agent.origin) · \(agent.purpose)")
+                                .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                        }
                     }
                 }
             }
@@ -279,11 +319,18 @@ struct RiskBadge: View {
     private var label: String { risk == "red" ? "High risk" : risk == "yellow" ? "Medium risk" : "Low risk" }
 }
 
-/// The Audit Card: what the rules verified, what the skill merely claims, the tests, the diff.
+/// The Audit Card: what the rules verified, what the candidate merely claims, the tests, the diff.
 struct AuditCardView: View {
     let task: TaskInfo
     let onDecide: (Bool) -> Void
+    let onCancel: () -> Void
     @State private var file = 0
+
+    init(task: TaskInfo, onDecide: @escaping (Bool) -> Void, onCancel: @escaping () -> Void = {}) {
+        self.task = task
+        self.onDecide = onDecide
+        self.onCancel = onCancel
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -298,7 +345,7 @@ struct AuditCardView: View {
                             ChangesView(diff: diff, file: $file)
                         }
                     } else {
-                        HStack { ProgressView().controlSize(.small); Text(task.message).foregroundStyle(.secondary) }
+                        auditProgress
                     }
                 }
                 .padding(20)
@@ -309,7 +356,8 @@ struct AuditCardView: View {
 
     private var header: some View {
         HStack(alignment: .center, spacing: 12) {
-            Image(systemName: "puzzlepiece.extension.fill").font(.title2).foregroundStyle(.secondary)
+            Image(systemName: task.kind == "agent" ? "person.crop.circle.badge.checkmark" : "puzzlepiece.extension.fill")
+                .font(.title2).foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 2) {
                 Text("\(task.skill) \(task.report?.version ?? "")").font(.title3.weight(.semibold))
                 Text(task.message).font(.callout).foregroundStyle(.secondary)
@@ -320,10 +368,38 @@ struct AuditCardView: View {
         .padding(20)
     }
 
+    @ViewBuilder
+    private var auditProgress: some View {
+        if task.isRunning {
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    ProgressView().controlSize(.small)
+                    Text(task.phase ?? task.message).foregroundStyle(.secondary)
+                    Spacer()
+                    if let progress = task.progress { Text("\(progress)%").monospacedDigit().foregroundStyle(.secondary) }
+                }
+                if let progress = task.progress {
+                    ProgressView(value: Double(progress), total: 100)
+                } else {
+                    ProgressView()
+                }
+                Button("Cancel Audit", role: .destructive, action: onCancel)
+                    .controlSize(.small)
+                    .disabled(task.phase == "Cancelling")
+            }
+        } else if task.stage == "failed", let error = task.error {
+            Label(error, systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.orange).textSelection(.enabled)
+        } else {
+            Text(task.message).foregroundStyle(.secondary)
+        }
+    }
+
     private var decisionBar: some View {
         HStack {
             if task.report?.blocked == true {
-                Label("This skill is blocked and can't be deployed.", systemImage: "nosign").foregroundStyle(.red)
+                Label(task.kind == "agent" ? "This agent candidate is blocked and can't be recognized."
+                      : "This skill is blocked and can't be deployed.", systemImage: "nosign").foregroundStyle(.red)
             } else {
                 Text("Nothing is installed until you approve.").font(.callout).foregroundStyle(.secondary)
             }
@@ -382,7 +458,7 @@ struct AuditFindings: View {
                     .font(.callout)
                     .frame(maxWidth: .infinity, alignment: .leading)
             } title: {
-                Label("Stated purpose (from the skill itself; unverified)", systemImage: "quote.bubble").font(.headline)
+                Label("Stated purpose (from the manifest; unverified)", systemImage: "quote.bubble").font(.headline)
             }
         }
     }

@@ -10,6 +10,7 @@ final class FakeTransport: AuraTransport, @unchecked Sendable {
     var hangChat = false
     private(set) var sent: [String] = []
     private(set) var developers: [String?] = []  // the chat box's choice, per message
+    private(set) var selectedModels: [ModelChoice?] = []  // explicit one-turn Aura model overrides
     private(set) var approvals: [[Bool]] = []
     private(set) var newConversations = 0
 
@@ -35,6 +36,14 @@ final class FakeTransport: AuraTransport, @unchecked Sendable {
     func chat(_ text: String, developer: String?) -> AsyncThrowingStream<AuraEvent, Error> {
         sent.append(text)
         developers.append(developer)
+        selectedModels.append(nil)
+        return play(chatScripts.isEmpty ? [] : chatScripts.removeFirst())
+    }
+
+    func chat(_ text: String, developer: String?, model: ModelChoice?) -> AsyncThrowingStream<AuraEvent, Error> {
+        sent.append(text)
+        developers.append(developer)
+        selectedModels.append(model)
         return play(chatScripts.isEmpty ? [] : chatScripts.removeFirst())
     }
 
@@ -90,6 +99,19 @@ struct ChatStoreTests {
         s.send("Thanks.")
         await s.turnTask?.value
         #expect(fake.developers.last == .some(nil) && s.items.last { $0.role == .user }?.developer == nil)
+    }
+
+    @Test func aChatModelOverrideAppliesToAuraButNotDeveloperTurns() async {
+        let fake = FakeTransport(chat: [[.thinking, .done], [.thinking, .done]])
+        let s = store(fake)
+        s.chatModel = ModelChoice(provider: "ollama", model: "qwen3:8b")
+        s.send("Use the local model")
+        await s.turnTask?.value
+        #expect(fake.selectedModels == [ModelChoice(provider: "ollama", model: "qwen3:8b")])
+        s.developer = "codex"
+        s.send("Use the Developer")
+        await s.turnTask?.value
+        #expect(fake.selectedModels.count == 2 && fake.selectedModels[1] == nil)
     }
 
     @Test func aDevelopersProgressIsOneLineThatKeepsUpdating() async {

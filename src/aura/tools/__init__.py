@@ -40,6 +40,7 @@ __all__ = ["NEEDS_APPROVAL", "PRIVATE_READS", "Toolbox", "emit", "status_line"]
 # Tools that run code, change the vault, or change Aura's persona: each pauses for the user's
 # approval first (code execution was added by Gemma's Sprint 4 review).
 NEEDS_APPROVAL = ("write_file", "create_folder", "delete_path", "update_persona", "run_python", "develop_skill",
+                  "create_agent_candidate", "import_agent_candidate",
                   "ask_developer", *OUTWARD)  # Sprint 7: Gemma's floors: sending, posting, drafting, adding events
 # Approvals that may be edited on the card before approving: tool -> the fields the user may change.
 EDITABLE: dict[str, tuple[str, ...]] = {"develop_skill": ("specification", "engine")}
@@ -59,6 +60,10 @@ GROUP = {
     "check_library": "Governor",
     "list_skills": "Workshop",
     "propose_skill": "Workshop",
+    "list_agents": "Workshop",
+    "create_agent_candidate": "Workshop",
+    "import_agent_candidate": "Workshop",
+    "propose_agent": "Workshop",
     "develop_skill": "Developer",
     "ask_developer": "Developer",
     "list_connections": "Connections",
@@ -85,6 +90,10 @@ _DOING: dict[str, Callable[[dict], str]] = {
     "check_library": lambda a: f"Checking '{a.get('name')}' on PyPI and OSV...",
     "list_skills": lambda a: "Looking through my skills...",
     "propose_skill": lambda a: f"Staging the '{a.get('name')}' skill for audit...",
+    "list_agents": lambda a: "Checking the Workstation agent registry...",
+    "create_agent_candidate": lambda a: f"Creating the '{a.get('name')}' agent candidate...",
+    "import_agent_candidate": lambda a: f"Quarantining the '{a.get('name')}' agent import...",
+    "propose_agent": lambda a: f"Staging the '{a.get('name')}' agent manifest for audit...",
     "develop_skill": lambda a: f"Starting {'Codex' if a.get('engine') == 'codex' else 'Claude Code'} on the '{a.get('name')}' skill...",
     "ask_developer": lambda a: "",  # announces itself, once (it runs again when the user decides on its changes)
     "list_connections": lambda a: "Checking my connections...",
@@ -197,6 +206,10 @@ class Toolbox:
         from aura.tools.workshop import workshop_tools
 
         skills = SkillManager(settings.skills_dir, settings.data_dir, sandbox, audit)
+        # Older Aura versions kept the live registry beside the source checkout. Bring only
+        # previously approved, missing skills forward into the Vault; never overwrite a user's
+        # Vault-local version or copy unaudited code out of the pending Inbox workflow.
+        vault.migrate_skill_registry(settings.project_dir, approved=set(skills.approvals()))
         workshop = Workshop(settings, skills, sandbox, audit, run_suite=run_suite)
         continuous = ContinuousAudit(skills, audit, settings.data_dir / "continuous_audit.json")
         developer = Developer(settings, workshop, container or DevContainer(sandbox, secrets, audit), secrets, audit,

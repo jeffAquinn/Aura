@@ -66,8 +66,29 @@ File tools are confined to `~/Documents/Aura_Vault`. On first launch Aura seeds
 `~/Documents/Aura_Vault/Aura/` with a separate copy of this project's files, so it can create and
 edit features there through the same approved file tools (or through the Developer). This is a
 one-way seed, never a sync: later edits stay in the vault copy and never touch the source checkout
-or GitHub. Git metadata and symbolic links are intentionally omitted from the copy. Everything
+or GitHub. Git metadata, secrets (`.env`), virtual environments, dependency/build/test caches and
+symbolic links are intentionally omitted from the copy; they are local machine artifacts, not
+source, and are recreated when needed. Everything
 consequential is recorded in `~/Library/Logs/Aura/actions.jsonl`.
+
+### Model roles
+
+Settings → **Models** chooses a model for startup/default, complex coding, chat, deep research,
+and web search. Every role starts with the selected local **Ollama** model. Aura does not preload
+the startup model: it is only the initial choice, so opening Aura does not reserve model memory.
+
+To use Claude for any role, add an **Anthropic API key (Aura cloud models)** in Settings → Keys,
+then select Anthropic and a Claude model for that role. The key remains in the macOS Keychain and
+may incur API charges. This is deliberately separate from the **Claude sign-in token** used by
+the isolated Claude Code Developer container; a Claude Code plan token is never used for Aura's
+cloud chat requests.
+
+Settings → **Models** can also download a named model through the local Ollama daemon after a
+confirmation click. The model lives in Ollama's configured store, never Aura_Vault; it can use
+several GB and download from the internet, so Aura shows that risk and does not pull models from a
+chat prompt. Once Ollama reports the download complete, the model appears in the local lists for
+all five roles and in the chat box's one-turn model picker. Developer turns remain on their chosen
+Claude Code or Codex harness.
 
 ### Strategic coding in the sandbox
 
@@ -116,6 +137,14 @@ purpose, inputs, pinned dependencies, permissions), `skill.py` (`run(args)`) and
 
 Skills always run in their own offline container, with the vault read-only if the manifest asks
 for it. Network-enabled skills aren't accepted yet.
+
+**Library storage.** A skill declares only exact package names and versions; it never stores a
+virtual environment, package cache, or `node_modules` folder in Aura_Vault. The Security Governor
+resolves and audits the complete package set, then builds a content-addressed `aura-deps:*` Docker
+image outside the Vault. Skills with the same resolved libraries share that image, and its
+deterministic per-package layers are reused by overlapping bundles. When you replace or uninstall
+a skill, Aura removes only an unreferenced Aura-owned image; it never prunes Docker Desktop or
+touches your other images, containers, volumes, or its disk limit.
 
 **Continuous Audit.** A package that was safe at install can be found vulnerable later, so the
 server re-checks the exact packages in every installed skill's image: against OSV at each start,

@@ -29,10 +29,12 @@ from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
+from langchain_anthropic import ChatAnthropic
 from langchain_openai import ChatOpenAI
 from langgraph.types import Command, Interrupt
 
 from aura.config import Settings
+from aura.model_routing import ModelChoice
 from aura.middleware import REJECTION_NOTE, DenialMiddleware, ToolStatusMiddleware
 from aura.persona import MEMORY_PROMPT, system_prompt
 from aura.developer.workflow import describe_build, describe_task
@@ -127,11 +129,21 @@ class Changed:
 Event = Text | Status | ApprovalNeeded | Changed
 
 
-def build_model(settings: Settings) -> ChatOpenAI:
+def build_model(settings: Settings, choice: ModelChoice | None = None, api_key: str | None = None) -> BaseChatModel:
+    """Build either the local OpenAI-compatible model or a first-party Claude API model.
+
+    ``claude_oauth_token`` is intentionally never accepted here: it is a Claude Code credential,
+    not Aura's Anthropic API credential.
+    """
+    choice = choice or ModelChoice("ollama", settings.model)
+    if choice.provider == "anthropic":
+        if not api_key:
+            raise ValueError("Add an Anthropic API key in Settings → Keys before selecting a Claude cloud model.")
+        return ChatAnthropic(model=choice.model, api_key=api_key, max_tokens=settings.max_reply_tokens)
     return ChatOpenAI(
         base_url=settings.base_url,
         api_key=settings.api_key,
-        model=settings.model,
+        model=choice.model,
         reasoning_effort=settings.reasoning_effort,
         max_tokens=settings.max_reply_tokens,  # a looping model stops instead of running forever
         # Report real token usage on streamed replies too. Memory compaction keys off the
@@ -156,7 +168,9 @@ class Aura:
         self.toolbox = toolbox or Toolbox.from_settings(self.settings)
         self.toolbox.vault.ensure_exists()
         self.primary = primary
-        llm = self.llm = model or build_model(self.settings)
+        self.active_model = ModelChoice("ollama", self.settings.model)
+        self._injected_model = model is not None
+        self.llm = model or build_model(self.settings, self.active_model)
         budget = self.settings.context_tokens
         vault = self.toolbox.vault
         identity = self.toolbox.identity
@@ -168,7 +182,7 @@ class Aura:
             # so the server's prompt cache stays warm.
             # The persona is re-read every turn, so an approved change applies on the next reply.
             return system_prompt(
-                date.today(), self.settings.model, vault.root, identity.load(), SOUL_DIRECTIVE,
+                date.today(), self.active_model.model, vault.root, identity.load(), SOUL_DIRECTIVE,
                 project_sandbox=self.settings.project_sandbox_dir,
             )
 
@@ -205,7 +219,7 @@ class Aura:
 
         def build(tools: list) -> Any:
             return create_agent(
-                model=llm,
+                model=self.llm,
                 tools=tools,
                 middleware=[
                     persona,
@@ -213,7 +227,7 @@ class Aura:
                     # Short-term memory compaction: when the history nears the server's context
                     # window, older turns are folded into a summary instead of silently falling off.
                     SummarizationMiddleware(
-                        model=llm,
+                        model=self.llm,
                         trigger=("tokens", int(budget * 0.6)),
                         keep=("tokens", int(budget * 0.3)),
                         summary_prompt=MEMORY_PROMPT,  # lossless fact extraction
@@ -251,6 +265,22 @@ class Aura:
         """Rebuild the agent with the current tools (e.g. a newly deployed skill). Memory is kept."""
         self._connected = self.toolbox.connections.signature()
         self._agent = self._build(self.toolbox.all_tools())
+
+    def select_model(self, choice: ModelChoice) -> None:
+        """Switch model roles only between turns, preserving the durable conversation state."""
+        choice = choice.validate()
+        if choice == self.active_model:
+            return
+        if self._injected_model:
+            # Test and embedding callers deliberately supplied a model object. Do not replace it
+            # with a network model behind their back; retain the visible choice for the prompt.
+            self.active_model = choice
+            self.reload_tools()
+            return
+        key = self.toolbox.secrets.get("anthropic_api_key") if choice.provider == "anthropic" else None
+        self.llm = build_model(self.settings, choice, key)
+        self.active_model = choice
+        self.reload_tools()
 
     def new_conversation(self) -> None:
         old = getattr(self, "thread_id", None)

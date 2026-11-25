@@ -12,17 +12,29 @@ public protocol AuraTransport: Sendable {
     func warmup() async throws
     func health() async throws -> Health
     func settings() async throws -> AppSettings
+    func models() async throws -> ModelCatalog
+    func updateModels(_ update: ModelRoutingUpdate) async throws -> ModelCatalog
+    /// Refresh the account-visible Anthropic model list after an explicit user action.
+    func syncCloudModels() async throws -> ModelCatalog
+    func updateSleepMode(_ mode: SleepMode) async throws -> ModelCatalog
+    /// A user-confirmed download through the local Ollama daemon; never an agent action.
+    func pullLocalModel(_ model: String) async throws -> ModelCatalog
+    /// An explicit model applies to this Aura turn only. Developer turns do not accept it.
+    func chat(_ text: String, developer: String?, model: ModelChoice?) -> AsyncThrowingStream<AuraEvent, Error>
     func registerVoices(_ voices: [VoiceInfo]) async throws
     func updateVoice(_ patch: VoicePatch) async throws -> VoiceProfile
     func resetPersona() async throws -> PersonaInfo
     func voices() async throws -> [VoiceInfo]
     func speech(_ text: String, voice: String, speed: Double) async throws -> Data
     func skills() async throws -> SkillsOverview
+    func agents() async throws -> AgentsOverview
     func toggleSkill(_ name: String, enabled: Bool) async throws
     func propose(_ skill: String) async throws -> TaskInfo
+    func proposeAgent(_ name: String) async throws -> TaskInfo
     func tasks() async throws -> [TaskInfo]
     func task(_ id: String) async throws -> TaskInfo
     func decide(_ id: String, approve: Bool) async throws -> TaskInfo
+    func cancelAudit(_ id: String) async throws -> TaskInfo
     func status() async throws -> SystemStatus
     func alerts() async throws -> AlertsInfo
     func uninstall(_ skill: String) async throws
@@ -58,17 +70,28 @@ public protocol AuraTransport: Sendable {
 extension AuraTransport {
     public func chat(_ text: String, developer: String?) -> AsyncThrowingStream<AuraEvent, Error> { chat(text) }
     public func settings() async throws -> AppSettings { throw AuraClientError.badResponse }
+    public func models() async throws -> ModelCatalog { throw AuraClientError.badResponse }
+    public func updateModels(_ update: ModelRoutingUpdate) async throws -> ModelCatalog { throw AuraClientError.badResponse }
+    public func syncCloudModels() async throws -> ModelCatalog { throw AuraClientError.badResponse }
+    public func updateSleepMode(_ mode: SleepMode) async throws -> ModelCatalog { throw AuraClientError.badResponse }
+    public func pullLocalModel(_ model: String) async throws -> ModelCatalog { throw AuraClientError.badResponse }
+    public func chat(_ text: String, developer: String?, model: ModelChoice?) -> AsyncThrowingStream<AuraEvent, Error> {
+        chat(text, developer: developer)
+    }
     public func registerVoices(_ voices: [VoiceInfo]) async throws {}
     public func updateVoice(_ patch: VoicePatch) async throws -> VoiceProfile { throw AuraClientError.badResponse }
     public func resetPersona() async throws -> PersonaInfo { throw AuraClientError.badResponse }
     public func voices() async throws -> [VoiceInfo] { [] }
     public func speech(_ text: String, voice: String, speed: Double) async throws -> Data { throw AuraClientError.badResponse }
     public func skills() async throws -> SkillsOverview { SkillsOverview(installed: [], inbox: []) }
+    public func agents() async throws -> AgentsOverview { AgentsOverview(installed: [], inbox: []) }
     public func toggleSkill(_ name: String, enabled: Bool) async throws {}
     public func propose(_ skill: String) async throws -> TaskInfo { throw AuraClientError.badResponse }
+    public func proposeAgent(_ name: String) async throws -> TaskInfo { throw AuraClientError.badResponse }
     public func tasks() async throws -> [TaskInfo] { [] }
     public func task(_ id: String) async throws -> TaskInfo { throw AuraClientError.badResponse }
     public func decide(_ id: String, approve: Bool) async throws -> TaskInfo { throw AuraClientError.badResponse }
+    public func cancelAudit(_ id: String) async throws -> TaskInfo { throw AuraClientError.badResponse }
     public func status() async throws -> SystemStatus { throw AuraClientError.badResponse }
     public func alerts() async throws -> AlertsInfo { AlertsInfo(alerts: [], continuousAudit: AuditClock()) }
     public func uninstall(_ skill: String) async throws {}
@@ -149,8 +172,12 @@ public final class AuraClient: AuraTransport {
     }
 
     public func chat(_ text: String, developer: String?) -> AsyncThrowingStream<AuraEvent, Error> {
-        struct Body: Encodable, Sendable { let text: String; let developer: String? }  // nil: left out
-        return stream("/v1/chat", body: Body(text: text, developer: developer))
+        chat(text, developer: developer, model: nil)
+    }
+
+    public func chat(_ text: String, developer: String?, model: ModelChoice?) -> AsyncThrowingStream<AuraEvent, Error> {
+        struct Body: Encodable, Sendable { let text: String; let developer: String?; let model: ModelChoice? }
+        return stream("/v1/chat", body: Body(text: text, developer: developer, model: model))
     }
 
     struct Answer<A: Encodable & Sendable>: Encodable, Sendable {
@@ -208,6 +235,33 @@ public final class AuraClient: AuraTransport {
         try Self.decoder.decode(AppSettings.self, from: await send(request("/v1/settings")))
     }
 
+    public func models() async throws -> ModelCatalog {
+        try Self.decoder.decode(ModelCatalog.self, from: await send(request("/v1/models")))
+    }
+
+    public func updateModels(_ update: ModelRoutingUpdate) async throws -> ModelCatalog {
+        var r = request("/v1/models", body: update)
+        r.httpMethod = "PUT"
+        return try Self.decoder.decode(ModelCatalog.self, from: await send(r))
+    }
+
+    public func syncCloudModels() async throws -> ModelCatalog {
+        try Self.decoder.decode(ModelCatalog.self, from: await send(request("/v1/models/sync-cloud", body: [String: String]())))
+    }
+
+    public func updateSleepMode(_ mode: SleepMode) async throws -> ModelCatalog {
+        var r = request("/v1/models/sleep", body: mode)
+        r.httpMethod = "PUT"
+        return try Self.decoder.decode(ModelCatalog.self, from: await send(r))
+    }
+
+    public func pullLocalModel(_ model: String) async throws -> ModelCatalog {
+        struct Body: Encodable { let model: String }
+        var r = request("/v1/models/pull", body: Body(model: model))
+        r.timeoutInterval = 3_600  // a first local model download can be large
+        return try Self.decoder.decode(ModelCatalog.self, from: await send(r))
+    }
+
     public func registerVoices(_ voices: [VoiceInfo]) async throws {
         struct Body: Encodable { let voices: [VoiceInfo] }
         _ = try await send(request("/v1/voices", body: Body(voices: voices)))
@@ -239,6 +293,10 @@ public final class AuraClient: AuraTransport {
         try Self.decoder.decode(SkillsOverview.self, from: await send(request("/v1/skills")))
     }
 
+    public func agents() async throws -> AgentsOverview {
+        try Self.decoder.decode(AgentsOverview.self, from: await send(request("/v1/agents")))
+    }
+
     public func toggleSkill(_ name: String, enabled: Bool) async throws {
         var r = request("/v1/skills/\(name)", body: ["enabled": enabled])
         r.httpMethod = "PATCH"
@@ -247,6 +305,10 @@ public final class AuraClient: AuraTransport {
 
     public func propose(_ skill: String) async throws -> TaskInfo {
         try Self.decoder.decode(TaskInfo.self, from: await send(request("/v1/tasks", body: ["skill": skill])))
+    }
+
+    public func proposeAgent(_ name: String) async throws -> TaskInfo {
+        try Self.decoder.decode(TaskInfo.self, from: await send(request("/v1/agents/\(name)/audit", body: [String: String]())))
     }
 
     public func tasks() async throws -> [TaskInfo] {
@@ -259,6 +321,10 @@ public final class AuraClient: AuraTransport {
 
     public func decide(_ id: String, approve: Bool) async throws -> TaskInfo {
         try Self.decoder.decode(TaskInfo.self, from: await send(request("/v1/tasks/\(id)/decision", body: ["approve": approve])))
+    }
+
+    public func cancelAudit(_ id: String) async throws -> TaskInfo {
+        try Self.decoder.decode(TaskInfo.self, from: await send(request("/v1/tasks/\(id)/cancel", body: [String: String]())))
     }
 
     public func status() async throws -> SystemStatus {

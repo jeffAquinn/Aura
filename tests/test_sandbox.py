@@ -107,6 +107,25 @@ def test_docker_not_running_is_explained_to_the_model(tmp_path, monkeypatch):
     )
 
 
+def test_shutdown_removes_only_auras_containers_and_internal_network(tmp_path, monkeypatch):
+    calls = []
+
+    def run(args, **kw):
+        calls.append(args)
+        if args[1:4] == ["ps", "-a", "--format"]:
+            return subprocess.CompletedProcess(args, 0, "one aura-run-123\ntwo aura-dev-egress\nthree postgres\n", "")
+        return subprocess.CompletedProcess(args, 0, "", "")
+
+    monkeypatch.setattr(sb, "find_docker", lambda: "docker")
+    monkeypatch.setattr(sb.subprocess, "run", run)
+    audit = AuditLog(tmp_path / "audit.jsonl")
+    sb.cleanup_aura_docker(audit)
+    assert [c for c in calls if c[1:3] == ["rm", "-f"]] == [["docker", "rm", "-f", "one"], ["docker", "rm", "-f", "two"]]
+    assert ["docker", "network", "rm", "aura-dev"] in calls
+    assert all("three" not in c for c in calls)
+    assert audit.entries()[-1]["event"] == "docker_cleanup"
+
+
 # ── live: try to break out of a real container ──────────────────────────────────────────────
 
 

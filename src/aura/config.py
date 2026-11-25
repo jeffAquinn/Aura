@@ -40,7 +40,8 @@ class Settings:
     sandbox_timeout: float = 30.0
     # Aura's own settings: persona.json (+ history) and voice.json.
     data_dir: Path = Path("~/Library/Application Support/Aura").expanduser()
-    # The repository Aura runs from: skills/ lives here, and staging worktrees under .aura-staging/.
+    # The read-only source checkout Aura runs from.  Its source is used to start the server and
+    # run regressions, but Aura never deploys skills or writes Git state here.
     project_dir: Path = PROJECT_DIR
     # The Developer's scratch workspaces: outside the repository, so an engine never sees Aura's code.
     dev_dir: Path = Path("~/Library/Caches/Aura/dev").expanduser()
@@ -73,12 +74,31 @@ class Settings:
 
     @property
     def skills_dir(self) -> Path:
-        return self.project_dir / "skills"
+        """The live skill registry, owned by the user's Vault sandbox.
+
+        Keeping executable skill content here means every install, update and uninstall is local
+        to this user.  The source checkout remains a read-only application source and is never
+        modified or committed by Aura.
+        """
+        return self.project_sandbox_dir / "skills"
 
     @property
     def skills_inbox(self) -> Path:
         """Where new skills wait to be proposed: inside the vault, easy to drop into with Finder."""
         return self.vault_dir / "Skills Inbox"
+
+    @property
+    def workstation_dir(self) -> Path:
+        """User-owned workspace for non-executable agent candidates and recognized manifests."""
+        return self.vault_dir / "Workstation"
+
+    @property
+    def agents_dir(self) -> Path:
+        return self.workstation_dir / "Agents"
+
+    @property
+    def agents_inbox(self) -> Path:
+        return self.workstation_dir / "Agent Inbox"
 
     @property
     def project_sandbox_dir(self) -> Path:
@@ -92,4 +112,5 @@ class Settings:
 
     @property
     def staging_dir(self) -> Path:
-        return self.project_dir / ".aura-staging"
+        """Short-lived audit staging, also contained entirely in the Vault."""
+        return self.vault_dir / "Audit_Staging"

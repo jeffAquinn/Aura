@@ -29,7 +29,13 @@ class VaultError(Exception):
 # These are repository implementation details, rather than application files.  In particular,
 # copying .git would leave an editable Git configuration (and its remotes) in the user's vault.
 # The sandbox is deliberately a project *copy*, not another checkout.
-PROJECT_COPY_SKIP = {".git", ".aura-staging"}
+# Source-controlled project content belongs in the editable vault copy. Local environments and
+# build products do not: they are machine-specific, can contain executable dependencies, and a
+# Python virtualenv alone is often multiple GB. They are recreated inside the vault when needed.
+PROJECT_COPY_SKIP = {
+    ".git", ".aura-staging", ".venv", "node_modules", ".pytest_cache", ".ruff_cache", "__pycache__",
+    "build", "dist", ".build", ".swiftpm", ".DS_Store", ".env",
+}
 
 # These files give the coding engines a compact, persistent strategic memory without copying a
 # third-party agent plugin into the vault.  They deliberately mirror only the parts of the

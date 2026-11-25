@@ -607,6 +607,7 @@ struct InputBar: View {
     var body: some View {
         HStack(alignment: .bottom, spacing: 8) {
             DeveloperPicker(store: store)
+            ChatModelPicker(store: store)
             TextField(placeholder, text: $draft, axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(chat.font())
@@ -693,6 +694,69 @@ struct DeveloperChip: View {
         .padding(.horizontal, 7)
         .frame(height: 26)
         .background(developer == nil ? Color.clear : Color.accentColor.opacity(0.14), in: .capsule)
+    }
+}
+
+/// A per-message override. "Automatic" follows the user's Chat role configured in Settings.
+/// Developer turns use the selected coding harness, so this control stays visible but disabled.
+struct ChatModelPicker: View {
+    let store: ChatStore
+    static let automatic = ""
+
+    private var catalog: ModelCatalog? { store.modelCatalog }
+    private var selection: Binding<String> {
+        Binding(
+            get: {
+                guard let model = store.chatModel else { return Self.automatic }
+                return "\(model.provider)|\(model.model)"
+            },
+            set: { value in
+                guard !value.isEmpty else { store.chatModel = nil; return }
+                let pieces = value.split(separator: "|", maxSplits: 1).map(String.init)
+                store.chatModel = pieces.count == 2 ? ModelChoice(provider: pieces[0], model: pieces[1]) : nil
+            }
+        )
+    }
+
+    var body: some View {
+        Menu {
+            Picker("Aura model", selection: selection) {
+                Text("Automatic (Chat setting)").tag(Self.automatic)
+                if let catalog {
+                    if !catalog.ollamaModels.isEmpty {
+                        Section("Local Ollama") {
+                            ForEach(catalog.ollamaModels, id: \.self) { model in
+                                Text(model).tag("ollama|\(model)")
+                            }
+                        }
+                    }
+                    if !catalog.anthropicModels.isEmpty {
+                        Section("Anthropic cloud") {
+                            ForEach(catalog.anthropicModels, id: \.self) { model in
+                                Text(model).tag("anthropic|\(model)")
+                            }
+                        }
+                    }
+                }
+            }
+            .pickerStyle(.inline)
+        } label: {
+            HStack(spacing: 3) {
+                Image(systemName: "cpu")
+                Text(store.chatModel?.model ?? "Auto").lineLimit(1)
+            }
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(store.chatModel == nil ? Color.secondary : Color.accentColor)
+            .padding(.horizontal, 7)
+            .frame(height: 26)
+            .background(store.chatModel == nil ? Color.clear : Color.accentColor.opacity(0.14), in: .capsule)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .disabled(store.developer != nil || catalog == nil)
+        .help(store.developer != nil ? "Developer turns use their selected coding harness"
+              : "Choose a model for the next Aura message, or follow the Chat setting")
     }
 }
 

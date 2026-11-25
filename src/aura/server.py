@@ -24,6 +24,7 @@ from collections.abc import AsyncIterator, Iterator
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Literal, Protocol
+from urllib.parse import urlsplit
 
 import anyio
 import httpx
@@ -34,9 +35,11 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from aura.brain import Aura, Changed, Event, StaleApproval, Status, Text
+from aura.agents import AgentError
 from aura.lifecycle import Lifecycle, Turn
 from aura.masking import PATTERNS_ONLY, Masker
 from aura.config import Settings
+from aura.model_routing import ROLES, ModelChoice, ModelRouting, SleepMode, infer_role
 from aura.governor.continuous import DEEP
 from aura.developer.workflow import DeveloperError
 from aura.governor.workshop import WorkshopError
@@ -44,7 +47,7 @@ from aura.connections import ConnectionsError
 from aura.secrets import KEYS, SecretError
 from aura.skills import SkillError
 from aura.speech import Kokoro, SpeechUnavailable
-from aura.tools.sandbox import find_docker
+from aura.tools.sandbox import cleanup_aura_docker, find_docker
 from aura.tools import vault_map
 from aura.voice import VoiceError
 
@@ -70,7 +73,7 @@ class ModelKeeper:
     Every call after a completed turn restarts the configurable idle timer. With a non-Ollama
     backend, every call is a harmless no-op."""
 
-    def __init__(self, base_url: str, model: str, keep_alive: str = KEEP_ALIVE):
+    def __init__(self, base_url: str, model: str, keep_alive: str | int = KEEP_ALIVE):
         root = base_url.rstrip("/")
         self.url = root.removesuffix("/v1")
         self.model = model
@@ -91,7 +94,8 @@ class ModelKeeper:
         try:
             r = httpx.post(
                 f"{self.url}/api/generate",
-                json={"model": self.model, "keep_alive": self.keep_alive},
+                # An empty non-streaming request is Ollama's documented pre-load operation.
+                json={"model": self.model, "prompt": "", "stream": False, "keep_alive": self.keep_alive},
                 timeout=180,
             )
             return r.status_code == 200
@@ -100,6 +104,114 @@ class ModelKeeper:
 
     def warm_soon(self) -> None:
         threading.Thread(target=self.warm, daemon=True).start()
+
+
+class ActiveModelKeeper:
+    """Apply Ollama's memory lifecycle only when Aura's selected role is local."""
+
+    def __init__(self, aura: Aura):
+        self.aura = aura
+
+    def _local(self) -> ModelKeeper | None:
+        choice = self.aura.active_model
+        if choice.provider != "ollama":
+            return None
+        s = self.aura.settings
+        return ModelKeeper(s.base_url, choice.model, s.model_keep_alive)
+
+    def loaded(self) -> bool | None:
+        local = self._local()
+        return local.loaded() if local else None
+
+    def warm_soon(self) -> None:
+        local = self._local()
+        if local:
+            local.warm_soon()
+
+
+# ── local Ollama model management ────────────────────────────────────────────────────────────
+
+
+class OllamaModelError(RuntimeError):
+    """Ollama cannot safely list or download a local model right now."""
+
+
+class CloudModelError(RuntimeError):
+    """A cloud provider did not return a model catalog Aura can safely use."""
+
+
+def available_anthropic_models(api_key: str) -> list[str]:
+    """Read the account-visible Claude catalog from Anthropic's documented Models API.
+
+    This is called only by the person pressing Sync in Settings. The API key is sent directly to
+    api.anthropic.com over TLS, is never included in a response, and the stored result contains
+    only public model identifiers.
+    """
+    url = "https://api.anthropic.com/v1/models"
+    headers = {"x-api-key": api_key, "anthropic-version": "2023-06-01", "accept": "application/json"}
+    models: set[str] = set()
+    after_id: str | None = None
+    try:
+        # The API is paginated. A small hard limit prevents an unexpected remote response from
+        # tying up Aura's local server indefinitely.
+        for _ in range(10):
+            params: dict[str, str | int] = {"limit": 100}
+            if after_id:
+                params["after_id"] = after_id
+            response = httpx.get(url, headers=headers, params=params, timeout=20)
+            response.raise_for_status()
+            payload = response.json()
+            rows = payload.get("data", []) if isinstance(payload, dict) else []
+            if not isinstance(rows, list):
+                raise CloudModelError("Anthropic returned an unexpected model list.")
+            for row in rows:
+                if isinstance(row, dict) and isinstance(row.get("id"), str):
+                    # Reuse the strict model-name validation before this remote value reaches UI.
+                    models.add(ModelChoice("anthropic", row["id"]).validate().model)
+            if not isinstance(payload, dict) or not payload.get("has_more"):
+                break
+            next_id = payload.get("last_id")
+            if not isinstance(next_id, str) or not next_id:
+                raise CloudModelError("Anthropic returned an incomplete paginated model list.")
+            after_id = next_id
+        else:
+            raise CloudModelError("Anthropic returned too many model-list pages.")
+    except (httpx.HTTPError, ValueError, TypeError) as e:
+        raise CloudModelError(f"Aura could not sync cloud models from Anthropic: {e}") from e
+    if not models:
+        raise CloudModelError("Anthropic did not return any usable cloud models for this API key.")
+    return sorted(models)
+
+
+def ollama_root(settings: Settings) -> str:
+    """Return the native Ollama endpoint only for an explicitly local configured backend."""
+    root = settings.base_url.rstrip("/").removesuffix("/v1")
+    parsed = urlsplit(root)
+    if parsed.scheme != "http" or parsed.hostname not in LOCAL_HOSTS:
+        raise OllamaModelError("Local model downloads require Aura to use a local Ollama endpoint.")
+    return root
+
+
+def installed_ollama_models(settings: Settings) -> list[str]:
+    """Names reported by Ollama; a failure leaves the picker usable with saved preferences."""
+    try:
+        listed = httpx.get(f"{ollama_root(settings)}/api/tags", timeout=2).json().get("models", [])
+        return sorted({str(item.get("name")) for item in listed if item.get("name")})
+    except (OllamaModelError, httpx.HTTPError, ValueError, TypeError):
+        return []
+
+
+def pull_ollama_model(settings: Settings, model: str) -> None:
+    """Ask the local daemon to fetch a named model. No URL, host path, or shell is accepted."""
+    try:
+        response = httpx.post(f"{ollama_root(settings)}/api/pull", json={"name": model, "stream": False}, timeout=3600)
+        response.raise_for_status()
+        payload = response.json()
+    except (OllamaModelError, httpx.HTTPError, ValueError) as e:
+        raise OllamaModelError(f"Ollama could not download '{model}': {e}") from e
+    if not isinstance(payload, dict) or payload.get("error") or payload.get("status") != "success":
+        detail = payload.get("error") if isinstance(payload, dict) else "unexpected response"
+        raise OllamaModelError(f"Ollama could not download '{model}': {detail or 'download did not finish'}.")
 
 
 # ── security ────────────────────────────────────────────────────────────────────────────────
@@ -246,6 +358,27 @@ async def _close(events: Iterator[Event], pending: asyncio.Future | None) -> Non
 class ChatIn(BaseModel):
     text: str = Field(min_length=1, max_length=20_000)
     developer: Literal["claude", "codex"] | None = None  # chosen in the chat box: hand this to that Developer
+    # A user-selected model overrides role routing for this one Aura chat turn only.
+    model: ModelChoiceIn | None = None
+
+
+class ModelChoiceIn(BaseModel):
+    provider: Literal["ollama", "anthropic"]
+    model: str = Field(min_length=1, max_length=200)
+
+
+class ModelRoutingIn(BaseModel):
+    roles: dict[str, ModelChoiceIn]
+
+
+class LocalModelPullIn(BaseModel):
+    """A user-confirmed request to Ollama's local model manager."""
+    model: str = Field(min_length=1, max_length=200)
+
+
+class SleepModeIn(BaseModel):
+    enabled: bool = False
+    model: str = Field(min_length=1, max_length=200)
 
 
 class VoiceIn(BaseModel):
@@ -277,6 +410,14 @@ class SpeechIn(BaseModel):
 
 class ProposeIn(BaseModel):
     skill: str = Field(min_length=1, max_length=40)
+
+
+class AgentCandidateIn(BaseModel):
+    name: str = Field(min_length=1, max_length=39)
+    purpose: str = Field(min_length=1, max_length=500)
+    provenance: str = Field(min_length=1, max_length=1_000)
+    intent_delta: str = Field(default="Unmeasured: candidate has not been evaluated.", min_length=1, max_length=1_000)
+    memory: str = Field(default="No memory imported.", min_length=1, max_length=1_000)
 
 
 class DecisionIn(BaseModel):
@@ -338,15 +479,49 @@ class BuildIn(BaseModel):
 def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kokoro | None = None) -> FastAPI:
     if len(token) < MIN_TOKEN_CHARS:
         raise ValueError(f"token must be at least {MIN_TOKEN_CHARS} characters")
-    keeper = keeper or ModelKeeper(aura.settings.base_url, aura.settings.model, aura.settings.model_keep_alive)
+    routing = ModelRouting(aura.settings)
+    startup_problem: str | None = None
+    try:
+        aura.select_model(routing.choice("startup"))
+    except ValueError as e:
+        # A missing API key must not make Aura unusable. Keep its local default, tell the settings
+        # panel why the requested cloud startup choice wasn't applied, and retry on a later turn.
+        startup_problem = str(e)
+    supplied_keeper = keeper is not None
+    keeper = keeper or ActiveModelKeeper(aura)
     app = FastAPI(title="Aura Server", docs_url=None, redoc_url=None, openapi_url=None)
     app.add_middleware(Guard, token=token)
     turn = threading.Lock()  # one turn at a time: Aura has a single user and conversation
     app.state.turn = turn
+    app.state.model_pull = threading.Lock()  # one disk-heavy Ollama pull at a time
     lifecycle = Lifecycle(aura.toolbox.state, turn, on_cancel=aura.toolbox.developer.stop_tasks)
     app.state.lifecycle = lifecycle
     masker = aura.toolbox.masker
     app.state.last_active = 0.0  # time.monotonic() of the last chat or approval
+
+    def set_sleep_mode(previous: SleepMode, current: SleepMode) -> None:
+        """Apply a user's resident-model preference without changing Ollama's global defaults."""
+        normal = aura.settings.model_keep_alive
+        if previous.enabled and (not current.enabled or previous.model != current.model):
+            # Disabling Sleep Mode returns the old model to Aura's ordinary idle lifecycle.
+            ModelKeeper(aura.settings.base_url, previous.model, normal).warm_soon()
+        if current.enabled:
+            # A negative keep_alive is Ollama's per-request "keep resident" setting.
+            ModelKeeper(aura.settings.base_url, current.model, -1).warm_soon()
+
+    def warm_startup_models() -> None:
+        """Preload the user's local startup choice; Sleep Mode may additionally keep one resident."""
+        startup = routing.choice("startup")
+        if startup.provider == "ollama":
+            ModelKeeper(aura.settings.base_url, startup.model, aura.settings.model_keep_alive).warm()
+        sleep = routing.sleep_mode()
+        if sleep.enabled:
+            ModelKeeper(aura.settings.base_url, sleep.model, -1).warm()
+
+    # Do this in the server's background, not on the SwiftUI main thread. Test and injected
+    # models deliberately skip it: only the installed app should reserve real model memory.
+    if not supplied_keeper and not aura._injected_model:
+        threading.Thread(target=warm_startup_models, name="aura-startup-model", daemon=True).start()
 
     def idle(quiet_for: float = 300) -> bool:
         """Low activity: no turn running, no audit in progress, and nothing asked for a while."""
@@ -373,7 +548,7 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
         s, tb = aura.settings, aura.toolbox
         return {
             "status": "ok",
-            "model": s.model,
+            "model": aura.active_model.model,
             "model_loaded": keeper.loaded(),
             "search_mode": tb.search.mode,
             "vault": str(tb.vault.root),
@@ -389,8 +564,18 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
             return busy()
         app.state.last_active = time.monotonic()
         try:
+            if body.model is not None:
+                if body.developer is not None:
+                    raise ValueError("Choose either an Aura chat model or a Developer, not both.")
+                chosen = ModelChoice(body.model.provider, body.model.model).validate()
+                if chosen.provider == "ollama" and chosen.model not in installed_ollama_models(aura.settings):
+                    raise ValueError(f"Download the local model before using it: {chosen.model}.")
+                aura.select_model(chosen)
+            else:
+                role = infer_role(body.text, body.developer)
+                aura.select_model(routing.choice(role))
             events = aura.stream(body.text, developer=body.developer, turn_id=t.id, cancel=t.cancel)
-        except (RuntimeError, ValueError) as e:  # an approval is pending
+        except (RuntimeError, ValueError) as e:  # an approval is pending, or a selected model is not ready
             lifecycle.end(t, "refused", str(e))
             return _error(409, str(e))
         return stream_turn(events, lifecycle, t, keeper, check_cold=True, masker=masker)
@@ -456,7 +641,79 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
     @app.get("/v1/settings")
     def settings() -> dict:
         return {"voice": asdict(voice.load()), "persona": persona_state(),
-                "voices_registered": len(voice.system), "neural_voices": len(voice.neural)}
+                "voices_registered": len(voice.system), "neural_voices": len(voice.neural),
+                "model_routing": routing.public(), "startup_model_problem": startup_problem}
+
+    @app.get("/v1/models")
+    def models() -> dict:
+        """Model picker data. A failed local discovery is harmless: the saved name remains valid."""
+        local = installed_ollama_models(aura.settings)
+        if aura.settings.model not in local:
+            local.insert(0, aura.settings.model)
+        return {"roles": routing.public(), "role_labels": {role: role.replace("_", " ") for role in ROLES},
+                "ollama_models": local, "anthropic_models": list(routing.anthropic_models()),
+                "anthropic_key_set": aura.toolbox.secrets.get("anthropic_api_key") is not None,
+                "sleep_mode": routing.sleep_mode().public(),
+                "startup_model_problem": startup_problem}
+
+    @app.post("/v1/models/pull")
+    def pull_local_model(body: LocalModelPullIn) -> Response:
+        """Download one explicitly selected Ollama model, then refresh the local catalog.
+
+        This is deliberately not an agent tool.  It runs only after the person uses Settings and
+        confirms the download, and it accepts a model *name*, never a URL or local path.
+        """
+        try:
+            choice = ModelChoice("ollama", body.model).validate()
+        except ValueError as e:
+            return _error(422, str(e))
+        if not app.state.model_pull.acquire(blocking=False):
+            return _error(409, "A local model download is already in progress.")
+        try:
+            pull_ollama_model(aura.settings, choice.model)
+        except OllamaModelError as e:
+            return _error(503, str(e))
+        finally:
+            app.state.model_pull.release()
+        return JSONResponse(models())
+
+    @app.post("/v1/models/sync-cloud")
+    def sync_cloud_models() -> Response:
+        """Refresh cloud-model suggestions from Anthropic after the user explicitly asks.
+
+        This is intentionally separate from loading Settings: opening the panel never contacts a
+        cloud provider, and a missing/expired API key cannot make the rest of Settings unusable.
+        """
+        api_key = aura.toolbox.secrets.get("anthropic_api_key")
+        if not api_key:
+            return _error(422, "Add an Anthropic API key in Settings → Keys before syncing cloud models.")
+        try:
+            routing.replace_anthropic_models(available_anthropic_models(api_key))
+        except (CloudModelError, ValueError) as e:
+            return _error(503, str(e))
+        return JSONResponse(models())
+
+    @app.put("/v1/models")
+    def update_models(body: ModelRoutingIn) -> dict:
+        try:
+            choices = {role: ModelChoice(item.provider, item.model) for role, item in body.roles.items()}
+            routing.replace(choices)
+        except ValueError as e:
+            return _error(422, str(e))
+        return models()
+
+    @app.put("/v1/models/sleep")
+    def update_sleep_mode(body: SleepModeIn) -> Response:
+        try:
+            proposed = SleepMode(body.enabled, body.model).validate()
+        except ValueError as e:
+            return _error(422, str(e))
+        if proposed.enabled and proposed.model not in installed_ollama_models(aura.settings):
+            return _error(422, f"Download the local model before enabling Sleep Mode: {proposed.model}.")
+        previous = routing.sleep_mode()
+        routing.replace_sleep_mode(proposed)
+        set_sleep_mode(previous, proposed)
+        return JSONResponse(models())
 
     @app.post("/v1/voices")
     def register_voices(body: VoicesIn) -> dict:
@@ -504,6 +761,29 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
     @app.get("/v1/skills")
     def get_skills() -> dict:
         return {"installed": [s.public() for s in skills.scan()], "inbox": workshop.inbox()}
+
+    @app.get("/v1/agents")
+    def get_agents() -> dict:
+        """Local Workstation records only; no external agent is connected or executed here."""
+        return {"installed": workshop.agents.installed(), "inbox": workshop.agent_inbox()}
+
+    def candidate(body: AgentCandidateIn, origin: str) -> Response:
+        try:
+            entry = workshop.agents.create(body.name, body.purpose, origin=origin,
+                                           provenance=body.provenance, intent_delta=body.intent_delta,
+                                           memory=body.memory)
+        except AgentError as e:
+            return _error(422, str(e))
+        return JSONResponse(entry, status_code=201)
+
+    @app.post("/v1/agents/candidates", status_code=201)
+    def create_agent(body: AgentCandidateIn) -> Response:
+        return candidate(body, "created")
+
+    @app.post("/v1/agents/imports", status_code=201)
+    def import_agent(body: AgentCandidateIn) -> Response:
+        """Import declared metadata into quarantine; executable state is never accepted."""
+        return candidate(body, "imported")
 
     @app.patch("/v1/skills/{name}")
     def toggle_skill(name: str, body: ToggleIn) -> Response:
@@ -789,6 +1069,14 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
             return _error(409, str(e))
         return JSONResponse(task.public(), status_code=202)
 
+    @app.post("/v1/agents/{name}/audit", status_code=202)
+    def audit_agent(name: str) -> Response:
+        try:
+            task = workshop.propose_agent(name)
+        except WorkshopError as e:
+            return _error(409, str(e))
+        return JSONResponse(task.public(), status_code=202)
+
     @app.get("/v1/tasks")
     def tasks() -> list[dict]:
         return [t.public() for t in sorted(workshop.tasks.values(), key=lambda t: t.created, reverse=True)]
@@ -812,6 +1100,13 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
         finally:
             turn.release()
         return JSONResponse(t.public())
+
+    @app.post("/v1/tasks/{task_id}/cancel")
+    def cancel_task(task_id: str) -> Response:
+        try:
+            return JSONResponse(workshop.cancel(task_id).public())
+        except WorkshopError as e:
+            return _error(409, str(e))
 
     @app.get("/v1/status")
     def status() -> dict:
@@ -896,4 +1191,11 @@ def main() -> None:
     aura.toolbox.live.start()  # Slack and Discord live messages, for whatever is set up
     log.info("listening on 127.0.0.1:%d", sock.getsockname()[1])
     print(f"AURA_READY port={sock.getsockname()[1]}", flush=True)
-    server.run(sockets=[sock])
+    try:
+        server.run(sockets=[sock])
+    finally:
+        # Closing the app closes stdin. Before the server process exits, stop active jobs and
+        # reclaim every Docker resource in Aura's own namespace.
+        aura.toolbox.developer.stop_tasks()
+        aura.toolbox.live.stop()
+        cleanup_aura_docker(aura.toolbox.audit)

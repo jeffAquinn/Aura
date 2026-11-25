@@ -68,11 +68,12 @@ struct SettingsView: View {
                 Text("Ask \(store.persona.name) to change its tone, brevity or style; you approve each change.")
                     .font(.caption).foregroundStyle(.secondary)
             }
+            ModelsSection(store: store)
             ConnectionsSection(store: store)
             KeysSection(store: store)
         }
         .formStyle(.grouped)
-        .frame(width: 400, height: 600)
+        .frame(width: 430, height: 760)
         .onAppear(perform: syncSliders)
         .task { await store.loadSecrets() }
         .onChange(of: store.voice) { syncSliders() }
@@ -95,6 +96,139 @@ struct SettingsView: View {
         LabeledContent(title) {
             Slider(value: value, in: range) { editing in
                 if !editing { Task { await store.updateVoice(patch(value.wrappedValue)) } }
+            }
+        }
+    }
+}
+
+/// Settings → Models. Choices are stored by role; keys remain in the Keychain and never appear here.
+struct ModelsSection: View {
+    let store: ChatStore
+    @State private var roles: [String: ModelChoice] = [:]
+    @State private var error: String?
+    @State private var saving = false
+    @State private var localModel = ""
+    @State private var confirmDownload = false
+    @State private var downloading = false
+
+    private static let order = ["startup", "coding", "chat", "deep_research", "web_search"]
+
+    var body: some View {
+        Section("Models") {
+            if let catalog = store.modelCatalog {
+                Text("Ollama is local by default. Selecting a cloud model sends that role's prompts to Anthropic; it does not preload a model at launch.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if !catalog.anthropicKeySet {
+                    Label("Add an Anthropic API key below before choosing Claude.", systemImage: "key.fill")
+                        .font(.caption).foregroundStyle(.orange)
+                }
+                ForEach(Self.order, id: \.self) { role in
+                    ModelRoleRow(title: catalog.roleLabels[role] ?? role, choice: binding(role), catalog: catalog)
+                }
+                if let problem = catalog.startupModelProblem {
+                    Label(problem, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+                }
+                Divider()
+                Text("Install a local Ollama model")
+                    .font(.callout.weight(.medium))
+                TextField("Model name, e.g. qwen3:8b", text: $localModel)
+                    .textFieldStyle(.roundedBorder)
+                    .disabled(downloading)
+                Text("Downloads use your local Ollama daemon and its configured model folder, not Aura_Vault. Models can use several GB and may download from the internet. Only download a model name and source you trust.")
+                    .font(.caption).foregroundStyle(.secondary)
+                HStack {
+                    Button(downloading ? "Downloading…" : "Download Local Model") { confirmDownload = true }
+                        .disabled(downloading || localModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                    if downloading { ProgressView().controlSize(.small) }
+                    Spacer()
+                }
+                .controlSize(.small)
+                if let error {
+                    Label(error, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+                }
+                HStack {
+                    Spacer()
+                    Button("Save Model Settings") { save() }.disabled(saving || roles.count != Self.order.count)
+                }
+                .controlSize(.small)
+            } else {
+                Text(store.transport == nil ? "Aura is offline." : "Loading model settings…").foregroundStyle(.secondary)
+            }
+        }
+        .onChange(of: store.modelCatalog) { sync() }
+        .onAppear(perform: sync)
+        .confirmationDialog("Download local model?", isPresented: $confirmDownload, titleVisibility: .visible) {
+            Button("Download \(localModel.trimmingCharacters(in: .whitespacesAndNewlines))") { download() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Aura will ask Ollama to download this named model. The model is stored by Ollama outside Aura_Vault and can consume several GB of disk space.")
+        }
+    }
+
+    private func binding(_ role: String) -> Binding<ModelChoice> {
+        Binding(
+            get: { roles[role] ?? ModelChoice(provider: "ollama", model: "") },
+            set: { roles[role] = $0 }
+        )
+    }
+
+    private func sync() {
+        if let loaded = store.modelCatalog?.roles { roles = loaded }
+    }
+
+    private func save() {
+        saving = true
+        Task {
+            error = await store.updateModels(roles)
+            saving = false
+        }
+    }
+
+    private func download() {
+        downloading = true
+        error = nil
+        let requested = localModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        Task {
+            error = await store.pullLocalModel(requested)
+            if error == nil { localModel = "" }
+            downloading = false
+        }
+    }
+}
+
+private struct ModelRoleRow: View {
+    let title: String
+    @Binding var choice: ModelChoice
+    let catalog: ModelCatalog
+
+    private var suggestions: [String] {
+        choice.provider == "anthropic" ? catalog.anthropicModels : catalog.ollamaModels
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title).font(.callout.weight(.medium))
+            HStack {
+                Picker("Provider", selection: $choice.provider) {
+                    Text("Ollama (local)").tag("ollama")
+                    Text("Anthropic (cloud)").tag("anthropic")
+                }
+                .labelsHidden()
+                .onChange(of: choice.provider) { provider in
+                    let available = provider == "anthropic" ? catalog.anthropicModels : catalog.ollamaModels
+                    choice.model = available.first ?? ""
+                }
+                TextField("Model", text: $choice.model)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(minWidth: 180)
+            }
+            if !suggestions.isEmpty {
+                Menu(choice.provider == "ollama" ? "Installed local models" : "Available cloud models") {
+                    ForEach(suggestions, id: \.self) { model in
+                        Button(model) { choice.model = model }
+                    }
+                }
+                .font(.caption).controlSize(.small)
             }
         }
     }

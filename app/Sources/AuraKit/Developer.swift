@@ -268,6 +268,7 @@ public struct SecretInfo: Codable, Sendable, Equatable, Identifiable {
     public var source: URL? {
         switch name {
         case "tavily_api_key": URL(string: "https://app.tavily.com/home")
+        case "anthropic_api_key": URL(string: "https://platform.claude.com/settings/keys")
         default: nil
         }
     }
@@ -277,7 +278,8 @@ public struct SecretInfo: Codable, Sendable, Equatable, Identifiable {
         case "claude_oauth_token":
             "Claude Code works on your Claude plan, in its isolated container only. To get the token, run "
                 + "\"claude setup-token\" in Terminal, sign in, and paste the token it prints."
-        case "anthropic_api_key": "Not used any more: Claude Code uses your Claude plan. You can remove it."
+        case "anthropic_api_key":
+            "Lets Aura use Claude cloud models. This is separate from the Claude Code plan token and may incur Anthropic API charges."
         case "tavily_api_key": "Web search (otherwise DuckDuckGo)."
         default: ""
         }

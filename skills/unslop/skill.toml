@@ -1,0 +1,12 @@
+name = "unslop"
+version = "1.0.0"
+purpose = "Review supplied prose for concrete AI-writing patterns and make only safe mechanical edits on request."
+dependencies = []
+
+[inputs]
+text = "The prose to review or mechanically revise (up to 4,500 characters)."
+mode = "Optional: 'review' (default) reports possible patterns; 'rewrite' also applies safe mechanical edits."
+
+[permissions]
+network = false
+vault = "none"

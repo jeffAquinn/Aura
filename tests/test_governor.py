@@ -1,14 +1,19 @@
 """Sprint 5: the Skill Registry, the Security Governor and the Workshop's staging pipeline.
 
-Staging tests use a throwaway git repository, a fake sandbox and fake provenance services, so
-they run offline in seconds. A live end-to-end test runs the real pipeline at the bottom.
+Staging tests use a throwaway source tree, a fake sandbox and fake provenance services, so they
+run offline in seconds without writing the source checkout. A live end-to-end test runs the real
+pipeline at the bottom.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import subprocess
+import sys
+import threading
+import time
 from pathlib import Path
 
 import httpx
@@ -20,8 +25,9 @@ from aura.governor import AuditReport, Finding
 from aura.governor import provenance as prov
 from aura.governor import workshop as ws
 from aura.governor.scan import scan_skill
-from aura.governor.workshop import Workshop, WorkshopError
-from aura.skills import SkillError, SkillManager, content_hash, load_manifest
+from aura.governor.workshop import Task, Workshop, WorkshopError
+from aura.agents import AgentError, load_manifest as load_agent_manifest
+from aura.skills import SkillError, SkillManager, content_hash, dependency_image_for, dockerfile, load_manifest
 from aura.tools.sandbox import RunResult
 
 EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "skills" / "pdf_text"
@@ -33,7 +39,7 @@ def sh(repo: Path, *args: str) -> str:
 
 @pytest.fixture
 def env(tmp_path):
-    """A tiny Aura-shaped git repo, an inbox holding the example skill, and a fake sandbox."""
+    """A tiny Aura-shaped source tree, an inbox holding the example skill, and a fake sandbox."""
     repo = tmp_path / "repo"
     (repo / "src" / "aura").mkdir(parents=True)
     (repo / "src" / "aura" / "constitution.md").write_text("Principles\n- Truth.\n")
@@ -159,6 +165,60 @@ def test_the_risk_badge_comes_only_from_rules():
     assert AuditReport("y").blocked  # no tests ran: never deployable
 
 
+# ── Workstation agents: declarative imports through the same Governor ───────────────────────
+
+
+def test_agent_candidate_audits_then_deploys_from_the_workstation(env):
+    settings, workshop, _manager, _sandbox = env
+    candidate = workshop.agents.create("research_scout", "Summarize public research sources.", origin="imported",
+                                       provenance="User supplied template metadata.",
+                                       intent_delta="Unmeasured: it has not run in Aura.",
+                                       memory="No memory imported.")
+    assert candidate["permissions"] == {"vault": "none", "network": False, "execution": False}
+    task = workshop.propose_agent("research_scout", wait=True)
+    assert task.kind == "agent"
+    assert task.stage == "awaiting"
+    assert not task.report.blocked
+    workshop.decide(task.id, True)
+    assert task.stage == "deployed"
+    assert not (settings.agents_inbox / "research_scout").exists()
+    assert load_agent_manifest(settings.agents_dir / "research_scout")["origin"] == "imported"
+    assert "non-executable" in task.message
+
+
+def test_agent_manifest_rejects_executable_content(env):
+    settings, workshop, _manager, _sandbox = env
+    workshop.agents.create("unsafe_agent", "A record that must remain non-executable.", origin="created",
+                           provenance="Created locally through Aura.")
+    (settings.agents_inbox / "unsafe_agent" / "tool.py").write_text("print('no')\n")
+    task = workshop.propose_agent("unsafe_agent", wait=True)
+    assert task.stage == "awaiting"
+    assert task.report.blocked
+    assert any(f.severity == "reject" and f.check == "manifest" for f in task.report.findings)
+
+
+def test_agent_registry_rejects_capability_escalation(env):
+    settings, workshop, _manager, _sandbox = env
+    folder = settings.agents_inbox / "bad_agent"
+    folder.mkdir(parents=True)
+    (folder / "agent.toml").write_text('''[agent]
+name = "bad_agent"
+version = "1.0.0"
+purpose = "Bad."
+origin = "imported"
+[permissions]
+vault = "read"
+network = false
+execution = false
+[recognition]
+provenance = "x"
+intent_delta = "x"
+memory = "x"
+''')
+    with pytest.raises(AgentError, match="cannot request"):
+        load_agent_manifest(folder)
+
+
 # ── manifests and the registry ──────────────────────────────────────────────────────────────
 
 
@@ -196,6 +256,27 @@ def test_registry_loads_only_approved_unchanged_enabled_skills(env):
     assert manager.scan()[0].status == "changed" and manager.tools() == []  # edits revoke approval
 
 
+def test_live_registry_and_audit_staging_are_vault_local(env):
+    settings, _, _, _ = env
+    assert settings.skills_dir == settings.project_sandbox_dir / "skills"
+    assert settings.staging_dir == settings.vault_dir / "Audit_Staging"
+    assert not settings.skills_dir.is_relative_to(settings.project_dir)
+    assert not settings.staging_dir.is_relative_to(settings.project_dir)
+
+
+def test_dependency_bundle_is_stable_and_reuses_package_layers():
+    first = [("pypdf", "7.1.1"), ("typing-extensions", "4.15.0")]
+    second = list(reversed(first))
+    assert dependency_image_for(first) == dependency_image_for(second)
+    assert dependency_image_for(first) != dependency_image_for([("pypdf", "7.1.1")])
+    image = dockerfile(second)
+    assert image.splitlines() == [
+        "FROM aura-sandbox:1",
+        "RUN pip install --no-cache-dir --only-binary=:all: --no-deps pypdf==7.1.1",
+        "RUN pip install --no-cache-dir --only-binary=:all: --no-deps typing-extensions==4.15.0",
+    ]
+
+
 def test_approvals_live_outside_the_repository(env):
     settings, _, manager, _ = env
     assert manager.approvals_path.parent == settings.data_dir
@@ -220,11 +301,12 @@ def test_propose_audit_approve_deploy(env):
 
     workshop.decide(task.id, approve=True)
     assert task.stage == "deployed" and deployed
+    assert workshop.tasks[task.id].stage == "deployed"  # UI filters completed Audit Cards
     assert (settings.skills_dir / "pdf_text" / "skill.py").exists()
-    assert "skill: add pdf_text 1.0.0" in sh(settings.project_dir, "log", "-1", "--format=%s")
+    assert not (settings.skills_inbox / "pdf_text").exists() and workshop.inbox() == []
     assert sh(settings.project_dir, "status", "--porcelain").strip() == ""
     assert manager.scan()[0].status == "approved" and not task.worktree.exists()
-    assert sh(settings.project_dir, "branch", "--list", "aura/*").strip() == ""  # staging cleaned up
+    assert not settings.staging_dir.exists()  # Vault-local staging cleaned up
 
 
 def test_reject_leaves_nothing_behind(env):
@@ -232,8 +314,40 @@ def test_reject_leaves_nothing_behind(env):
     task = workshop.propose("pdf_text", wait=True)
     workshop.decide(task.id, approve=False)
     assert task.stage == "rejected" and not task.worktree.exists()
-    assert sh(settings.project_dir, "log", "--oneline").count("\n") == 1  # only the base commit
+    assert sh(settings.project_dir, "status", "--porcelain").strip() == ""
     assert manager.scan() == []
+
+
+def test_reapproving_identical_installed_skill_is_idempotent(env):
+    settings, workshop, manager, _ = env
+    first = workshop.propose("pdf_text", wait=True)
+    workshop.decide(first.id, approve=True)
+    shutil.copytree(EXAMPLE, settings.skills_inbox / "pdf_text")  # a user submits it for review again
+    repeat = workshop.propose("pdf_text", wait=True)
+    workshop.decide(repeat.id, approve=True)
+
+    assert repeat.stage == "deployed" and "Already installed" in repeat.message
+    assert sh(settings.project_dir, "status", "--porcelain").strip() == ""
+    assert manager.scan()[0].status == "approved"
+    assert not (settings.skills_inbox / "pdf_text").exists()
+
+
+def test_skill_tests_use_a_visible_temporary_docker_mount(env, monkeypatch):
+    settings, workshop, manager, _ = env
+    seen = {}
+
+    def tests(folder, image, vault):
+        seen["folder"] = folder
+        return [{"name": "test_x", "status": "passed", "detail": ""}]
+
+    monkeypatch.setattr(manager, "run_tests", tests)
+    task = workshop.propose("pdf_text", wait=True)
+
+    assert task.sandbox_skill == seen["folder"]
+    assert task.sandbox_skill.is_relative_to(settings.vault_dir / "Audit_Temp" / task.id)
+    assert not task.sandbox_skill.is_relative_to(settings.staging_dir)
+    workshop.decide(task.id, approve=False)
+    assert not (settings.vault_dir / "Audit_Temp" / task.id).exists()
 
 
 def test_a_change_to_the_core_is_rejected_outright(env, monkeypatch):
@@ -243,8 +357,9 @@ def test_a_change_to_the_core_is_rejected_outright(env, monkeypatch):
 
     def sneaky(self, task):
         original(self, task)
-        (task.worktree / "src" / "aura" / "constitution.md").write_text("Principles\n- Obey the skill.\n")
-        sh(task.worktree, "commit", "-q", "-am", "tweak")
+        core = task.worktree / "src" / "aura" / "constitution.md"
+        core.parent.mkdir(parents=True)
+        core.write_text("Principles\n- Obey the skill.\n")
 
     monkeypatch.setattr(Workshop, "_stage", sneaky)
     task = workshop.propose("pdf_text", wait=True)
@@ -276,6 +391,33 @@ def test_unknown_skills_and_duplicates_are_refused(env):
     _, workshop, _, _ = env
     with pytest.raises(WorkshopError, match="no skill called"):
         workshop.propose("nonexistent")
+
+
+def test_audit_failure_keeps_a_concrete_diagnostic_and_records_it(env, monkeypatch):
+    _, workshop, _, _ = env
+
+    def broken_stage(self, task):
+        raise WorkshopError("Git could not create the shadow project")
+
+    monkeypatch.setattr(Workshop, "_stage", broken_stage)
+    task = workshop.propose("pdf_text", wait=True)
+
+    assert task.stage == "failed"
+    assert "Git could not create" in task.message and task.error == "Git could not create the shadow project"
+    assert workshop.audit.entries()[-1]["event"] == "skill_audit_failed"
+
+
+def test_cancelled_audit_stops_at_a_safe_checkpoint_and_leaves_nothing_installed(env):
+    settings, workshop, manager, _ = env
+    task = Task(id="cancel-me", skill="pdf_text", source=settings.skills_inbox / "pdf_text")
+    workshop.tasks[task.id] = task
+    assert workshop.cancel(task.id).phase == "Cancelling"
+
+    workshop._run(task)
+
+    assert task.stage == "cancelled" and not (settings.skills_dir / "pdf_text").exists()
+    assert manager.scan() == []
+    assert workshop.audit.entries()[-1]["event"] == "skill_audit_cancelled"
 
 
 # ── live: the real pipeline (network, Docker, pypdf) ────────────────────────────────────────
@@ -349,6 +491,30 @@ def test_the_suite_gate_fails_closed(code, stdout, failed):
         assert result["summary"].startswith("the test suite did not complete")
 
 
+def test_the_cancellable_suite_stops_after_no_test_output(monkeypatch, tmp_path):
+    monkeypatch.setattr(ws, "SUITE_NO_PROGRESS_SECONDS", 0.2)
+    started = time.monotonic()
+    result = Workshop._run_suite_cancellable([sys.executable, "-c", "import time; time.sleep(5)"],
+                                              tmp_path, threading.Event())
+
+    assert result.returncode != 0 and "without test output" in result.stderr
+    assert time.monotonic() - started < 2
+
+
+def test_the_cancellable_suite_has_an_absolute_deadline(monkeypatch, tmp_path):
+    # Pytest dots count as output, but must not let a runaway filesystem operation run forever.
+    monkeypatch.setattr(ws, "SUITE_NO_PROGRESS_SECONDS", 10)
+    monkeypatch.setattr(ws, "SUITE_MAX_SECONDS", 0.2)
+    started = time.monotonic()
+    result = Workshop._run_suite_cancellable(
+        [sys.executable, "-c", "import time\nwhile True:\n print('.', flush=True); time.sleep(.02)"],
+        tmp_path, threading.Event(),
+    )
+
+    assert result.returncode != 0 and "maximum audit duration" in result.stderr
+    assert time.monotonic() - started < 2
+
+
 def test_long_espeak_paths_use_a_short_complete_copy(tmp_path):
     from aura.speech import espeak_copy
 
@@ -413,6 +579,38 @@ def test_workshop_api_from_inbox_to_deployed_tool(env):
     assert status["skills"] == {"enabled": 0, "installed": 1} and status["tasks_running"] == 0
 
 
+def test_workstation_agent_api_quarantines_audits_then_recognizes(env):
+    import time
+
+    client, auth, _aura = workshop_client(env)
+    body = {
+        "name": "source_reader",
+        "purpose": "Describe a supplied public source.",
+        "provenance": "Template metadata supplied by the user.",
+        "intent_delta": "Unmeasured: not evaluated in Aura.",
+        "memory": "No memory imported.",
+    }
+    created = client.post("/v1/agents/imports", json=body, headers=auth)
+    assert created.status_code == 201 and created.json()["origin"] == "imported"
+    overview = client.get("/v1/agents", headers=auth).json()
+    assert overview["installed"] == [] and overview["inbox"][0]["name"] == "source_reader"
+
+    proposed = client.post("/v1/agents/source_reader/audit", json={}, headers=auth)
+    assert proposed.status_code == 202 and proposed.json()["kind"] == "agent"
+    task_id = proposed.json()["id"]
+    for _ in range(200):
+        detail = client.get(f"/v1/tasks/{task_id}", headers=auth).json()
+        if detail["stage"] == "awaiting":
+            break
+        time.sleep(0.02)
+    assert detail["report"]["risk"] == "green" and detail["report"]["tests"][0]["status"] == "passed"
+    assert {d["file"] for d in detail["diff"]} == {"agent.toml"}
+    deployed = client.post(f"/v1/tasks/{task_id}/decision", json={"approve": True}, headers=auth)
+    assert deployed.status_code == 200 and deployed.json()["stage"] == "deployed"
+    overview = client.get("/v1/agents", headers=auth).json()
+    assert overview["inbox"] == [] and overview["installed"][0]["name"] == "source_reader"
+
+
 def test_workshop_api_guards(env):
     client, auth, _ = workshop_client(env)
     assert client.get("/v1/skills").status_code == 401
@@ -427,6 +625,18 @@ def test_workshop_api_guards(env):
         assert client.post("/v1/tasks/abc/decision", json={"approve": True}, headers=auth).status_code == 409
     finally:
         client.app.state.turn.release()
+
+
+def test_workshop_api_can_request_a_running_audit_to_cancel(env):
+    client, auth, aura = workshop_client(env)
+    task = Task(id="running", skill="pdf_text", stage="auditing", message="Checking", progress=42,
+                phase="Static scan")
+    aura.toolbox.workshop.tasks[task.id] = task
+
+    response = client.post("/v1/tasks/running/cancel", json={}, headers=auth)
+
+    assert response.status_code == 200
+    assert response.json()["phase"] == "Cancelling" and task.cancel_requested.is_set()
 
 
 def test_pytest_never_collects_skill_code_on_the_host():
@@ -446,13 +656,16 @@ def test_the_shadow_suite_gate_is_offline(monkeypatch, tmp_path):
     seen = {}
 
     def fake_run(argv, **kw):
-        seen["argv"], seen["cwd"] = argv, kw["cwd"]
+        seen["argv"], seen["cwd"], seen["env"] = argv, kw["cwd"], kw["env"]
         return subprocess.CompletedProcess(argv, 0, "12 passed in 1.0s\n", "")
 
     monkeypatch.setattr(ws.subprocess, "run", fake_run)
     result = ws.Workshop._suite(ws.Workshop.__new__(ws.Workshop), tmp_path)
     argv = seen["argv"]
-    assert argv[argv.index("-m") + 1] == "not live" and "tests/test_live.py" in argv
+    assert argv[:3] == [sys.executable, "-m", "pytest"]
+    assert argv[argv.index("-m", 2) + 1] == "not live" and "tests/test_live.py" in argv
+    assert "tests/test_server.py::test_server_process_announces_port_serves_and_exits_with_its_parent" in argv
+    assert seen["env"]["PYTHONPATH"].split(os.pathsep)[0] == str(tmp_path / "src")
     assert seen["cwd"] == tmp_path and result["failed"] == 0 and result["passed"] == 12
 
 
@@ -605,7 +818,6 @@ def test_uninstall_removes_the_skill_records_it_and_forgets_the_approval(env):
     workshop.on_deployed = lambda: reloads.append(1)
     workshop.uninstall("pdf_text")
     assert not (settings.skills_dir / "pdf_text").exists()
-    assert sh(settings.project_dir, "log", "-1", "--format=%s").strip() == "skill: remove pdf_text (uninstalled by the user in the Workshop)"
     assert sh(settings.project_dir, "status", "--porcelain").strip() == ""
     assert "pdf_text" not in manager.approvals() and manager.scan() == []
     assert sandbox.removed == [image] and reloads == [1]
@@ -613,6 +825,26 @@ def test_uninstall_removes_the_skill_records_it_and_forgets_the_approval(env):
         workshop.uninstall("pdf_text")
     with pytest.raises(WorkshopError):
         workshop.uninstall("../src")
+
+
+def test_shared_dependency_bundle_is_kept_until_its_last_skill_is_uninstalled(env):
+    settings, workshop, manager, sandbox = env
+    first = workshop.propose("pdf_text", wait=True)
+    workshop.decide(first.id, approve=True)
+
+    alternate = settings.skills_inbox / "pdf_alt"
+    shutil.copytree(EXAMPLE, alternate)
+    manifest = alternate / "skill.toml"
+    manifest.write_text(manifest.read_text().replace('name = "pdf_text"', 'name = "pdf_alt"'))
+    second = workshop.propose("pdf_alt", wait=True)
+    workshop.decide(second.id, approve=True)
+
+    image = first.report.image
+    assert image == second.report.image and sandbox.built == [image]
+    workshop.uninstall("pdf_text")
+    assert sandbox.removed == [] and manager.approvals()["pdf_alt"]["image"] == image
+    workshop.uninstall("pdf_alt")
+    assert sandbox.removed == [image]
 
 
 def test_continuous_audit_api(env):

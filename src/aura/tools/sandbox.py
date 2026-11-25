@@ -27,10 +27,41 @@ RUN pip install --no-cache-dir numpy==2.5.5 pandas==3.1.1
 """
 OUTPUT_LIMIT = 8_000
 DOCKER_CANDIDATES = ("~/.docker/bin/docker", "/usr/local/bin/docker", "/opt/homebrew/bin/docker")
+AURA_CONTAINER_PREFIXES = ("aura-run-", "aura-dev-")
+AURA_NETWORK = "aura-dev"
 
 
 class SandboxUnavailable(Exception):
     """Docker is missing, not running, or the image can't be prepared."""
+
+
+def cleanup_aura_docker(audit: AuditLog | None = None) -> None:
+    """Stop only Docker resources that Aura owns when its server exits.
+
+    This is namespace-scoped: it never runs Docker's global prune commands and never stops
+    containers belonging to another app. Images remain cached because they are inert and needed
+    for the next approved sandbox run; Aura's short-lived containers and internal network go away.
+    """
+    try:
+        docker = find_docker()
+        listed = subprocess.run([docker, "ps", "-a", "--format", "{{.ID}} {{.Names}}"],
+                                capture_output=True, text=True, timeout=15)
+        if listed.returncode != 0:
+            return
+        owned = []
+        for line in listed.stdout.splitlines():
+            parts = line.split(maxsplit=1)
+            if len(parts) == 2 and parts[1].startswith(AURA_CONTAINER_PREFIXES):
+                owned.append(parts[0])
+        for container in owned:
+            subprocess.run([docker, "rm", "-f", container], capture_output=True, timeout=30)
+        # The Developer's internal network has no user data or volumes and is recreated on demand.
+        subprocess.run([docker, "network", "rm", AURA_NETWORK], capture_output=True, timeout=30)
+        if audit is not None:
+            audit.record("docker_cleanup", containers=len(owned), network=AURA_NETWORK)
+    except (OSError, subprocess.SubprocessError, SandboxUnavailable):
+        # Shutdown must never block Aura from quitting. The next server exit retries this cleanup.
+        return
 
 
 @dataclass(frozen=True)
@@ -120,8 +151,12 @@ class Sandbox:
             raise SandboxUnavailable(f"couldn't build {tag}: {build.stderr[-600:]}")
 
     def remove_image(self, tag: str) -> None:
-        """Best effort: delete an uninstalled skill's image. Only ever Aura's own skill images."""
-        if not tag.startswith("aura-skill-"):
+        """Best effort: delete one orphaned Aura-owned image, never a user image.
+
+        Docker Desktop itself remains under the user's control.  The Workshop calls this only
+        after checking that no approved skill still references the image.
+        """
+        if not (tag.startswith("aura-skill-") or tag.startswith("aura-deps:")):
             return
         try:
             subprocess.run([find_docker(), "image", "rm", tag], capture_output=True, timeout=60)

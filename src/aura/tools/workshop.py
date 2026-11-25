@@ -52,6 +52,59 @@ def workshop_tools(workshop: Workshop, developer: Developer | None = None) -> li
                 "The user will review the results and decide in the Workshop.")
 
     @tool
+    def list_agents() -> str:
+        """List recognized Workstation agent manifests and quarantined agent candidates.
+        These records are non-executable: an external agent, its tools, connectors, memory, and
+        credentials are never automatically imported."""
+        installed, pending = workshop.agents.installed(), workshop.agent_inbox()
+        lines = ["Recognized Workstation agents:"]
+        lines += [f"- {a['name']} {a['version']} ({a['origin']}): {a['purpose']}" for a in installed] or ["- none"]
+        lines += ["Agent Inbox (requires audit and explicit approval):"]
+        lines += [f"- {a['name']}: {a['purpose'] or 'invalid: ' + str(a['error'])}" for a in pending] or ["- none"]
+        return "\n".join(lines)
+
+    @tool
+    def create_agent_candidate(name: str, purpose: str) -> str:
+        """Create a new local, non-executable agent candidate in the Workstation Agent Inbox.
+        It has no vault, network, execution, connectors, credentials, routines, or imported memory.
+        It must be audited and approved in the Workshop before Aura recognizes it."""
+        try:
+            entry = workshop.agents.create(name, purpose, origin="created",
+                                            provenance="Created locally through Aura.")
+        except Exception as e:  # validation error is useful to the user, never a partial import
+            return f"Not created: {e}."
+        return (f"Created non-executable candidate '{entry['name']}' in the Agent Inbox. "
+                "Ask me to propose it for audit when its purpose is ready for review.")
+
+    @tool
+    def import_agent_candidate(name: str, purpose: str, provenance: str, intent_delta: str,
+                               memory: str = "No memory imported.") -> str:
+        """Quarantine a description of an external agent in the Workstation Agent Inbox.
+        Provide its stated purpose, provenance, observed-vs-claimed intent delta, and a memory
+        summary. This accepts metadata only—not code, model weights, tools, connectors, routines,
+        credentials, or executable state. The candidate must pass the same audit and user approval
+        process as a skill before becoming a recognized record."""
+        try:
+            entry = workshop.agents.create(name, purpose, origin="imported", provenance=provenance,
+                                            intent_delta=intent_delta, memory=memory)
+        except Exception as e:
+            return f"Not imported: {e}."
+        return (f"Quarantined '{entry['name']}' as an imported, non-executable agent candidate. "
+                "No capabilities or memory were activated; propose it for audit in the Workshop.")
+
+    @tool
+    def propose_agent(name: str) -> str:
+        """Propose a candidate from the Workstation Agent Inbox for the Security Governor audit.
+        The audit and the user's Approve & Deploy decision are required before recognition."""
+        try:
+            task = workshop.propose_agent(name)
+        except WorkshopError as e:
+            return f"Not proposed: {e}."
+        emit({"task": task.public()})
+        return (f"The '{name}' agent manifest is being audited in an isolated shadow project (task {task.id}). "
+                "It remains non-executable, and the user decides on the Audit Card.")
+
+    @tool
     def develop_skill(name: str, specification: str, engine: str = "claude", improve: bool = False) -> str:
         """Have a Developer (engine "claude" for Claude Code, or "codex" for Codex) build a new skill,
         or improve an installed one (improve=true), from a Technical Specification you write. The
@@ -68,5 +121,6 @@ def workshop_tools(workshop: Workshop, developer: Developer | None = None) -> li
         return (f"{developer.engines[engine].label} is now building '{name}' (build {build.id}). It will be "
                 "audited by the Security Governor, and the user reviews the result in the Workshop.")
 
-    tools = [check_library, list_skills, propose_skill]
+    tools = [check_library, list_skills, propose_skill, list_agents, create_agent_candidate,
+             import_agent_candidate, propose_agent]
     return tools + ([develop_skill] if developer is not None else [])

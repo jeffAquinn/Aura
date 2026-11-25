@@ -99,6 +99,21 @@ public struct SkillsOverview: Codable, Sendable, Equatable {
     public let inbox: [InboxItem]
 }
 
+/// A Workstation agent is a recognized, non-executable manifest.  It is not a connected bot.
+public struct AgentInfo: Codable, Sendable, Equatable, Identifiable {
+    public var id: String { name }
+    public let name: String
+    public let version: String
+    public let purpose: String
+    public let origin: String
+    public let error: String?
+}
+
+public struct AgentsOverview: Codable, Sendable, Equatable {
+    public let installed: [AgentInfo]
+    public let inbox: [AgentInfo]
+}
+
 public struct Finding: Codable, Sendable, Equatable, Hashable {
     public let check: String
     public let severity: String  // pass | info | yellow | red | reject
@@ -209,23 +224,34 @@ public struct TaskOrigin: Codable, Sendable, Equatable {
 public struct TaskInfo: Codable, Sendable, Equatable, Identifiable {
     public let id: String
     public let skill: String
+    public let kind: String?
     public let stage: String  // staging | auditing | awaiting | deployed | rejected | failed | discarded
     public let message: String
     public let created: String
     public let report: AuditReportInfo?
     public let diff: [FileDiff]?
     public let origin: TaskOrigin?  // set when the Developer built it
+    /// The Governor's current audit phase (not a model-generated estimate).
+    public let progress: Int?
+    public let phase: String?
+    /// A concrete, bounded error when staging or the audit infrastructure failed.
+    public let error: String?
 
-    public init(id: String, skill: String, stage: String, message: String, created: String = "",
-                report: AuditReportInfo? = nil, diff: [FileDiff]? = nil, origin: TaskOrigin? = nil) {
+    public init(id: String, skill: String, kind: String? = nil, stage: String, message: String, created: String = "",
+                report: AuditReportInfo? = nil, diff: [FileDiff]? = nil, origin: TaskOrigin? = nil,
+                progress: Int? = nil, phase: String? = nil, error: String? = nil) {
         self.id = id
         self.skill = skill
+        self.kind = kind
         self.stage = stage
         self.message = message
         self.created = created
         self.report = report
         self.diff = diff
         self.origin = origin
+        self.progress = progress
+        self.phase = phase
+        self.error = error
     }
 
     public var isRunning: Bool { stage == "staging" || stage == "auditing" }
@@ -258,6 +284,8 @@ public struct SystemStatus: Codable, Sendable, Equatable {
 public final class WorkshopStore {
     public private(set) var skills: [SkillInfo] = []
     public private(set) var inbox: [InboxItem] = []
+    public private(set) var agents: [AgentInfo] = []
+    public private(set) var agentInbox: [AgentInfo] = []
     public private(set) var tasks: [TaskInfo] = []
     public private(set) var status: SystemStatus?
     public private(set) var developer: DeveloperInfo?
@@ -276,8 +304,11 @@ public final class WorkshopStore {
     public var recovery: [RecoveryItem] { developer?.recovery ?? [] }
     public var engines: [EngineInfo] { developer?.engines ?? EngineInfo.known }
     public var selectedBuild: BuildInfo? { selectedBuildID.flatMap { id in builds.first { $0.id == id } } }
-    /// The audits to list: a build's failed rounds were wiped and aren't presented.
-    public var visibleTasks: [TaskInfo] { tasks.filter { !$0.isDiscarded } }
+    /// The Audits list is an action queue, not history. Completed decisions are in the audit log;
+    /// only work that is running, needs a decision, or needs a failure diagnosis stays visible.
+    public var visibleTasks: [TaskInfo] {
+        tasks.filter { !$0.isDiscarded && ($0.isRunning || $0.awaitsDecision || $0.stage == "failed") }
+    }
     /// Called after anything that can change alerts (so the menu bar updates at once).
     @ObservationIgnored public var onAlertsChanged: () -> Void = {}
 
@@ -291,11 +322,13 @@ public final class WorkshopStore {
     }
 
     /// For previews and snapshot tests.
-    public init(skills: [SkillInfo] = [], inbox: [InboxItem] = [], tasks: [TaskInfo] = [], selected: TaskInfo? = nil,
+    public init(skills: [SkillInfo] = [], inbox: [InboxItem] = [], agents: [AgentInfo] = [], agentInbox: [AgentInfo] = [], tasks: [TaskInfo] = [], selected: TaskInfo? = nil,
                 status: SystemStatus? = nil, developer: DeveloperInfo? = nil, selectedBuildID: String? = nil) {
         transport = { nil }
         self.skills = skills
         self.inbox = inbox
+        self.agents = agents
+        self.agentInbox = agentInbox
         self.tasks = tasks
         self.selected = selected
         selectedTaskID = selected?.id
@@ -322,6 +355,9 @@ public final class WorkshopStore {
             let overview = try await t.skills()
             skills = overview.installed
             inbox = overview.inbox
+            let agentOverview = try await t.agents()
+            agents = agentOverview.installed
+            agentInbox = agentOverview.inbox
             tasks = try await t.tasks()
             status = try? await t.status()
             developer = try? await t.developer()
@@ -396,15 +432,35 @@ public final class WorkshopStore {
         }
     }
 
+    /// An agent import follows the same shadow-audit and explicit deployment path as a skill.
+    public func proposeAgent(_ name: String) async {
+        guard let t = transport() else { return }
+        do {
+            let task = try await t.proposeAgent(name)
+            await refresh()
+            selectedTaskID = task.id
+        } catch {
+            lastError = FriendlyMessage.describe(error)
+        }
+    }
+
     /// The Audit Card decision. Deploy only ever follows an explicit approve.
     public func decide(approve: Bool) async {
         guard let t = transport(), let id = selected?.id else { return }
         do {
             _ = try await t.decide(id, approve: approve)
             await refresh()
+            // A completed deployment/rejection is deliberately removed from the action queue.
+            selectedTaskID = nil
+            selected = nil
         } catch {
             lastError = FriendlyMessage.describe(error)
         }
+    }
+
+    /// Requests cancellation. The server stops at the next safe checkpoint and never installs a skill.
+    public func cancelAudit(_ id: String) async {
+        await act { _ = try await $0.cancelAudit(id) }
     }
 
     public func setEnabled(_ skill: String, _ enabled: Bool) async {

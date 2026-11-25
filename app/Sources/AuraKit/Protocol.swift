@@ -281,6 +281,34 @@ public struct AppSettings: Codable, Sendable, Equatable {
     public let voice: VoiceProfile
     public let persona: PersonaInfo
     public let voicesRegistered: Int
+    public let modelRouting: [String: ModelChoice]?
+    public let startupModelProblem: String?
+}
+
+/// A model is selected by job role, not globally. Provider credentials stay on the server.
+public struct ModelChoice: Codable, Sendable, Equatable {
+    public var provider: String  // "ollama" | "anthropic"
+    public var model: String
+
+    public init(provider: String, model: String) {
+        self.provider = provider
+        self.model = model
+    }
+}
+
+public struct ModelCatalog: Codable, Sendable, Equatable {
+    public let roles: [String: ModelChoice]
+    public let roleLabels: [String: String]
+    public let ollamaModels: [String]
+    public let anthropicModels: [String]
+    public let anthropicKeySet: Bool
+    public let startupModelProblem: String?
+}
+
+public struct ModelRoutingUpdate: Encodable, Sendable {
+    public let roles: [String: ModelChoice]
+
+    public init(roles: [String: ModelChoice]) { self.roles = roles }
 }
 
 public struct Health: Codable, Sendable, Equatable {

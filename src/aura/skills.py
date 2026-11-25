@@ -115,16 +115,33 @@ def content_hash(folder: Path) -> str:
 
 
 def image_for(name: str, digest: str) -> str:
+    """Legacy per-skill image tag for approvals created before shared dependency bundles."""
     return f"aura-skill-{name.replace('_', '-')}:{digest[:12]}"
 
 
+def dependency_image_for(pins: list[tuple[str, str]]) -> str:
+    """The reusable image for one exact, resolved dependency set.
+
+    Skills are mounted read-only at run time, so their code does not belong in an image.  This tag
+    is based solely on the resolved packages, allowing two approved skills with the same library
+    set to share one image.  It is deliberately separate from the skill content hash: editing a
+    skill without changing its dependencies does not create another package copy.
+    """
+    normalized = "\n".join(f"{name}=={version}" for name, version in sorted(set(pins)))
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:16]
+    return f"aura-deps:{digest}"
+
+
 def dockerfile(pins: list[tuple[str, str]]) -> str:
-    """The skill's image: the base sandbox plus its exact resolved packages, ready-built only
-    (--only-binary: no package's own setup code ever runs)."""
+    """An offline runtime image with exact, ready-built packages.
+
+    One deterministically ordered install layer per package lets Docker share the package layer
+    between dependency bundles.  ``--no-deps`` is safe because ``pins`` contains the complete
+    transitive resolution from the Governor, and keeps pip from changing that reviewed set.
+    """
     lines = [f"FROM {BASE_IMAGE}"]
-    if pins:
-        packages = " ".join(f"{n}=={v}" for n, v in pins)
-        lines.append(f"RUN pip install --no-cache-dir --only-binary=:all: --no-deps {packages}")
+    for name, version in sorted(set(pins)):
+        lines.append(f"RUN pip install --no-cache-dir --only-binary=:all: --no-deps {name}=={version}")
     return "\n".join(lines) + "\n"
 
 
@@ -228,6 +245,13 @@ class SkillManager:
             approvals = self.approvals()
             if approvals.pop(name, None) is not None:
                 self._save(approvals)
+
+    def image_is_referenced_elsewhere(self, image: str, excluding: str) -> bool:
+        """Whether another approved skill still needs this exact dependency image."""
+        return any(
+            skill != excluding and approval.get("image") == image
+            for skill, approval in self.approvals().items()
+        )
 
     # ── discovery ──────────────────────────────────────────────────────────────────────────
 

@@ -41,8 +41,9 @@ KEYS = {
         # Claude Code uses the user's Claude plan: a long-lived token from `claude setup-token`.
         KeySpec("claude_oauth_token", "Claude sign-in token (Claude Code, your Claude plan)", "sk-ant-oat", min_length=40,
                 example="sk-ant-oat01-…, the token `claude setup-token` prints"),
-        KeySpec("anthropic_api_key", "Anthropic API key (no longer used: Claude Code uses your Claude plan)", "sk-ant-",
-                retired=True),
+        # Separate from claude_oauth_token, which is passed only to the Claude Code CLI in Aura's
+        # isolated Developer container. Aura's cloud-model calls use this API credential.
+        KeySpec("anthropic_api_key", "Anthropic API key (Aura cloud models)", "sk-ant-", min_length=20),
         KeySpec("tavily_api_key", "Tavily API key (web search)", "tvly-"),
         KeySpec("google_client_id", "Google OAuth client ID", suffix=".apps.googleusercontent.com", min_length=40,
                 group="google"),

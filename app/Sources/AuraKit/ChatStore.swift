@@ -48,6 +48,8 @@ public final class ChatStore {
     public var connection: Connection = .starting
     /// The chat box's choice: hand messages to this Developer ("claude", "codex"), or nil (Aura decides).
     public var developer: String?
+    /// Optional one-turn Aura-model override selected beside the chat box. nil follows the Chat role.
+    public var chatModel: ModelChoice?
     /// Bumped when the panel opens so the input field can take focus.
     public var focusRequests = 0
 
@@ -59,6 +61,8 @@ public final class ChatStore {
     public private(set) var voice = VoiceProfile()
     public private(set) var persona = PersonaInfo.initial
     public private(set) var voices: [VoiceInfo] = []
+    /// Server-owned model role choices. API keys themselves are never sent back to the app.
+    public private(set) var modelCatalog: ModelCatalog?
     /// Speaks replies and approval requests when spoken replies are on.
     public var speech: SpeechController? {
         didSet { speech?.profile = voice }
@@ -118,7 +122,7 @@ public final class ChatStore {
         speech?.stop()  // a new message interrupts whatever Aura was saying
         speech?.beginReply()
         speakingItem = nil
-        run(developer == nil ? transport.chat(text) : transport.chat(text, developer: developer))
+        run(transport.chat(text, developer: developer, model: developer == nil ? chatModel : nil))
     }
 
     /// Answer the pending approval card: one decision per action.
@@ -199,6 +203,30 @@ public final class ChatStore {
         guard let settings = try? await transport?.settings() else { return }
         setVoice(settings.voice)
         persona = settings.persona
+        if let catalog = try? await transport?.models() { modelCatalog = catalog }
+    }
+
+    public func updateModels(_ roles: [String: ModelChoice]) async -> String? {
+        guard let catalog = try? await transport?.updateModels(ModelRoutingUpdate(roles: roles)) else {
+            return "Aura could not save the model settings."
+        }
+        modelCatalog = catalog
+        return nil
+    }
+
+    /// Downloading is deliberately a direct Settings action. The server permits only a model name
+    /// through the local Ollama API and refreshes the picker after Ollama reports success.
+    public func pullLocalModel(_ model: String) async -> String? {
+        let model = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !model.isEmpty, let transport else { return FriendlyMessage.offline }
+        do {
+            modelCatalog = try await transport.pullLocalModel(model)
+            return nil
+        } catch let AuraClientError.http(_, message) {
+            return message
+        } catch {
+            return FriendlyMessage.describe(error)
+        }
     }
 
     /// Report the voices this Mac can speak with, so Aura only ever names real ones.

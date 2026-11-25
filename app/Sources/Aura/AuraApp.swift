@@ -75,8 +75,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return false
     }
 
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let server else { return .terminateNow }
+        // Wait briefly for the server's shutdown handler to stop Aura-owned Docker resources.
+        // It does not stop unrelated Docker containers or Docker Desktop itself.
+        Task {
+            _ = await server.stop()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
+    }
+
     func applicationWillTerminate(_ notification: Notification) {
-        server?.shutDownWithoutWaiting()  // the server exits when its stdin closes
+        // Force-quit/crash fallback: stdin closing still signals the server's best-effort cleanup.
+        server?.shutDownWithoutWaiting()
     }
 
     // MARK: - server
