@@ -563,6 +563,7 @@ class Workshop:
             shutil.rmtree(live)
         live.parent.mkdir(parents=True, exist_ok=True)
         shutil.copytree(new, live)
+        self.agents.recognize(name)
         self._clear_inbox_source(task)
         self._cleanup(task)
         task.stage = "deployed"

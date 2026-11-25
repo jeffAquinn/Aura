@@ -250,9 +250,33 @@ struct WorkshopSidebar: View {
                     Text("None").foregroundStyle(.secondary)
                 } else {
                     ForEach(store.agents) { agent in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("\(agent.name) \(agent.version)")
+                                Text("\(agent.state ?? "active") · \(agent.origin) · \(agent.purpose)")
+                                    .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                            }
+                            Spacer()
+                            if ["suspended", "expired"].contains(agent.state) {
+                                Button("Revalidate") { Task { await store.revalidateAgent(agent.name) } }
+                                    .controlSize(.small)
+                            } else {
+                                Menu {
+                                    Button("Suspend", role: .destructive) { Task { await store.suspendAgent(agent.name) } }
+                                    Button("Retire", role: .destructive) { Task { await store.retireAgent(agent.name) } }
+                                } label: { Image(systemName: "ellipsis.circle") }
+                                    .menuStyle(.borderlessButton)
+                            }
+                        }
+                    }
+                }
+            }
+            if !store.retiredAgents.isEmpty {
+                Section("Retired agents") {
+                    ForEach(store.retiredAgents) { agent in
                         VStack(alignment: .leading, spacing: 2) {
                             Text("\(agent.name) \(agent.version)")
-                            Text("\(agent.origin) · \(agent.purpose)")
+                            Text("retired · \(agent.origin) · archived without operational recognition")
                                 .font(.caption).foregroundStyle(.secondary).lineLimit(2)
                         }
                     }

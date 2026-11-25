@@ -183,7 +183,32 @@ def test_agent_candidate_audits_then_deploys_from_the_workstation(env):
     assert task.stage == "deployed"
     assert not (settings.agents_inbox / "research_scout").exists()
     assert load_agent_manifest(settings.agents_dir / "research_scout")["origin"] == "imported"
+    assert workshop.agents.installed()[0]["state"] == "active"
+    assert workshop.agents.installed()[0]["review_by"]
     assert "non-executable" in task.message
+
+
+def test_agent_revocation_suspends_revalidates_and_retires_with_history(env):
+    settings, workshop, _manager, _sandbox = env
+    workshop.agents.create("bounded_agent", "A bounded record.", origin="created",
+                           provenance="Created locally through Aura.")
+    first = workshop.propose_agent("bounded_agent", wait=True)
+    workshop.decide(first.id, True)
+
+    suspended = workshop.agents.suspend("bounded_agent", "suspected_breach")
+    assert suspended["state"] == "suspended"
+    candidate = workshop.agents.prepare_revalidation("bounded_agent")
+    assert candidate["state"] == "candidate"
+    second = workshop.propose_agent("bounded_agent", wait=True)
+    workshop.decide(second.id, True)
+    assert workshop.agents.installed()[0]["state"] == "active"
+
+    retired = workshop.agents.retire("bounded_agent", "user_retirement")
+    assert retired["state"] == "retired"
+    assert workshop.agents.installed() == []
+    assert workshop.agents.retired_entries()[0]["name"] == "bounded_agent"
+    history = settings.agent_lifecycle_log.read_text()
+    assert '"state": "suspended"' in history and '"state": "retired"' in history
 
 
 def test_agent_manifest_rejects_executable_content(env):

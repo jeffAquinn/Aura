@@ -101,6 +101,16 @@ class Settings:
         return self.workstation_dir / "Agent Inbox"
 
     @property
+    def retired_agents_dir(self) -> Path:
+        """Read-only archive location for retired recognition records."""
+        return self.workstation_dir / "Retired Agents"
+
+    @property
+    def agent_lifecycle_log(self) -> Path:
+        """Append-only lifecycle evidence; never a place for credentials or free-form secrets."""
+        return self.workstation_dir / "Agent_Lifecycle.jsonl"
+
+    @property
     def project_sandbox_dir(self) -> Path:
         """The one-time, editable project copy inside the user's vault.
 

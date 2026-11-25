@@ -29,6 +29,9 @@ public protocol AuraTransport: Sendable {
     func skills() async throws -> SkillsOverview
     func agents() async throws -> AgentsOverview
     func createAgent(_ request: AgentCandidateRequest, imported: Bool) async throws -> AgentInfo
+    func suspendAgent(_ name: String, reason: String) async throws -> AgentInfo
+    func revalidateAgent(_ name: String) async throws -> TaskInfo
+    func retireAgent(_ name: String, reason: String) async throws -> AgentInfo
     func toggleSkill(_ name: String, enabled: Bool) async throws
     func propose(_ skill: String) async throws -> TaskInfo
     func proposeAgent(_ name: String) async throws -> TaskInfo
@@ -87,6 +90,9 @@ extension AuraTransport {
     public func skills() async throws -> SkillsOverview { SkillsOverview(installed: [], inbox: []) }
     public func agents() async throws -> AgentsOverview { AgentsOverview(installed: [], inbox: []) }
     public func createAgent(_ request: AgentCandidateRequest, imported: Bool) async throws -> AgentInfo { throw AuraClientError.badResponse }
+    public func suspendAgent(_ name: String, reason: String) async throws -> AgentInfo { throw AuraClientError.badResponse }
+    public func revalidateAgent(_ name: String) async throws -> TaskInfo { throw AuraClientError.badResponse }
+    public func retireAgent(_ name: String, reason: String) async throws -> AgentInfo { throw AuraClientError.badResponse }
     public func toggleSkill(_ name: String, enabled: Bool) async throws {}
     public func propose(_ skill: String) async throws -> TaskInfo { throw AuraClientError.badResponse }
     public func proposeAgent(_ name: String) async throws -> TaskInfo { throw AuraClientError.badResponse }
@@ -302,6 +308,18 @@ public final class AuraClient: AuraTransport {
     public func createAgent(_ candidate: AgentCandidateRequest, imported: Bool) async throws -> AgentInfo {
         let route = imported ? "/v1/agents/imports" : "/v1/agents/candidates"
         return try Self.decoder.decode(AgentInfo.self, from: await send(request(route, body: candidate)))
+    }
+
+    public func suspendAgent(_ name: String, reason: String) async throws -> AgentInfo {
+        try Self.decoder.decode(AgentInfo.self, from: await send(request("/v1/agents/\(name)/suspend", body: ["reason": reason])))
+    }
+
+    public func revalidateAgent(_ name: String) async throws -> TaskInfo {
+        try Self.decoder.decode(TaskInfo.self, from: await send(request("/v1/agents/\(name)/revalidate", body: [String: String]())))
+    }
+
+    public func retireAgent(_ name: String, reason: String) async throws -> AgentInfo {
+        try Self.decoder.decode(AgentInfo.self, from: await send(request("/v1/agents/\(name)/retire", body: ["reason": reason])))
     }
 
     public func toggleSkill(_ name: String, enabled: Bool) async throws {

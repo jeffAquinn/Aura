@@ -420,6 +420,10 @@ class AgentCandidateIn(BaseModel):
     memory: str = Field(default="No memory imported.", min_length=1, max_length=1_000)
 
 
+class AgentLifecycleIn(BaseModel):
+    reason: Literal["audit_failure", "suspected_breach", "expiry", "user_retirement", "superseded"]
+
+
 class DecisionIn(BaseModel):
     approve: bool
 
@@ -765,7 +769,8 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
     @app.get("/v1/agents")
     def get_agents() -> dict:
         """Local Workstation records only; no external agent is connected or executed here."""
-        return {"installed": workshop.agents.installed(), "inbox": workshop.agent_inbox()}
+        return {"installed": workshop.agents.installed(), "inbox": workshop.agent_inbox(),
+                "retired": workshop.agents.retired_entries()}
 
     def candidate(body: AgentCandidateIn, origin: str) -> Response:
         try:
@@ -784,6 +789,32 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
     def import_agent(body: AgentCandidateIn) -> Response:
         """Import declared metadata into quarantine; executable state is never accepted."""
         return candidate(body, "imported")
+
+    @app.post("/v1/agents/{name}/suspend")
+    def suspend_agent(name: str, body: AgentLifecycleIn) -> Response:
+        """Immediately withdraw recognition; the manifest and decision history remain intact."""
+        try:
+            return JSONResponse(workshop.agents.suspend(name, body.reason))
+        except AgentError as e:
+            return _error(409, str(e))
+
+    @app.post("/v1/agents/{name}/revalidate", status_code=202)
+    def revalidate_agent(name: str) -> Response:
+        """A suspended/expired record must pass a fresh audit before recognition resumes."""
+        try:
+            workshop.agents.prepare_revalidation(name)
+            task = workshop.propose_agent(name)
+        except (AgentError, WorkshopError) as e:
+            return _error(409, str(e))
+        return JSONResponse(task.public(), status_code=202)
+
+    @app.post("/v1/agents/{name}/retire")
+    def retire_agent(name: str, body: AgentLifecycleIn) -> Response:
+        """Purge the live recognition record while retaining a non-operational archive."""
+        try:
+            return JSONResponse(workshop.agents.retire(name, body.reason))
+        except AgentError as e:
+            return _error(409, str(e))
 
     @app.patch("/v1/skills/{name}")
     def toggle_skill(name: str, body: ToggleIn) -> Response:

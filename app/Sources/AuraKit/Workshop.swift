@@ -107,11 +107,31 @@ public struct AgentInfo: Codable, Sendable, Equatable, Identifiable {
     public let purpose: String
     public let origin: String
     public let error: String?
+    public let state: String?
+    public let reviewBy: String?
+
+    public init(name: String, version: String, purpose: String, origin: String, error: String?,
+                state: String? = nil, reviewBy: String? = nil) {
+        self.name = name
+        self.version = version
+        self.purpose = purpose
+        self.origin = origin
+        self.error = error
+        self.state = state
+        self.reviewBy = reviewBy
+    }
 }
 
 public struct AgentsOverview: Codable, Sendable, Equatable {
     public let installed: [AgentInfo]
     public let inbox: [AgentInfo]
+    public let retired: [AgentInfo]?
+
+    public init(installed: [AgentInfo], inbox: [AgentInfo], retired: [AgentInfo]? = nil) {
+        self.installed = installed
+        self.inbox = inbox
+        self.retired = retired
+    }
 }
 
 /// The user-visible metadata accepted for a local agent candidate or quarantined import.
@@ -306,6 +326,7 @@ public final class WorkshopStore {
     public private(set) var inbox: [InboxItem] = []
     public private(set) var agents: [AgentInfo] = []
     public private(set) var agentInbox: [AgentInfo] = []
+    public private(set) var retiredAgents: [AgentInfo] = []
     public private(set) var agentError: String?
     public private(set) var tasks: [TaskInfo] = []
     public private(set) var status: SystemStatus?
@@ -343,13 +364,14 @@ public final class WorkshopStore {
     }
 
     /// For previews and snapshot tests.
-    public init(skills: [SkillInfo] = [], inbox: [InboxItem] = [], agents: [AgentInfo] = [], agentInbox: [AgentInfo] = [], tasks: [TaskInfo] = [], selected: TaskInfo? = nil,
+    public init(skills: [SkillInfo] = [], inbox: [InboxItem] = [], agents: [AgentInfo] = [], agentInbox: [AgentInfo] = [], retiredAgents: [AgentInfo] = [], tasks: [TaskInfo] = [], selected: TaskInfo? = nil,
                 status: SystemStatus? = nil, developer: DeveloperInfo? = nil, selectedBuildID: String? = nil) {
         transport = { nil }
         self.skills = skills
         self.inbox = inbox
         self.agents = agents
         self.agentInbox = agentInbox
+        self.retiredAgents = retiredAgents
         self.tasks = tasks
         self.selected = selected
         selectedTaskID = selected?.id
@@ -379,6 +401,7 @@ public final class WorkshopStore {
             let agentOverview = try await t.agents()
             agents = agentOverview.installed
             agentInbox = agentOverview.inbox
+            retiredAgents = agentOverview.retired ?? []
             tasks = try await t.tasks()
             status = try? await t.status()
             developer = try? await t.developer()
@@ -481,6 +504,36 @@ public final class WorkshopStore {
     }
 
     public func clearAgentError() { agentError = nil }
+
+    public func suspendAgent(_ name: String) async {
+        await agentAction { try await $0.suspendAgent(name, reason: "suspected_breach") }
+    }
+
+    public func retireAgent(_ name: String) async {
+        await agentAction { try await $0.retireAgent(name, reason: "user_retirement") }
+    }
+
+    public func revalidateAgent(_ name: String) async {
+        guard let t = transport() else { return }
+        do {
+            let task = try await t.revalidateAgent(name)
+            await refresh()
+            selectedTaskID = task.id
+        } catch {
+            agentError = FriendlyMessage.describe(error)
+        }
+    }
+
+    private func agentAction(_ action: (any AuraTransport) async throws -> AgentInfo) async {
+        guard let t = transport() else { return }
+        do {
+            _ = try await action(t)
+            agentError = nil
+            await refresh()
+        } catch {
+            agentError = FriendlyMessage.describe(error)
+        }
+    }
 
     /// The Audit Card decision. Deploy only ever follows an explicit approve.
     public func decide(approve: Bool) async {

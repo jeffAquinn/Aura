@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 import re
 import tomllib
+import shutil
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -60,8 +62,57 @@ def load_manifest(folder: Path) -> dict[str, Any]:
 
 
 class AgentRegistry:
+    REVIEW_DAYS = 90
+    REASONS = {"audit_failure", "suspected_breach", "expiry", "user_retirement", "superseded"}
+
     def __init__(self, live: Path, inbox: Path, audit: AuditLog):
         self.live, self.inbox, self.audit = live, inbox, audit
+        self.workstation = live.parent
+        self.retired = self.workstation / "Retired Agents"
+        self.lifecycle_log = self.workstation / "Agent_Lifecycle.jsonl"
+
+    @staticmethod
+    def _now() -> datetime:
+        return datetime.now(timezone.utc)
+
+    def _events(self, name: str | None = None) -> list[dict[str, Any]]:
+        if not self.lifecycle_log.is_file():
+            return []
+        result: list[dict[str, Any]] = []
+        for line in self.lifecycle_log.read_text(encoding="utf-8").splitlines():
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue  # a corrupt history line is evidence, not authority
+            if isinstance(entry, dict) and (name is None or entry.get("agent") == name):
+                result.append(entry)
+        return result
+
+    def _record_lifecycle(self, name: str, state: str, reason: str, *, review_by: str | None = None) -> None:
+        if reason not in self.REASONS and reason != "approved":
+            raise AgentError("invalid lifecycle reason")
+        entry = {"ts": self._now().isoformat(timespec="seconds"), "agent": name,
+                 "state": state, "reason": reason}
+        if review_by:
+            entry["review_by"] = review_by
+        self.lifecycle_log.parent.mkdir(parents=True, exist_ok=True)
+        with self.lifecycle_log.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        self.audit.record("agent_lifecycle", **entry)
+
+    def lifecycle(self, name: str) -> dict[str, str]:
+        events = self._events(name)
+        if not events:
+            return {"state": "active", "review_by": ""}
+        latest = events[-1]
+        state, review_by = str(latest.get("state", "active")), str(latest.get("review_by", ""))
+        if state == "active" and review_by:
+            try:
+                if datetime.fromisoformat(review_by) <= self._now():
+                    return {"state": "expired", "review_by": review_by}
+            except ValueError:
+                return {"state": "suspended", "review_by": review_by}
+        return {"state": state, "review_by": review_by}
 
     def entries(self, root: Path) -> list[dict[str, Any]]:
         if not root.is_dir():
@@ -69,7 +120,9 @@ class AgentRegistry:
         result = []
         for folder in sorted(p for p in root.iterdir() if p.is_dir() and not p.name.startswith(".")):
             try:
-                result.append({**load_manifest(folder), "error": None})
+                state = ({"state": "candidate", "review_by": ""} if root == self.inbox
+                         else self.lifecycle(folder.name))
+                result.append({**load_manifest(folder), **state, "error": None})
             except AgentError as exc:
                 result.append({"name": folder.name, "version": "", "purpose": "", "origin": "", "error": str(exc)})
         return result
@@ -79,6 +132,9 @@ class AgentRegistry:
 
     def pending(self) -> list[dict[str, Any]]:
         return self.entries(self.inbox)
+
+    def retired_entries(self) -> list[dict[str, Any]]:
+        return self.entries(self.retired)
 
     def create(self, name: str, purpose: str, *, origin: str, provenance: str, intent_delta: str = "Unmeasured: newly created candidate.", memory: str = "No memory imported.") -> dict[str, Any]:
         name, purpose = name.strip(), purpose.strip()
@@ -107,3 +163,44 @@ class AgentRegistry:
             raise
         self.audit.record("agent_candidate_created", agent=name, origin=origin)
         return entry
+
+    def recognize(self, name: str) -> None:
+        """Start the bounded recognition period after an approved audit."""
+        review_by = (self._now() + timedelta(days=self.REVIEW_DAYS)).isoformat(timespec="seconds")
+        self._record_lifecycle(name, "active", "approved", review_by=review_by)
+
+    def suspend(self, name: str, reason: str) -> dict[str, Any]:
+        if reason not in self.REASONS - {"user_retirement", "superseded"}:
+            raise AgentError("suspension requires an audit failure, suspected breach, or expiry")
+        if not (self.live / name).is_dir():
+            raise AgentError(f"'{name}' is not a recognized agent")
+        self._record_lifecycle(name, "suspended", reason)
+        return next(a for a in self.installed() if a["name"] == name)
+
+    def prepare_revalidation(self, name: str) -> dict[str, Any]:
+        """Return a suspended or expired record to quarantine for a new full audit."""
+        source, target = self.live / name, self.inbox / name
+        state = self.lifecycle(name)["state"]
+        if not source.is_dir():
+            raise AgentError(f"'{name}' is not a recognized agent")
+        if state not in {"suspended", "expired"}:
+            raise AgentError("only suspended or expired agents require revalidation")
+        if target.exists():
+            raise AgentError(f"'{name}' is already in the Agent Inbox")
+        shutil.copytree(source, target, symlinks=False)
+        self.audit.record("agent_revalidation_proposed", agent=name, prior_state=state)
+        return {**load_manifest(target), "state": "candidate", "review_by": ""}
+
+    def retire(self, name: str, reason: str) -> dict[str, Any]:
+        """Purge operational recognition while retaining a sanitized manifest archive and lineage."""
+        if reason not in {"user_retirement", "superseded"}:
+            raise AgentError("retirement requires user_retirement or superseded")
+        source, target = self.live / name, self.retired / name
+        if not source.is_dir():
+            raise AgentError(f"'{name}' is not a recognized agent")
+        if target.exists():
+            raise AgentError(f"a retired archive already exists for '{name}'")
+        self.retired.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(source), str(target))
+        self._record_lifecycle(name, "retired", reason)
+        return {**load_manifest(target), **self.lifecycle(name), "error": None}
