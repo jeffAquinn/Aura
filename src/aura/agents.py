@@ -12,7 +12,7 @@ import tomllib
 import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from aura.audit import AuditLog
 
@@ -65,15 +65,17 @@ class AgentRegistry:
     REVIEW_DAYS = 90
     REASONS = {"audit_failure", "suspected_breach", "expiry", "user_retirement", "superseded"}
 
-    def __init__(self, live: Path, inbox: Path, audit: AuditLog):
+    def __init__(self, live: Path, inbox: Path, audit: AuditLog,
+                 clock: Callable[[], datetime] | None = None):
         self.live, self.inbox, self.audit = live, inbox, audit
         self.workstation = live.parent
         self.retired = self.workstation / "Retired Agents"
         self.lifecycle_log = self.workstation / "Agent_Lifecycle.jsonl"
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
 
-    @staticmethod
-    def _now() -> datetime:
-        return datetime.now(timezone.utc)
+    def _now(self) -> datetime:
+        """The injectable clock keeps expiry evidence deterministic in tests."""
+        return self._clock()
 
     def _events(self, name: str | None = None) -> list[dict[str, Any]]:
         if not self.lifecycle_log.is_file():
@@ -136,20 +138,71 @@ class AgentRegistry:
     def retired_entries(self) -> list[dict[str, Any]]:
         return self.entries(self.retired)
 
+    def _health_problem(self, entries: list[dict[str, Any]]) -> str | None:
+        """Return evidence that prevents a health claim, if any.
+
+        An absent directory is a valid first-run empty registry: directories are created lazily.
+        A path that exists but is not a directory, an invalid manifest, or malformed lifecycle
+        history is different: the registry is present but cannot be trusted as a complete record.
+        """
+        if self.live.exists() and not self.live.is_dir():
+            return "the recognized-agent registry is not a directory"
+        invalid = next((entry.get("error") for entry in entries if entry.get("error")), None)
+        if invalid:
+            return f"an agent manifest is invalid: {invalid}"
+        if self.lifecycle_log.exists() and not self.lifecycle_log.is_file():
+            return "the lifecycle history is not a file"
+        if not self.lifecycle_log.is_file():
+            return None
+        try:
+            lines = self.lifecycle_log.read_text(encoding="utf-8").splitlines()
+        except OSError as exc:
+            return f"the lifecycle history cannot be read: {exc}"
+        for line_number, line in enumerate(lines, start=1):
+            if not line.strip():
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                return f"the lifecycle history is malformed at line {line_number}"
+            if not isinstance(event, dict) or not all(isinstance(event.get(field), str)
+                                                    for field in ("ts", "agent", "state", "reason")):
+                return f"the lifecycle history is incomplete at line {line_number}"
+        return None
+
     def health(self) -> dict[str, Any]:
         """Governance evidence only; it makes no claim about runtime availability."""
-        entries = self.installed()
         counts: dict[str, int] = {"active": 0, "suspended": 0, "expired": 0, "due": 0}
+        try:
+            entries = self.installed()
+        except (AgentError, OSError) as exc:
+            return {"state": "unknown", "agents": counts,
+                    "detail": f"The Workstation registry cannot be read: {exc}"}
+        if problem := self._health_problem(entries):
+            return {"state": "unknown", "agents": counts,
+                    "detail": f"The Workstation registry cannot be trusted: {problem}."}
         soon = self._now() + timedelta(days=14)
         for entry in entries:
             state = str(entry.get("state", "active"))
-            counts[state] = counts.get(state, 0) + 1
+            if state not in {"active", "suspended", "expired"}:
+                return {"state": "unknown", "agents": counts,
+                        "detail": f"The Workstation registry has an unknown lifecycle state: {state}."}
+            counts[state] += 1
             review_by = str(entry.get("review_by", ""))
+            if state == "active" and not review_by:
+                return {"state": "unknown", "agents": counts,
+                        "detail": f"Recognized agent '{entry['name']}' has no review deadline."}
+            if not review_by:
+                continue
             try:
-                if state == "active" and review_by and datetime.fromisoformat(review_by) <= soon:
-                    counts["due"] += 1
+                deadline = datetime.fromisoformat(review_by)
+                if deadline.tzinfo is None:
+                    raise ValueError("deadline has no timezone")
             except ValueError:
-                counts["suspended"] += 1
+                return {"state": "unknown", "agents": counts,
+                        "detail": f"Recognized agent '{entry['name']}' has an invalid review deadline."}
+            if state == "active" and deadline <= soon:
+                counts["due"] += 1
         attention = counts["suspended"] + counts["expired"] + counts["due"]
         return {"state": "attention" if attention else "healthy", "agents": counts,
                 "detail": (f"{attention} agent record(s) need review" if attention else "No agent lifecycle action is due.")}

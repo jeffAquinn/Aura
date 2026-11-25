@@ -559,7 +559,7 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
         connection_attention = [c["label"] for c in optional
                                 if c.get("problem") or (c.get("live") or {}).get("state") == "problem"]
         agent_health = workshop.agents.health()
-        governance_attention = bool(connection_attention or agent_health["state"] == "attention"
+        governance_attention = bool(connection_attention or agent_health["state"] in {"attention", "unknown"}
                                     or tb.continuous.alerts())
         return {
             "status": "ok",

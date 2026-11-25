@@ -14,6 +14,7 @@ import subprocess
 import sys
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import httpx
@@ -26,7 +27,7 @@ from aura.governor import provenance as prov
 from aura.governor import workshop as ws
 from aura.governor.scan import scan_skill
 from aura.governor.workshop import Task, Workshop, WorkshopError
-from aura.agents import AgentError, load_manifest as load_agent_manifest
+from aura.agents import AgentError, AgentRegistry, load_manifest as load_agent_manifest
 from aura.skills import SkillError, SkillManager, content_hash, dependency_image_for, dockerfile, load_manifest
 from aura.tools.sandbox import RunResult
 
@@ -217,6 +218,51 @@ def test_agent_revocation_suspends_revalidates_and_retires_with_history(env):
     assert "Agent Inbox (0" in report
     assert "Retired agents (1" in report
     assert "Lifecycle health: healthy" in report
+
+
+def test_agent_registry_health_reports_each_lifecycle_state_with_a_fixed_clock(env):
+    settings, workshop, _manager, _sandbox = env
+    now = datetime(2026, 11, 24, 12, tzinfo=timezone.utc)
+    workshop.agents._clock = lambda: now
+
+    def deploy(name: str) -> None:
+        workshop.agents.create(name, f"{name} record.", origin="created",
+                               provenance="Created locally through Aura.")
+        task = workshop.propose_agent(name, wait=True)
+        workshop.decide(task.id, True)
+
+    for name in ("steady_agent", "due_agent", "suspended_agent", "expired_agent", "retired_agent"):
+        deploy(name)
+    workshop.agents._record_lifecycle("due_agent", "active", "approved",
+                                      review_by=(now + timedelta(days=7)).isoformat(timespec="seconds"))
+    workshop.agents.suspend("suspended_agent", "suspected_breach")
+    workshop.agents._record_lifecycle("expired_agent", "active", "approved",
+                                      review_by=(now - timedelta(seconds=1)).isoformat(timespec="seconds"))
+    workshop.agents.retire("retired_agent", "user_retirement")
+
+    health = workshop.agents.health()
+    assert health["state"] == "attention"
+    assert health["agents"] == {"active": 2, "suspended": 1, "expired": 1, "due": 1}
+    assert sum(health["agents"][state] for state in ("active", "suspended", "expired")) == 4
+    assert health["agents"]["due"] <= health["agents"]["active"]
+    assert len(workshop.agents.retired_entries()) == 1
+
+
+def test_agent_registry_health_fails_closed_for_corrupt_or_unreadable_data(tmp_path):
+    audit = AuditLog(tmp_path / "audit.jsonl")
+    corrupt = AgentRegistry(tmp_path / "corrupt-live", tmp_path / "inbox", audit)
+    broken = corrupt.live / "broken_agent"
+    broken.mkdir(parents=True)
+    (broken / "agent.toml").write_text("not valid = [toml", encoding="utf-8")
+    corrupt_health = corrupt.health()
+    assert corrupt_health["state"] == "unknown"
+    assert "cannot be trusted" in corrupt_health["detail"]
+
+    unreadable = AgentRegistry(tmp_path / "not-a-directory", tmp_path / "other-inbox", audit)
+    unreadable.live.write_text("this is not a registry directory", encoding="utf-8")
+    unreadable_health = unreadable.health()
+    assert unreadable_health["state"] == "unknown"
+    assert "not a directory" in unreadable_health["detail"]
 
 
 def test_agent_manifest_rejects_executable_content(env):
