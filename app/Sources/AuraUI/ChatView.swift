@@ -136,19 +136,20 @@ struct HeaderView: View {
 
     var body: some View {
         HStack(spacing: 10) {
-            HStack(spacing: 10) {
-                AvatarView(image: avatar, size: 30, pulsing: store.phase == .waking || store.connection == .starting || speaking)
-                VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 10) {
+                    AvatarView(image: avatar, size: 30, pulsing: store.phase == .waking || store.connection == .starting || speaking)
                     Text(store.persona.name).font(.headline)
-                    HStack(alignment: .center, spacing: 8) {
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text(subtitle).font(.caption.weight(.medium)).lineLimit(1)
-                            StatusChips(activityColor: dotColor, activityDetail: activityDetail, health: store.health)
-                        }
-                    }
                 }
-                Spacer(minLength: 0)
+                VStack(alignment: .leading, spacing: 1) {
+                    if let subtitle {
+                        Text(subtitle).font(.caption.weight(.medium)).lineLimit(1)
+                    }
+                    StatusChips(activityColor: dotColor, activityDetail: activityDetail, health: store.health)
+                }
+                .padding(.leading, 40)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(.rect)
             .overlay { if !offscreen { WindowDragArea() } }  // the panel moves by its header; elsewhere, drags select text
             .help("Drag to move")
@@ -203,13 +204,13 @@ struct HeaderView: View {
         .padding(.bottom, 10)
     }
 
-    private var subtitle: String {
+    private var subtitle: String? {
         switch store.connection {
         case .starting: "Starting Aura…"
         case .offline: "Aura is offline"
         case .connected:
             switch store.phase {
-            case .idle: speaking ? "Speaking a reply" : "Ready for your message"
+            case .idle: speaking ? "Speaking a reply" : nil
             case .thinking: "Thinking through your request"
             case .waking: "Waking the selected model"
             case .streaming: "Writing a reply"
@@ -428,9 +429,9 @@ struct ItemView: View {
                     Text(item.text)
                         .font(chat.font())
                         .textSelection(.enabled)
-                        .lineSpacing(2)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 8)
+                        .lineSpacing(3)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 10)
                         .foregroundStyle(bubbles.userText)
                         .background(bubbles.userBackground, in: .rect(cornerRadius: 16))
                         .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(bubbles.userBorder, lineWidth: 1))
@@ -555,8 +556,8 @@ struct AuraMessage: View {
                 MarkdownView(item.text)
                     .foregroundStyle(bubbles.auraText)
                     .tint(bubbles.auraText)  // links: underlined, in the bubble's text color
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 8)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 11)
                     .background(bubbles.auraBackground, in: .rect(cornerRadius: 16))
                     .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(bubbles.auraBorder, lineWidth: 1))
                     .contextMenu { MessageMenu(item: item, store: store) }
