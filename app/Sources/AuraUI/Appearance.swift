@@ -100,6 +100,8 @@ public struct AuraThemedPage<Content: View>: View {
 
 public struct UserAvatarView: View {
     @AppStorage(UserProfile.avatarPathKey) private var avatarPath = ""
+    @AppStorage(ChatAppearance.userAvatarBorderKey) private var borderHex = ""
+    @AppStorage(ChatAppearance.userAvatarBorderTransparencyKey) private var borderTransparency = 0.55
     let size: CGFloat
     public init(size: CGFloat = 22) { self.size = size }
     public var body: some View {
@@ -108,7 +110,8 @@ public struct UserAvatarView: View {
             else { Image(systemName: "person.crop.circle.fill").resizable().scaledToFit().padding(size * 0.12).foregroundStyle(.secondary) }
         }
         .frame(width: size, height: size).clipShape(Circle())
-        .overlay(Circle().strokeBorder(.white.opacity(0.45), lineWidth: 0.75))
+        .overlay(Circle().strokeBorder(ChatAppearance.borderColor(hex: borderHex, fallback: .white,
+                                                                  transparency: borderTransparency), lineWidth: 0.75))
         .accessibilityLabel("Your avatar")
     }
 }
@@ -179,17 +182,27 @@ public struct BubbleColors: Equatable, Sendable {
     public var auraTextOverride: Color?
     public var bubbleTransparency: Double
     public var textTransparency: Double
+    public var userBorder: Color
+    public var auraBorder: Color
+    public var userAvatarBorder: Color
+    public var auraAvatarBorder: Color
 
     public static let standard = BubbleColors(user: .accentColor, aura: ChatAppearance.color(hex: ChatAppearance.defaultAura)!)
 
     public init(user: Color, aura: Color, userTextOverride: Color? = nil, auraTextOverride: Color? = nil,
-                bubbleTransparency: Double = 0, textTransparency: Double = 0) {
+                bubbleTransparency: Double = 0, textTransparency: Double = 0,
+                userBorder: Color = .clear, auraBorder: Color = .clear,
+                userAvatarBorder: Color = .white.opacity(0.45), auraAvatarBorder: Color = .white.opacity(0.5)) {
         self.user = user
         self.aura = aura
         self.userTextOverride = userTextOverride
         self.auraTextOverride = auraTextOverride
         self.bubbleTransparency = bubbleTransparency
         self.textTransparency = textTransparency
+        self.userBorder = userBorder
+        self.auraBorder = auraBorder
+        self.userAvatarBorder = userAvatarBorder
+        self.auraAvatarBorder = auraAvatarBorder
     }
 
     public var userText: Color { (userTextOverride ?? ChatAppearance.textColor(on: user)).opacity(1 - textTransparency) }
@@ -209,6 +222,14 @@ public enum ChatAppearance {
     public static let bubbleTransparencyKey = "chatBubbleTransparency"
     public static let textTransparencyKey = "chatTextTransparency"
     public static let avatarSizeKey = "chatAvatarSize"
+    public static let userBubbleBorderKey = "chatUserBubbleBorder"
+    public static let auraBubbleBorderKey = "chatAuraBubbleBorder"
+    public static let userAvatarBorderKey = "chatUserAvatarBorder"
+    public static let auraAvatarBorderKey = "chatAuraAvatarBorder"
+    public static let userBubbleBorderTransparencyKey = "chatUserBubbleBorderTransparency"
+    public static let auraBubbleBorderTransparencyKey = "chatAuraBubbleBorderTransparency"
+    public static let userAvatarBorderTransparencyKey = "chatUserAvatarBorderTransparency"
+    public static let auraAvatarBorderTransparencyKey = "chatAuraAvatarBorderTransparency"
 
     public static let defaultSize = 13.0  // macOS body text
     public static let sizes = 11.0...22.0
@@ -226,11 +247,25 @@ public enum ChatAppearance {
     }
 
     public static func bubbles(user: String, aura: String, userText: String = "", auraText: String = "",
-                               bubbleTransparency: Double = 0, textTransparency: Double = 0) -> BubbleColors {
-        BubbleColors(user: color(hex: user) ?? .accentColor,
-                     aura: color(hex: aura) ?? color(hex: defaultAura)!,
+                               bubbleTransparency: Double = 0, textTransparency: Double = 0,
+                               userBorder: String = "", auraBorder: String = "",
+                               userAvatarBorder: String = "", auraAvatarBorder: String = "",
+                               userBubbleBorderTransparency: Double = 1, auraBubbleBorderTransparency: Double = 1,
+                               userAvatarBorderTransparency: Double = 0.55, auraAvatarBorderTransparency: Double = 0.5) -> BubbleColors {
+        let resolvedUser = color(hex: user) ?? .accentColor
+        let resolvedAura = color(hex: aura) ?? color(hex: defaultAura)!
+        return BubbleColors(user: resolvedUser,
+                     aura: resolvedAura,
                      userTextOverride: color(hex: userText), auraTextOverride: color(hex: auraText),
-                     bubbleTransparency: min(max(bubbleTransparency, 0), 1), textTransparency: min(max(textTransparency, 0), 1))
+                     bubbleTransparency: min(max(bubbleTransparency, 0), 1), textTransparency: min(max(textTransparency, 0), 1),
+                     userBorder: borderColor(hex: userBorder, fallback: resolvedUser, transparency: userBubbleBorderTransparency),
+                     auraBorder: borderColor(hex: auraBorder, fallback: resolvedAura, transparency: auraBubbleBorderTransparency),
+                     userAvatarBorder: borderColor(hex: userAvatarBorder, fallback: .white, transparency: userAvatarBorderTransparency),
+                     auraAvatarBorder: borderColor(hex: auraAvatarBorder, fallback: .white, transparency: auraAvatarBorderTransparency))
+    }
+
+    public static func borderColor(hex: String, fallback: Color, transparency: Double) -> Color {
+        (color(hex: hex) ?? fallback).opacity(1 - min(max(transparency, 0), 1))
     }
 
     public static func avatarSize(_ value: String) -> CGFloat {

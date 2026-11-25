@@ -20,6 +20,14 @@ public struct ChatView: View {
     @AppStorage(ChatAppearance.auraTextKey) private var auraText = ""
     @AppStorage(ChatAppearance.bubbleTransparencyKey) private var bubbleTransparency = 0.0
     @AppStorage(ChatAppearance.textTransparencyKey) private var textTransparency = 0.0
+    @AppStorage(ChatAppearance.userBubbleBorderKey) private var userBubbleBorder = ""
+    @AppStorage(ChatAppearance.auraBubbleBorderKey) private var auraBubbleBorder = ""
+    @AppStorage(ChatAppearance.userAvatarBorderKey) private var userAvatarBorder = ""
+    @AppStorage(ChatAppearance.auraAvatarBorderKey) private var auraAvatarBorder = ""
+    @AppStorage(ChatAppearance.userBubbleBorderTransparencyKey) private var userBubbleBorderTransparency = 1.0
+    @AppStorage(ChatAppearance.auraBubbleBorderTransparencyKey) private var auraBubbleBorderTransparency = 1.0
+    @AppStorage(ChatAppearance.userAvatarBorderTransparencyKey) private var userAvatarBorderTransparency = 0.55
+    @AppStorage(ChatAppearance.auraAvatarBorderTransparencyKey) private var auraAvatarBorderTransparency = 0.5
 
     public init(store: ChatStore, avatar: Image?, backdrop: Image? = nil, onRestart: @escaping () -> Void,
                 onOpenHOLTerminal: @escaping () -> Void = {}, onOpenWorkstation: @escaping () -> Void = {},
@@ -51,7 +59,14 @@ public struct ChatView: View {
         .frame(minWidth: 360, minHeight: 440)
         .background { AuraThemeBackdrop(starfield: backdrop) }
         .environment(\.chatText, ChatAppearance.textStyle(size: fontSize, style: fontStyle))
-        .environment(\.bubbles, ChatAppearance.bubbles(user: userBubble, aura: auraBubble, userText: userText, auraText: auraText, bubbleTransparency: bubbleTransparency, textTransparency: textTransparency))
+        .environment(\.bubbles, ChatAppearance.bubbles(user: userBubble, aura: auraBubble, userText: userText, auraText: auraText,
+                                                         bubbleTransparency: bubbleTransparency, textTransparency: textTransparency,
+                                                         userBorder: userBubbleBorder, auraBorder: auraBubbleBorder,
+                                                         userAvatarBorder: userAvatarBorder, auraAvatarBorder: auraAvatarBorder,
+                                                         userBubbleBorderTransparency: userBubbleBorderTransparency,
+                                                         auraBubbleBorderTransparency: auraBubbleBorderTransparency,
+                                                         userAvatarBorderTransparency: userAvatarBorderTransparency,
+                                                         auraAvatarBorderTransparency: auraAvatarBorderTransparency))
     }
 }
 
@@ -62,6 +77,8 @@ struct AvatarView: View {
     let image: Image?
     let size: CGFloat
     var pulsing = false
+    @AppStorage(ChatAppearance.auraAvatarBorderKey) private var borderHex = ""
+    @AppStorage(ChatAppearance.auraAvatarBorderTransparencyKey) private var borderTransparency = 0.5
     @State private var bright = false
 
     var body: some View {
@@ -74,7 +91,8 @@ struct AvatarView: View {
         }
         .frame(width: size, height: size)
         .clipShape(Circle())
-        .overlay(Circle().strokeBorder(.white.opacity(0.5), lineWidth: 0.75))
+        .overlay(Circle().strokeBorder(ChatAppearance.borderColor(hex: borderHex, fallback: .white,
+                                                                  transparency: borderTransparency), lineWidth: 0.75))
         .shadow(color: .cyan.opacity(pulsing ? (bright ? 0.9 : 0.15) : 0), radius: pulsing ? size / 3 : 0)
         .scaleEffect(pulsing && bright ? 1.06 : 1)
         .onChange(of: pulsing, initial: true) { _, isPulsing in
@@ -365,6 +383,7 @@ struct ItemView: View {
                         .padding(.vertical, 8)
                         .foregroundStyle(bubbles.userText)
                         .background(bubbles.userBackground, in: .rect(cornerRadius: 16))
+                        .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(bubbles.userBorder, lineWidth: 1))
                         .contextMenu { MessageMenu(item: item, store: store) }
                 }
                 if let developer = item.developer {  // handed to Claude Code or Codex in the chat box
@@ -489,6 +508,7 @@ struct AuraMessage: View {
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
                     .background(bubbles.auraBackground, in: .rect(cornerRadius: 16))
+                    .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(bubbles.auraBorder, lineWidth: 1))
                     .contextMenu { MessageMenu(item: item, store: store) }
             }
             Button {

@@ -410,9 +410,26 @@ struct ChatAppearanceSettings: View {
     @AppStorage(ChatAppearance.bubbleTransparencyKey) private var bubbleTransparency = 0.0
     @AppStorage(ChatAppearance.textTransparencyKey) private var textTransparency = 0.0
     @AppStorage(ChatAppearance.avatarSizeKey) private var avatarSize = "small"
+    @AppStorage(ChatAppearance.userBubbleBorderKey) private var userBubbleBorder = ""
+    @AppStorage(ChatAppearance.auraBubbleBorderKey) private var auraBubbleBorder = ""
+    @AppStorage(ChatAppearance.userAvatarBorderKey) private var userAvatarBorder = ""
+    @AppStorage(ChatAppearance.auraAvatarBorderKey) private var auraAvatarBorder = ""
+    @AppStorage(ChatAppearance.userBubbleBorderTransparencyKey) private var userBubbleBorderTransparency = 1.0
+    @AppStorage(ChatAppearance.auraBubbleBorderTransparencyKey) private var auraBubbleBorderTransparency = 1.0
+    @AppStorage(ChatAppearance.userAvatarBorderTransparencyKey) private var userAvatarBorderTransparency = 0.55
+    @AppStorage(ChatAppearance.auraAvatarBorderTransparencyKey) private var auraAvatarBorderTransparency = 0.5
 
     private var text: ChatTextStyle { ChatAppearance.textStyle(size: fontSize, style: fontStyle) }
-    private var colors: BubbleColors { ChatAppearance.bubbles(user: userBubble, aura: auraBubble, userText: userText, auraText: auraText, bubbleTransparency: bubbleTransparency, textTransparency: textTransparency) }
+    private var colors: BubbleColors {
+        ChatAppearance.bubbles(user: userBubble, aura: auraBubble, userText: userText, auraText: auraText,
+                               bubbleTransparency: bubbleTransparency, textTransparency: textTransparency,
+                               userBorder: userBubbleBorder, auraBorder: auraBubbleBorder,
+                               userAvatarBorder: userAvatarBorder, auraAvatarBorder: auraAvatarBorder,
+                               userBubbleBorderTransparency: userBubbleBorderTransparency,
+                               auraBubbleBorderTransparency: auraBubbleBorderTransparency,
+                               userAvatarBorderTransparency: userAvatarBorderTransparency,
+                               auraAvatarBorderTransparency: auraAvatarBorderTransparency)
+    }
 
     var body: some View {
         Picker("Font", selection: $fontStyle) {
@@ -436,6 +453,15 @@ struct ChatAppearanceSettings: View {
         LabeledContent("Text transparency") {
             HStack { Slider(value: $textTransparency, in: 0...1, step: 0.05); Text("\(Int(textTransparency * 100))%").frame(width: 34, alignment: .trailing) }
         }
+        Divider()
+        BubbleColorRow(title: "Your bubble border", hex: $userBubbleBorder)
+        TransparencyRow(title: "Your bubble border transparency", value: $userBubbleBorderTransparency)
+        BubbleColorRow(title: "Aura's bubble border", hex: $auraBubbleBorder)
+        TransparencyRow(title: "Aura's bubble border transparency", value: $auraBubbleBorderTransparency)
+        BubbleColorRow(title: "Your avatar border", hex: $userAvatarBorder)
+        TransparencyRow(title: "Your avatar border transparency", value: $userAvatarBorderTransparency)
+        BubbleColorRow(title: "Aura's avatar border", hex: $auraAvatarBorder)
+        TransparencyRow(title: "Aura's avatar border transparency", value: $auraAvatarBorderTransparency)
         Picker("Chat avatar size", selection: $avatarSize) {
             Text("Small").tag("small")
             Text("Medium").tag("medium")
@@ -454,8 +480,30 @@ struct ChatAppearanceSettings: View {
                 bubbleTransparency = 0
                 textTransparency = 0
                 avatarSize = "small"
+                userBubbleBorder = ""
+                auraBubbleBorder = ""
+                userAvatarBorder = ""
+                auraAvatarBorder = ""
+                userBubbleBorderTransparency = 1
+                auraBubbleBorderTransparency = 1
+                userAvatarBorderTransparency = 0.55
+                auraAvatarBorderTransparency = 0.5
             }
             .controlSize(.small)
+        }
+    }
+}
+
+struct TransparencyRow: View {
+    let title: String
+    @Binding var value: Double
+
+    var body: some View {
+        LabeledContent(title) {
+            HStack {
+                Slider(value: $value, in: 0...1, step: 0.05)
+                Text("\(Int(value * 100))%").monospacedDigit().frame(width: 34, alignment: .trailing)
+            }
         }
     }
 }
@@ -497,18 +545,24 @@ struct BubblePreview: View {
         VStack(spacing: 6) {
             HStack {
                 Spacer(minLength: 40)
+                Circle().fill(.secondary.opacity(0.25)).frame(width: 24, height: 24)
+                    .overlay(Circle().strokeBorder(colors.userAvatarBorder, lineWidth: 1))
                 Text("Hi Aura, can you summarise my notes?")
                     .font(text.font())
                     .padding(.horizontal, 10).padding(.vertical, 6)
                     .foregroundStyle(colors.userText)
                     .background(colors.userBackground, in: .rect(cornerRadius: 14))
+                    .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(colors.userBorder, lineWidth: 1))
             }
             HStack {
+                Circle().fill(.secondary.opacity(0.25)).frame(width: 24, height: 24)
+                    .overlay(Circle().strokeBorder(colors.auraAvatarBorder, lineWidth: 1))
                 Text("Of course. Your notes cover **three** things:")
                     .font(text.font())
                     .padding(.horizontal, 10).padding(.vertical, 6)
                     .foregroundStyle(colors.auraText)
                     .background(colors.auraBackground, in: .rect(cornerRadius: 14))
+                    .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(colors.auraBorder, lineWidth: 1))
                 Spacer(minLength: 40)
             }
         }
