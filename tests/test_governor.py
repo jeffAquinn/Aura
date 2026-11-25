@@ -210,6 +210,14 @@ def test_agent_revocation_suspends_revalidates_and_retires_with_history(env):
     history = settings.agent_lifecycle_log.read_text()
     assert '"state": "suspended"' in history and '"state": "retired"' in history
 
+    from aura.tools.workshop import workshop_tools
+    tools = {tool.name: tool for tool in workshop_tools(workshop)}
+    report = tools["list_agents"].invoke({})
+    assert "Recognized Workstation agents (0)" in report
+    assert "Agent Inbox (0" in report
+    assert "Retired agents (1" in report
+    assert "Lifecycle health: healthy" in report
+
 
 def test_agent_manifest_rejects_executable_content(env):
     settings, workshop, _manager, _sandbox = env

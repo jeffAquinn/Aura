@@ -53,14 +53,21 @@ def workshop_tools(workshop: Workshop, developer: Developer | None = None) -> li
 
     @tool
     def list_agents() -> str:
-        """List recognized Workstation agent manifests and quarantined agent candidates.
-        These records are non-executable: an external agent, its tools, connectors, memory, and
-        credentials are never automatically imported."""
+        """Read the full Workstation registry: recognized, quarantined, and retired agent
+        manifests plus evidence-backed lifecycle health. This is read-only. These records are
+        non-executable: an external agent's tools, connectors, memory, and credentials are never
+        automatically imported or activated."""
         installed, pending = workshop.agents.installed(), workshop.agent_inbox()
-        lines = ["Recognized Workstation agents:"]
+        retired, health = workshop.agents.retired_entries(), workshop.agents.health()
+        counts = health["agents"]
+        lines = [f"Recognized Workstation agents ({len(installed)}):"]
         lines += [f"- {a['name']} {a['version']} ({a['origin']}): {a['purpose']}" for a in installed] or ["- none"]
-        lines += ["Agent Inbox (requires audit and explicit approval):"]
+        lines += [f"Agent Inbox ({len(pending)}; requires audit and explicit approval):"]
         lines += [f"- {a['name']}: {a['purpose'] or 'invalid: ' + str(a['error'])}" for a in pending] or ["- none"]
+        lines += [f"Retired agents ({len(retired)}; non-operational archive):"]
+        lines += [f"- {a['name']} {a['version']} ({a['origin']}): {a['purpose']}" for a in retired] or ["- none"]
+        lines += [f"Lifecycle health: {health['state']} — {health['detail']}",
+                  f"- active: {counts['active']}; suspended: {counts['suspended']}; expired: {counts['expired']}; review due: {counts['due']}"]
         return "\n".join(lines)
 
     @tool
