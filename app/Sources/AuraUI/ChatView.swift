@@ -745,6 +745,7 @@ struct InputBar: View {
     @State private var draft = ""
     @FocusState private var focused: Bool
     @Environment(\.chatText) private var chat
+    @Environment(\.bubbles) private var bubbles
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 8) {
@@ -753,6 +754,7 @@ struct InputBar: View {
             TextField(placeholder, text: $draft, axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(chat.font())
+                .foregroundStyle(bubbles.userText)
                 .lineLimit(1...8)
                 .focused($focused)
                 .onSubmit(send)
@@ -767,7 +769,8 @@ struct InputBar: View {
         .padding(.leading, 8)
         .padding(.trailing, 6)
         .padding(.vertical, 6)
-        .background(Color.primary.opacity(0.06), in: .rect(cornerRadius: 18))
+        .background(bubbles.userBackground, in: .rect(cornerRadius: 18))
+        .overlay(RoundedRectangle(cornerRadius: 18).strokeBorder(bubbles.userBorder, lineWidth: 1))
         .padding(12)
         .onChange(of: store.focusRequests) { focused = true }
     }
