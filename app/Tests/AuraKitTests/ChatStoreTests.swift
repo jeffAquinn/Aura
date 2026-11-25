@@ -114,6 +114,14 @@ struct ChatStoreTests {
         #expect(fake.selectedModels.count == 2 && fake.selectedModels[1] == nil)
     }
 
+    @Test func automaticTurnsExposeTheModelSelectedByTheServer() async {
+        let chosen = ModelChoice(provider: "ollama", model: "qwen3:8b")
+        let s = store(FakeTransport(chat: [[.model(chosen), .thinking, .done]]))
+        s.send("Hello")
+        await s.turnTask?.value
+        #expect(s.automaticModel == chosen)
+    }
+
     @Test func aDevelopersProgressIsOneLineThatKeepsUpdating() async {
         let s = store(FakeTransport(chat: [[.thinking,
             .status("[Tool: Developer] Handing the task to Claude Code..."),

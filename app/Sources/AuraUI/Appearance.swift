@@ -221,6 +221,7 @@ public enum ChatAppearance {
     public static let auraTextKey = "chatAuraText"
     public static let bubbleTransparencyKey = "chatBubbleTransparency"
     public static let textTransparencyKey = "chatTextTransparency"
+    public static let textPaddingKey = "chatTextPadding"
     public static let avatarSizeKey = "chatAvatarSize"
     public static let userBubbleBorderKey = "chatUserBubbleBorder"
     public static let auraBubbleBorderKey = "chatAuraBubbleBorder"
@@ -233,6 +234,8 @@ public enum ChatAppearance {
 
     public static let defaultSize = 13.0  // macOS body text
     public static let sizes = 11.0...22.0
+    public static let defaultTextPadding = 18.0
+    public static let textPaddings = 8.0...28.0
     public static let defaultAura = "#7C4DFF"  // violet; white text on it passes WCAG AA
 
     /// Quick choices, so a color can be picked without leaving the settings popover.
@@ -244,6 +247,16 @@ public enum ChatAppearance {
     public static func textStyle(size: Double, style: String) -> ChatTextStyle {
         ChatTextStyle(size: CGFloat(min(max(size, sizes.lowerBound), sizes.upperBound)),
                       style: ChatFontStyle(rawValue: style) ?? .system)
+    }
+
+    /// Shared message insets. One preference keeps both sides of a conversation aligned while
+    /// preserving the slightly tighter vertical rhythm of a chat bubble.
+    public static func textPadding(_ value: Double) -> CGFloat {
+        CGFloat(min(max(value, textPaddings.lowerBound), textPaddings.upperBound))
+    }
+
+    public static func verticalTextPadding(_ value: Double) -> CGFloat {
+        max(6, textPadding(value) - 3)
     }
 
     public static func bubbles(user: String, aura: String, userText: String = "", auraText: String = "",

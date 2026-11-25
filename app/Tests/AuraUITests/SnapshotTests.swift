@@ -442,12 +442,14 @@ struct SnapshotTests {
         #expect(ChatAppearance.prefersWhiteText(r: 0, g: 122 / 255, b: 1))  // the system blue: white text
         #expect(!ChatAppearance.prefersWhiteText(r: 242 / 255, g: 232 / 255, b: 1))  // a pale lilac: black text
         #expect(!ChatAppearance.prefersWhiteText(r: 1, g: 0.85, b: 0.2))  // yellow: black text
-        for swatch in ChatAppearance.swatches where !swatch.hex.isEmpty {  // every preset: white text at AA (4.5:1)
+        for swatch in ChatAppearance.swatches where !swatch.hex.isEmpty && swatch.hex != "#FFFFFF" {  // dark presets: white text at AA (4.5:1)
             let c = ChatAppearance.rgb(swatch.hex)!
             #expect(ChatAppearance.contrastWithWhite(r: c.r, g: c.g, b: c.b) >= 4.5, "\(swatch.name)")
         }
+        #expect(!ChatAppearance.prefersWhiteText(r: 1, g: 1, b: 1))  // White swatch intentionally selects black text.
         #expect(ChatAppearance.textStyle(size: 99, style: "nope") == ChatTextStyle(size: 22, style: .system))  // clamped, defaulted
         #expect(ChatAppearance.textStyle(size: 15, style: "georgia") == ChatTextStyle(size: 15, style: .georgia))
+        #expect(ChatAppearance.textPadding(99) == 28 && ChatAppearance.verticalTextPadding(18) == 15)
         #expect(ChatAppearance.bubbles(user: "", aura: "").aura == ChatAppearance.color(hex: ChatAppearance.defaultAura))
     }
 

@@ -76,6 +76,22 @@ def test_automatic_model_never_escalates_a_missing_local_role_to_cloud(settings)
         server_module.automatic_model_choice(routing, "coding", set(), True)
 
 
+def test_usable_ollama_models_requires_the_runtime_readiness_probe(settings, monkeypatch):
+    def ready(url, **kwargs):
+        if url.endswith("/api/tags"):
+            return httpx.Response(200, json={"models": [{"name": "qwen3:8b"}]}, request=httpx.Request("GET", url))
+        assert url.endswith("/api/ps") and kwargs["timeout"] == 2
+        return httpx.Response(200, json={"models": []}, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(server_module.httpx, "get", ready)
+    assert server_module.usable_ollama_models(settings) == {"qwen3:8b"}
+
+    monkeypatch.setattr(server_module.httpx, "get", lambda url, **kwargs: httpx.Response(
+        503 if url.endswith("/api/ps") else 200,
+        json={"models": [{"name": "qwen3:8b"}]}, request=httpx.Request("GET", url)))
+    assert server_module.usable_ollama_models(settings) == set()
+
+
 def test_automatic_model_refuses_an_unusable_role_before_opening_a_turn(settings, monkeypatch):
     routing = ModelRouting(settings)
     routing.replace(choices("missing:latest"))

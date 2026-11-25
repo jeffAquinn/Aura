@@ -214,6 +214,7 @@ struct HeaderView: View {
             case .thinking: "Thinking through your request"
             case .waking: "Waking the selected model"
             case .streaming: "Writing a reply"
+            case .stopping: "Stopping the current task"
             case .awaitingApproval: "Waiting for your approval"
             }
         }
@@ -234,7 +235,7 @@ struct HeaderView: View {
         case .connected:
             switch store.phase {
             case .idle: .green
-            case .waking, .awaitingApproval: .orange
+            case .waking, .stopping, .awaitingApproval: .orange
             case .thinking, .streaming: .accentColor
             }
         }
@@ -392,6 +393,10 @@ struct TranscriptContent: View {
             }
             if store.phase == .thinking || store.phase == .waking {
                 TypingIndicator(waking: store.phase == .waking, avatar: avatar).padding(.top, 10)
+            } else if store.phase == .stopping {
+                TypingIndicator(waking: false, stopping: true, avatar: avatar)
+                    .accessibilityLabel("Stopping the current task")
+                    .padding(.top, 10)
             }
         }
         Group {
@@ -418,6 +423,7 @@ struct ItemView: View {
     @Environment(\.chatText) private var chat
     @Environment(\.bubbles) private var bubbles
     @AppStorage(ChatAppearance.avatarSizeKey) private var avatarSize = "small"
+    @AppStorage(ChatAppearance.textPaddingKey) private var textPadding = ChatAppearance.defaultTextPadding
 
     var body: some View {
         switch item.role {
@@ -430,8 +436,8 @@ struct ItemView: View {
                         .font(chat.font())
                         .textSelection(.enabled)
                         .lineSpacing(4)
-                        .padding(.horizontal, 18)
-                        .padding(.vertical, 14)
+                        .padding(.horizontal, ChatAppearance.textPadding(textPadding))
+                        .padding(.vertical, ChatAppearance.verticalTextPadding(textPadding))
                         .foregroundStyle(bubbles.userText)
                         .background(bubbles.userBackground, in: .rect(cornerRadius: 16))
                         .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(bubbles.userBorder, lineWidth: 1))
@@ -546,6 +552,7 @@ struct AuraMessage: View {
     let avatar: Image?
     @Environment(\.bubbles) private var bubbles
     @AppStorage(ChatAppearance.avatarSizeKey) private var avatarSize = "small"
+    @AppStorage(ChatAppearance.textPaddingKey) private var textPadding = ChatAppearance.defaultTextPadding
     @State private var hovering = false
     @State private var copied = false
 
@@ -556,8 +563,8 @@ struct AuraMessage: View {
                 MarkdownView(item.text)
                     .foregroundStyle(bubbles.auraText)
                     .tint(bubbles.auraText)  // links: underlined, in the bubble's text color
-                    .padding(.horizontal, 18)
-                    .padding(.vertical, 15)
+                    .padding(.horizontal, ChatAppearance.textPadding(textPadding))
+                    .padding(.vertical, ChatAppearance.verticalTextPadding(textPadding))
                     .background(bubbles.auraBackground, in: .rect(cornerRadius: 16))
                     .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(bubbles.auraBorder, lineWidth: 1))
                     .contextMenu { MessageMenu(item: item, store: store) }
@@ -723,16 +730,17 @@ struct ApprovalCard: View {
 /// "Thinking…" / "Waking up…": quieter than speech, with a gentle pulse.
 struct TypingIndicator: View {
     let waking: Bool
+    var stopping = false
     let avatar: Image?
     @State private var animating = false
 
     var body: some View {
         HStack(spacing: 10) {
             AvatarView(image: avatar, size: 22, pulsing: waking)
-            Text(waking ? "Waking up…" : "Thinking")
+            Text(stopping ? "Stopping…" : waking ? "Waking up…" : "Thinking")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
-            if !waking {
+            if !waking && !stopping {
                 HStack(spacing: 3) {
                     ForEach(0..<3, id: \.self) { i in
                         Circle()
@@ -776,7 +784,8 @@ struct InputBar: View {
                 .padding(.vertical, 4)
                 .help("Spell checking and text completion follow your Mac’s Writing Tools settings.")
             if store.isBusy {
-                RoundButton(symbol: "stop.fill", enabled: true, action: store.stop).help("Stop")
+                RoundButton(symbol: store.isStopping ? "hourglass" : "stop.fill", enabled: !store.isStopping, action: store.stop)
+                    .help(store.isStopping ? "Stopping current task" : "Stop")
             } else {
                 RoundButton(symbol: "arrow.up", enabled: canSend, action: send).help("Send")
             }
@@ -903,7 +912,7 @@ struct ChatModelPicker: View {
         } label: {
             HStack(spacing: 3) {
                 Image(systemName: "cpu")
-                Text(store.chatModel?.model ?? "Auto").lineLimit(1)
+                Text(modelLabel).lineLimit(1)
             }
             .font(.system(size: 11, weight: .semibold))
             .foregroundStyle(store.chatModel == nil ? Color.secondary : Color.accentColor)
@@ -917,6 +926,12 @@ struct ChatModelPicker: View {
         .disabled(store.developer != nil || catalog == nil)
         .help(store.developer != nil ? "Developer turns use their selected coding harness"
               : "Choose a model for the next Aura message, or follow the Chat setting")
+    }
+
+    private var modelLabel: String {
+        if let model = store.chatModel { return model.model }
+        if let model = store.automaticModel { return "Auto · \(model.model)" }
+        return "Auto"
     }
 }
 

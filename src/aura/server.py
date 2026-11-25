@@ -204,6 +204,26 @@ def installed_ollama_models(settings: Settings) -> list[str]:
         return []
 
 
+def usable_ollama_models(settings: Settings) -> set[str]:
+    """Installed local models only when the Ollama runtime can answer a readiness probe.
+
+    ``/api/tags`` proves a model is on disk, not that the service can currently accept a turn.
+    Automatic routing must distinguish those states so it can fail before opening an SSE turn
+    rather than showing a permanently waking composer.
+    """
+    installed = set(installed_ollama_models(settings))
+    if not installed:
+        return set()
+    try:
+        response = httpx.get(f"{ollama_root(settings)}/api/ps", timeout=2)
+        response.raise_for_status()
+        if not isinstance(response.json(), dict):
+            return set()
+    except (OllamaModelError, httpx.HTTPError, ValueError, TypeError):
+        return set()
+    return installed
+
+
 def pull_ollama_model(settings: Settings, model: str) -> None:
     """Ask the local daemon to fetch a named model. No URL, host path, or shell is accepted."""
     try:
@@ -319,7 +339,7 @@ KEEPALIVE = 20.0  # seconds: a comment line while a long tool works (the app giv
 
 def stream_turn(
     events: Iterator[Event], lifecycle: Lifecycle, turn: Turn, keeper: Keeper, check_cold: bool,
-    masker: Masker = PATTERNS_ONLY,
+    masker: Masker = PATTERNS_ONLY, selected_model: ModelChoice | None = None,
 ) -> StreamingResponse:
     """Stream a turn's events as SSE. The turn ends (and its lock is released) exactly once: when
     the run ends, when it is stopped (POST /v1/stop: a `stopped` event, then `done`), or when the
@@ -331,6 +351,10 @@ def stream_turn(
         state, error = None, None
         texts = masker.stream()  # a secret split across two chunks is still caught
         try:
+            if selected_model is not None:
+                # The model choice is an ordinary preference, not a secret.  Sending it before
+                # `thinking` lets the Mac label an automatic turn immediately, without a poll.
+                yield sse("model", selected_model.public())
             yield sse("thinking", {"turn_id": turn.id})
             if check_cold and await anyio.to_thread.run_sync(keeper.loaded) is False:
                 yield sse("waking")
@@ -555,7 +579,7 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
         # double is never replaced with a real network client.
         if aura._injected_model:
             return {choice.model for role in ROLES if (choice := routing.choice(role)).provider == "ollama"}
-        return set(installed_ollama_models(aura.settings))
+        return usable_ollama_models(aura.settings)
 
     try:
         startup_choice, _ = automatic_model_choice(
@@ -690,7 +714,8 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
         except (RuntimeError, ValueError) as e:  # an approval is pending, or a selected model is not ready
             lifecycle.end(t, "refused", str(e))
             return _error(409, str(e))
-        return stream_turn(events, lifecycle, t, keeper, check_cold=True, masker=masker)
+        return stream_turn(events, lifecycle, t, keeper, check_cold=True, masker=masker,
+                           selected_model=chosen if body.model is None else None)
 
     @app.post("/v1/approvals")
     def approvals(body: ApprovalsIn) -> Response:

@@ -149,6 +149,8 @@ public enum ApprovalDecision: Sendable, Equatable, Encodable {
 
 /// One Server-Sent Event from the Aura Server (see docs/sprint-3-design.md §3).
 public enum AuraEvent: Sendable, Equatable {
+    /// The local or cloud model Aura selected for an automatic turn.
+    case model(ModelChoice)
     case thinking
     case waking
     case status(String)
@@ -388,6 +390,7 @@ public struct SSEParser: Sendable {
         struct ErrorBody: Decodable { let message: String }
         let json = JSONDecoder()
         switch kind {
+        case "model": return (try? json.decode(ModelChoice.self, from: data)).map { .model($0) }
         case "thinking": return .thinking
         case "waking": return .waking
         case "done": return .done

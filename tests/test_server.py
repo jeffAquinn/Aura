@@ -77,13 +77,13 @@ def said(evs: list[tuple[str, dict]]) -> str:
 def test_a_turn_streams_thinking_text_done(settings):
     client, _, _ = server(settings, AIMessage("Hello.\nSecond line."))
     evs = events(post(client, "/v1/chat", {"text": "Hi"}))
-    assert kinds(evs) == ["thinking", "text", "done"]
+    assert kinds(evs) == ["model", "thinking", "text", "done"]
     assert said(evs) == "Hello.\nSecond line."  # newlines travel inside the one JSON data line
 
 
 def test_a_cold_model_announces_waking(settings):
     client, _, _ = server(settings, AIMessage("Morning."), loaded=False)
-    assert kinds(events(post(client, "/v1/chat", {"text": "Hi"}))) == ["thinking", "waking", "text", "done"]
+    assert kinds(events(post(client, "/v1/chat", {"text": "Hi"}))) == ["model", "thinking", "waking", "text", "done"]
 
 
 def test_tool_status_then_approval_then_continuation(settings):
@@ -91,8 +91,8 @@ def test_tool_status_then_approval_then_continuation(settings):
         settings, tool_turn(call("create_folder", path="Project Aura")), AIMessage("Created it.")
     )
     evs = events(post(client, "/v1/chat", {"text": "Create a folder named Project Aura."}))
-    assert kinds(evs) == ["thinking", "approval", "done"]
-    (action,) = evs[1][1]["actions"]
+    assert kinds(evs) == ["model", "thinking", "approval", "done"]
+    (action,) = evs[2][1]["actions"]
     assert action == {
         "tool": "create_folder",
         "args": {"path": "Project Aura"},
@@ -124,8 +124,8 @@ def test_model_unreachable_becomes_an_error_event(settings):
     aura2 = type(aura)(settings=aura.settings, model=Unreachable(), toolbox=aura.toolbox)
     client = TestClient(create_app(aura2, TOKEN, FakeKeeper()), base_url="http://127.0.0.1")
     evs = events(post(client, "/v1/chat", {"text": "Hi"}))
-    assert kinds(evs) == ["thinking", "error", "done"]
-    assert "Ollama" in evs[1][1]["message"]
+    assert kinds(evs) == ["model", "thinking", "error", "done"]
+    assert "Ollama" in evs[2][1]["message"]
     assert client.get("/v1/health", headers=AUTH).json()["busy"] is False  # turn released
 
 

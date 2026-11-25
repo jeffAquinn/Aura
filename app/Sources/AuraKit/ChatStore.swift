@@ -6,7 +6,7 @@ import Observation
 @Observable
 public final class ChatStore {
     public enum Phase: Equatable, Sendable {
-        case idle, thinking, waking, streaming, awaitingApproval
+        case idle, thinking, waking, streaming, stopping, awaitingApproval
     }
 
     public enum Connection: Equatable, Sendable {
@@ -52,6 +52,8 @@ public final class ChatStore {
     public var developer: String?
     /// Optional one-turn Aura-model override selected beside the chat box. nil follows the Chat role.
     public var chatModel: ModelChoice?
+    /// The concrete model the server selected for the most recent automatic Aura turn.
+    public private(set) var automaticModel: ModelChoice?
     /// Bumped when the panel opens so the input field can take focus.
     public var focusRequests = 0
 
@@ -133,7 +135,8 @@ public final class ChatStore {
         }
         .joined(separator: "\n\n")
     }
-    public var isBusy: Bool { phase == .thinking || phase == .waking || phase == .streaming }
+    public var isBusy: Bool { phase == .thinking || phase == .waking || phase == .streaming || phase == .stopping }
+    public var isStopping: Bool { phase == .stopping }
 
     /// The prefix of a Developer's live progress lines ("[Tool: Developer] · Claude Code: Writing …").
     public static let progress = "[Tool: Developer] · "
@@ -141,6 +144,7 @@ public final class ChatStore {
     public func send(_ raw: String) {
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, canSend, let transport else { return }
+        if developer == nil && chatModel == nil { automaticModel = nil }
         items.append(Item(role: .user, text: text, developer: developer))
         speech?.stop()  // a new message interrupts whatever Aura was saying
         speech?.beginReply()
@@ -173,10 +177,16 @@ public final class ChatStore {
     /// server can't be asked, the stream is closed instead, which the server treats the same way.
     public func stop() {
         speech?.stop()
-        guard isBusy, let transport, let task = turnTask else {
+        // A second click used to start a second stop request before the first round trip ended.
+        // Keep the original stream alive for its authoritative `stopped` event, but visibly and
+        // logically lock the control after one request.
+        guard isBusy else { return }
+        guard !isStopping else { return }
+        guard let transport, let task = turnTask else {
             turnTask?.cancel()
             return
         }
+        phase = .stopping
         Task {
             let stopped = (try? await transport.stopTurn()) ?? false
             if !stopped { task.cancel() }
@@ -366,11 +376,14 @@ public final class ChatStore {
 
     func apply(_ event: AuraEvent) {
         switch event {
+        case let .model(choice):
+            if developer == nil && chatModel == nil { automaticModel = choice }
         case .thinking:
-            if phase != .waking { phase = .thinking }
+            if phase != .waking && !isStopping { phase = .thinking }
         case .waking:
-            phase = .waking
+            if !isStopping { phase = .waking }
         case let .status(text):
+            guard !isStopping else { return }
             // A Developer's live progress: one line that keeps updating, not a line per step.
             if text.hasPrefix(Self.progress), let last = items.indices.last, items[last].role == .status,
                items[last].text.hasPrefix(Self.progress) {
@@ -383,6 +396,7 @@ public final class ChatStore {
             }
             phase = .streaming
         case let .text(text):
+            guard !isStopping else { return }
             if let last = items.indices.last, items[last].role == .aura {
                 items[last].text += text
             } else {
@@ -397,6 +411,7 @@ public final class ChatStore {
             }
             phase = .streaming
         case let .approval(actions):
+            guard !isStopping else { return }
             finishSpokenSegment()
             items.append(Item(role: .approval, text: "", actions: actions))
             speech?.approvalRequested(actions)  // the verbal audit trail

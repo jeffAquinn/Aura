@@ -409,6 +409,7 @@ struct ChatAppearanceSettings: View {
     @AppStorage(ChatAppearance.auraTextKey) private var auraText = ""
     @AppStorage(ChatAppearance.bubbleTransparencyKey) private var bubbleTransparency = 0.0
     @AppStorage(ChatAppearance.textTransparencyKey) private var textTransparency = 0.0
+    @AppStorage(ChatAppearance.textPaddingKey) private var textPadding = ChatAppearance.defaultTextPadding
     @AppStorage(ChatAppearance.avatarSizeKey) private var avatarSize = "small"
     @AppStorage(ChatAppearance.userBubbleBorderKey) private var userBubbleBorder = ""
     @AppStorage(ChatAppearance.auraBubbleBorderKey) private var auraBubbleBorder = ""
@@ -441,6 +442,12 @@ struct ChatAppearanceSettings: View {
             HStack {
                 Slider(value: $fontSize, in: ChatAppearance.sizes, step: 1)
                 Text("\(Int(fontSize)) pt").monospacedDigit().foregroundStyle(.secondary).frame(width: 40, alignment: .trailing)
+            }
+        }
+        LabeledContent("Message text padding") {
+            HStack {
+                Slider(value: $textPadding, in: ChatAppearance.textPaddings, step: 1)
+                Text("\(Int(textPadding)) pt").monospacedDigit().foregroundStyle(.secondary).frame(width: 40, alignment: .trailing)
             }
         }
         BubbleColorRow(title: "Your bubbles", hex: $userBubble)
@@ -479,6 +486,7 @@ struct ChatAppearanceSettings: View {
                 auraText = ""
                 bubbleTransparency = 0
                 textTransparency = 0
+                textPadding = ChatAppearance.defaultTextPadding
                 avatarSize = "small"
                 userBubbleBorder = ""
                 auraBubbleBorder = ""
@@ -540,6 +548,7 @@ struct BubbleColorRow: View {
 struct BubblePreview: View {
     let text: ChatTextStyle
     let colors: BubbleColors
+    @AppStorage(ChatAppearance.textPaddingKey) private var textPadding = ChatAppearance.defaultTextPadding
 
     var body: some View {
         VStack(spacing: 6) {
@@ -549,7 +558,8 @@ struct BubblePreview: View {
                     .overlay(Circle().strokeBorder(colors.userAvatarBorder, lineWidth: 1))
                 Text("Hi Aura, can you summarise my notes?")
                     .font(text.font())
-                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .padding(.horizontal, ChatAppearance.textPadding(textPadding))
+                    .padding(.vertical, ChatAppearance.verticalTextPadding(textPadding))
                     .foregroundStyle(colors.userText)
                     .background(colors.userBackground, in: .rect(cornerRadius: 14))
                     .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(colors.userBorder, lineWidth: 1))
@@ -559,7 +569,8 @@ struct BubblePreview: View {
                     .overlay(Circle().strokeBorder(colors.auraAvatarBorder, lineWidth: 1))
                 Text("Of course. Your notes cover **three** things:")
                     .font(text.font())
-                    .padding(.horizontal, 10).padding(.vertical, 6)
+                    .padding(.horizontal, ChatAppearance.textPadding(textPadding))
+                    .padding(.vertical, ChatAppearance.verticalTextPadding(textPadding))
                     .foregroundStyle(colors.auraText)
                     .background(colors.auraBackground, in: .rect(cornerRadius: 14))
                     .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(colors.auraBorder, lineWidth: 1))

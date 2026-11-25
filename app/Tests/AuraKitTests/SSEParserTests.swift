@@ -9,6 +9,7 @@ struct SSEParserTests {
 
     @Test func parsesEveryEventType() {
         let events = parse([
+            "event: model", #"data: {"provider": "ollama", "model": "qwen3:8b"}"#, "",
             "event: thinking", "data: {}", "",
             "event: waking", "data: {}", "",
             "event: status", #"data: {"text": "[Tool: File_System_Tool] Reading 'notes.txt'..."}"#, "",
@@ -19,6 +20,7 @@ struct SSEParserTests {
             "event: done", "data: {}", "",
         ])
         #expect(events == [
+            .model(ModelChoice(provider: "ollama", model: "qwen3:8b")),
             .thinking, .waking,
             .status("[Tool: File_System_Tool] Reading 'notes.txt'..."),
             .text("Hello"),

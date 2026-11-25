@@ -46,6 +46,8 @@ struct RecoveryTests {
         s.send("Tidy my vault")
         #expect(await eventually { s.phase == .streaming })
         s.stop()
+        #expect(s.isStopping)
+        s.stop()  // one tap is one server request, even before the first response returns
         await waitForTurn(s)
         #expect(fake.stops == 1)
         #expect(s.items.last?.text == "Stopped. Whatever Aura had already done stays done.")
