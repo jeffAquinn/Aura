@@ -138,12 +138,15 @@ struct HeaderView: View {
         HStack(spacing: 10) {
             HStack(spacing: 10) {
                 AvatarView(image: avatar, size: 30, pulsing: store.phase == .waking || store.connection == .starting || speaking)
-                VStack(alignment: .leading, spacing: 1) {
+                VStack(alignment: .leading, spacing: 2) {
                     Text(store.persona.name).font(.headline)
-                    HStack(spacing: 5) {
-                        Circle().fill(dotColor).frame(width: 6, height: 6)
-                        Text(subtitle).font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                        HealthDots(health: store.health)
+                    HStack(alignment: .center, spacing: 8) {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(subtitle).font(.caption.weight(.medium)).lineLimit(1)
+                            Text(statusDetail).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                        }
+                        Spacer(minLength: 4)
+                        StatusDots(activityColor: dotColor, activityDetail: activityDetail, health: store.health)
                     }
                 }
                 Spacer(minLength: 0)
@@ -204,17 +207,51 @@ struct HeaderView: View {
 
     private var subtitle: String {
         switch store.connection {
-        case .starting: "Starting…"
-        case .offline: "Offline"
+        case .starting: "Starting Aura…"
+        case .offline: "Aura is offline"
         case .connected:
             switch store.phase {
-            case .idle: speaking ? "Speaking…" : "Ready"
-            case .thinking: "Thinking…"
-            case .waking: "Waking up…"
-            case .streaming: "Typing…"
-            case .awaitingApproval: "Needs your approval"
+            case .idle: speaking ? "Speaking a reply" : "Ready for your message"
+            case .thinking: "Thinking through your request"
+            case .waking: "Waking the selected model"
+            case .streaming: "Writing a reply"
+            case .awaitingApproval: "Waiting for your approval"
             }
         }
+    }
+
+    private var activityDetail: String {
+        switch store.connection {
+        case .starting: "Aura Server is starting."
+        case let .offline(message): "Aura Server is unavailable: \(message)"
+        case .connected: "Aura Server is connected."
+        }
+    }
+
+    private var statusDetail: String {
+        [connectionStatus, runtimeStatus, governanceStatus].joined(separator: " · ")
+    }
+
+    private var connectionStatus: String {
+        switch store.connection {
+        case .starting: "Connecting"
+        case .connected: "Connected"
+        case .offline: "Offline"
+        }
+    }
+
+    private var runtimeStatus: String {
+        switch store.health?.runtimeHealth?.state {
+        case "loaded": "Model loaded"
+        case "idle": "Model idle"
+        case "unavailable": "Model unavailable"
+        default: "Checking model"
+        }
+    }
+
+    private var governanceStatus: String {
+        guard let governance = store.health?.governanceHealth else { return "Checking safeguards" }
+        return governance.state == "attention" ? "Review needed" : "Safeguards ready"
     }
 
     private var dotColor: Color {
@@ -231,20 +268,24 @@ struct HeaderView: View {
     }
 }
 
-/// Two compact, evidence-scoped indicators: runtime availability and governance attention.
-/// They never claim the quality or truth of an answer—only what Aura can observe locally.
-private struct HealthDots: View {
+/// Three compact, evidence-scoped indicators for the current session, runtime, and safeguards.
+/// The dots sit to the right of the explanatory text so they reinforce, rather than replace, it.
+private struct StatusDots: View {
+    let activityColor: Color
+    let activityDetail: String
     let health: Health?
 
     var body: some View {
         HStack(spacing: 3) {
+            Circle().fill(activityColor).frame(width: 6, height: 6)
+                .help(activityDetail)
             Circle().fill(runtimeColor).frame(width: 6, height: 6)
                 .help(runtimeDetail)
             Circle().fill(governanceColor).frame(width: 6, height: 6)
                 .help(governanceDetail)
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Runtime: \(runtimeDetail). Governance: \(governanceDetail)")
+        .accessibilityLabel("Session: \(activityDetail). Runtime: \(runtimeDetail). Safeguards: \(governanceDetail)")
     }
 
     private var runtimeColor: Color {
