@@ -114,6 +114,26 @@ public struct AgentsOverview: Codable, Sendable, Equatable {
     public let inbox: [AgentInfo]
 }
 
+/// The user-visible metadata accepted for a local agent candidate or quarantined import.
+/// It deliberately has no code, path, connector, credential, or executable-content field.
+public struct AgentCandidateRequest: Codable, Sendable, Equatable {
+    public let name: String
+    public let purpose: String
+    public let provenance: String
+    public let intentDelta: String
+    public let memory: String
+
+    public init(name: String, purpose: String, provenance: String,
+                intentDelta: String = "Unmeasured: candidate has not been evaluated.",
+                memory: String = "No memory imported.") {
+        self.name = name
+        self.purpose = purpose
+        self.provenance = provenance
+        self.intentDelta = intentDelta
+        self.memory = memory
+    }
+}
+
 public struct Finding: Codable, Sendable, Equatable, Hashable {
     public let check: String
     public let severity: String  // pass | info | yellow | red | reject
@@ -286,6 +306,7 @@ public final class WorkshopStore {
     public private(set) var inbox: [InboxItem] = []
     public private(set) var agents: [AgentInfo] = []
     public private(set) var agentInbox: [AgentInfo] = []
+    public private(set) var agentError: String?
     public private(set) var tasks: [TaskInfo] = []
     public private(set) var status: SystemStatus?
     public private(set) var developer: DeveloperInfo?
@@ -443,6 +464,23 @@ public final class WorkshopStore {
             lastError = FriendlyMessage.describe(error)
         }
     }
+
+    /// Create or quarantine an import only after the user submits this form. It still needs an
+    /// independent audit and an explicit Approve & Deploy decision before recognition.
+    public func createAgent(_ request: AgentCandidateRequest, imported: Bool) async -> Bool {
+        guard let t = transport() else { return false }
+        do {
+            _ = try await t.createAgent(request, imported: imported)
+            agentError = nil
+            await refresh()
+            return true
+        } catch {
+            agentError = FriendlyMessage.describe(error)
+            return false
+        }
+    }
+
+    public func clearAgentError() { agentError = nil }
 
     /// The Audit Card decision. Deploy only ever follows an explicit approve.
     public func decide(approve: Bool) async {

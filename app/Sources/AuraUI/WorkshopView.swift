@@ -4,10 +4,13 @@ import SwiftUI
 /// The Workshop: where the user, as Chief Auditor, reviews and decides on new skills.
 public struct WorkshopView: View {
     let store: WorkshopStore
+    let openWorkstation: () -> Void
     @State private var sheet: BuildSheetRequest?
+    @State private var agentSheet: AgentSheetRequest?
 
-    public init(store: WorkshopStore) {
+    public init(store: WorkshopStore, openWorkstation: @escaping () -> Void = {}) {
         self.store = store
+        self.openWorkstation = openWorkstation
     }
 
     public var body: some View {
@@ -36,6 +39,17 @@ public struct WorkshopView: View {
                     Button { sheet = BuildSheetRequest(improve: nil) } label: { Label("New Skill", systemImage: "plus") }
                         .help("Have Claude Code or Codex build a new skill")
                 }
+                ToolbarItem {
+                    Menu {
+                        Button("Create Agent…") { agentSheet = .create }
+                        Button("Import Agent…") { agentSheet = .import }
+                        Divider()
+                        Button("Open Workstation in Finder", action: openWorkstation)
+                    } label: {
+                        Label("Workstation", systemImage: "desktopcomputer")
+                    }
+                    .help("Create or quarantine an agent candidate, or open its Vault folder")
+                }
             }
             .safeAreaInset(edge: .top, spacing: 0) {
                 let pending = SkillAlert.pending(store.alerts)
@@ -53,7 +67,98 @@ public struct WorkshopView: View {
             }
         }
         .sheet(item: $sheet) { request in NewBuildSheet(store: store, improve: request.improve) }
+        .sheet(item: $agentSheet) { request in NewAgentSheet(store: store, imported: request == .import) }
         .task { await store.refresh() }
+    }
+}
+
+private enum AgentSheetRequest: String, Identifiable {
+    case create, `import`
+    var id: String { rawValue }
+}
+
+/// The Workstation's user-facing front door. Imports describe an arriving Other; they cannot
+/// include executable content or connect an external account through this form.
+private struct NewAgentSheet: View {
+    let store: WorkshopStore
+    let imported: Bool
+    @Environment(\.dismiss) private var dismiss
+    @State private var name = ""
+    @State private var purpose = ""
+    @State private var provenance = ""
+    @State private var intentDelta = "Unmeasured: candidate has not been evaluated."
+    @State private var memory = "No memory imported."
+    @State private var saving = false
+
+    private var nameValid: Bool {
+        name.range(of: "^[a-z][a-z0-9_]{1,38}$", options: .regularExpression) != nil
+    }
+    private var problems: [String] {
+        var values: [String] = []
+        if !nameValid { values.append("Name: lowercase letters, digits, and underscores; 2–39 characters.") }
+        if purpose.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { values.append("Purpose is required.") }
+        if provenance.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { values.append("Provenance is required.") }
+        if imported && intentDelta.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { values.append("Intent delta is required for an import.") }
+        if imported && memory.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { values.append("State whether memory was imported.") }
+        return values
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text(imported ? "Import Agent Candidate" : "Create Agent Candidate").font(.title2.weight(.semibold))
+            Text(imported
+                 ? "This records an external agent's declared metadata in quarantine. It does not connect to or execute that agent."
+                 : "This creates a local non-executable candidate in the Workstation Agent Inbox.")
+                .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            LabeledContent("Name") { TextField("e.g. research_scout", text: $name).textFieldStyle(.roundedBorder) }
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Purpose").font(.headline)
+                TextEditor(text: $purpose).frame(height: 58).overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.secondary.opacity(0.3)))
+            }
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Provenance").font(.headline)
+                TextField(imported ? "Where did this agent description come from?" : "Created locally through Aura", text: $provenance)
+                    .textFieldStyle(.roundedBorder)
+            }
+            if imported {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Intent Delta").font(.headline)
+                    TextEditor(text: $intentDelta).frame(height: 52).overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.secondary.opacity(0.3)))
+                    Text("State the observed gap between claimed and tested behavior. “Unmeasured” is valid before evaluation.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Memory Declaration").font(.headline)
+                    TextEditor(text: $memory).frame(height: 44).overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.secondary.opacity(0.3)))
+                }
+            }
+            Label("No code, paths, tools, connectors, credentials, routines, model weights, or execution can be imported here.",
+                  systemImage: "lock.shield").font(.caption).foregroundStyle(.secondary)
+            ForEach(problems, id: \.self) { Label($0, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange) }
+            if let error = store.agentError { Label(error, systemImage: "xmark.octagon").font(.caption).foregroundStyle(.red) }
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button(imported ? "Quarantine Import" : "Create Candidate") { submit() }
+                    .disabled(!problems.isEmpty || saving)
+            }
+        }
+        .padding(20)
+        .frame(width: 580)
+        .onAppear {
+            store.clearAgentError()
+            if !imported { provenance = "Created locally through Aura." }
+        }
+    }
+
+    private func submit() {
+        saving = true
+        let request = AgentCandidateRequest(name: name, purpose: purpose, provenance: provenance,
+                                            intentDelta: intentDelta, memory: memory)
+        Task {
+            if await store.createAgent(request, imported: imported) { dismiss() }
+            saving = false
+        }
     }
 }
 

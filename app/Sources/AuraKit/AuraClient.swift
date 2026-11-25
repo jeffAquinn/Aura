@@ -28,6 +28,7 @@ public protocol AuraTransport: Sendable {
     func speech(_ text: String, voice: String, speed: Double) async throws -> Data
     func skills() async throws -> SkillsOverview
     func agents() async throws -> AgentsOverview
+    func createAgent(_ request: AgentCandidateRequest, imported: Bool) async throws -> AgentInfo
     func toggleSkill(_ name: String, enabled: Bool) async throws
     func propose(_ skill: String) async throws -> TaskInfo
     func proposeAgent(_ name: String) async throws -> TaskInfo
@@ -85,6 +86,7 @@ extension AuraTransport {
     public func speech(_ text: String, voice: String, speed: Double) async throws -> Data { throw AuraClientError.badResponse }
     public func skills() async throws -> SkillsOverview { SkillsOverview(installed: [], inbox: []) }
     public func agents() async throws -> AgentsOverview { AgentsOverview(installed: [], inbox: []) }
+    public func createAgent(_ request: AgentCandidateRequest, imported: Bool) async throws -> AgentInfo { throw AuraClientError.badResponse }
     public func toggleSkill(_ name: String, enabled: Bool) async throws {}
     public func propose(_ skill: String) async throws -> TaskInfo { throw AuraClientError.badResponse }
     public func proposeAgent(_ name: String) async throws -> TaskInfo { throw AuraClientError.badResponse }
@@ -295,6 +297,11 @@ public final class AuraClient: AuraTransport {
 
     public func agents() async throws -> AgentsOverview {
         try Self.decoder.decode(AgentsOverview.self, from: await send(request("/v1/agents")))
+    }
+
+    public func createAgent(_ candidate: AgentCandidateRequest, imported: Bool) async throws -> AgentInfo {
+        let route = imported ? "/v1/agents/imports" : "/v1/agents/candidates"
+        return try Self.decoder.decode(AgentInfo.self, from: await send(request(route, body: candidate)))
     }
 
     public func toggleSkill(_ name: String, enabled: Bool) async throws {

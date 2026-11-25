@@ -8,6 +8,7 @@ final class FakeWorkshop: AuraTransport, @unchecked Sendable {
     var decisions: [(String, Bool)] = []
     var running = false
     var actions: [String] = []
+    var agentRequests: [(AgentCandidateRequest, Bool)] = []
 
     func uninstall(_ skill: String) async throws { actions.append("uninstall \(skill)") }
     func keepFlagged(_ skill: String) async throws { actions.append("keep \(skill)") }
@@ -21,6 +22,14 @@ final class FakeWorkshop: AuraTransport, @unchecked Sendable {
 
     func skills() async throws -> SkillsOverview {
         SkillsOverview(installed: [], inbox: [InboxItem(name: "pdf_text", version: "1.0.0", purpose: "Extract PDF text.", error: nil)])
+    }
+
+    func agents() async throws -> AgentsOverview { AgentsOverview(installed: [], inbox: []) }
+
+    func createAgent(_ request: AgentCandidateRequest, imported: Bool) async throws -> AgentInfo {
+        agentRequests.append((request, imported))
+        return AgentInfo(name: request.name, version: "1.0.0", purpose: request.purpose,
+                         origin: imported ? "imported" : "created", error: nil)
     }
 
     func propose(_ skill: String) async throws -> TaskInfo {
@@ -39,6 +48,12 @@ final class FakeWorkshop: AuraTransport, @unchecked Sendable {
         return taskList[0]
     }
 
+    func cancelAudit(_ id: String) async throws -> TaskInfo {
+        actions.append("cancel \(id)")
+        taskList = taskList.map { TaskInfo(id: $0.id, skill: $0.skill, stage: "cancelled", message: "Cancelled.") }
+        return taskList[0]
+    }
+
     static let report = AuditReportInfo(
         skill: "pdf_text", version: "1.0.0", purpose: "Extract PDF text.",
         findings: [Finding(check: "write-scope", severity: "pass", message: "only skills/pdf_text/ changed")],
@@ -48,6 +63,18 @@ final class FakeWorkshop: AuraTransport, @unchecked Sendable {
 
 @MainActor
 struct WorkshopStoreTests {
+    @Test func creatingAnImportUsesTheQuarantineEndpointShape() async {
+        let fake = FakeWorkshop()
+        let store = WorkshopStore { fake }
+        let request = AgentCandidateRequest(name: "research_scout", purpose: "Summarize public sources.",
+                                            provenance: "User-supplied template metadata.",
+                                            intentDelta: "Unmeasured.", memory: "No memory imported.")
+        let created = await store.createAgent(request, imported: true)
+        #expect(created)
+        #expect(fake.agentRequests.count == 1)
+        #expect(fake.agentRequests[0].0 == request && fake.agentRequests[0].1)
+    }
+
     @Test func proposingSelectsTheNewAuditAndDecidingSendsTheChoice() async {
         let fake = FakeWorkshop()
         let store = WorkshopStore { fake }
@@ -62,6 +89,16 @@ struct WorkshopStoreTests {
         await store.decide(approve: false)  // the default answer
         #expect(fake.decisions.count == 1 && fake.decisions[0] == ("t1", false))
         #expect(store.tasks.first?.stage == "rejected")
+    }
+
+    @Test func cancellingAnAuditCallsTheServer() async {
+        let fake = FakeWorkshop()
+        fake.running = true
+        let store = WorkshopStore { fake }
+        await store.propose("pdf_text")
+        await store.cancelAudit("t1")
+        #expect(fake.actions == ["cancel t1"])
+        #expect(store.tasks.first?.stage == "cancelled")
     }
 
     @Test func decodesTheServersJSON() throws {

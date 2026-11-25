@@ -270,6 +270,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         add(hotKey == nil ? "Open Aura" : "Open Aura (⌥Space)", #selector(openPanel))
         add("New Conversation", #selector(newConversation))
         add("Open Workshop…", #selector(openWorkshopFromMenu))
+        add("Open Workstation in Finder", #selector(openWorkstation))
         add("Connections…", #selector(openConnectionsFromMenu))
         menu.addItem(.separator())
         add("Open Vault in Finder", #selector(openVault))
@@ -293,7 +294,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 backing: .buffered, defer: false)
             window.title = "Aura Workshop"
             window.isReleasedWhenClosed = false
-            window.contentView = NSHostingView(rootView: WorkshopView(store: workshop))
+            window.contentView = NSHostingView(rootView: WorkshopView(store: workshop, openWorkstation: { [weak self] in
+                self?.openWorkstation()
+            }))
             window.setFrameAutosaveName("AuraWorkshop")
             if window.frame.origin == .zero { window.center() }
             workshopWindow = window
@@ -338,6 +341,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let vault = (try? await store.transport?.health())?.vault
                 ?? FileManager.default.homeDirectoryForCurrentUser.appending(path: "Documents/Aura_Vault").path
             NSWorkspace.shared.open(URL(fileURLWithPath: vault))
+        }
+    }
+
+    @objc private func openWorkstation() {
+        Task {
+            let vault = (try? await store.transport?.health())?.vault
+                ?? FileManager.default.homeDirectoryForCurrentUser.appending(path: "Documents/Aura_Vault").path
+            let workstation = URL(fileURLWithPath: vault).appending(path: "Workstation", directoryHint: .isDirectory)
+            do {
+                try FileManager.default.createDirectory(at: workstation, withIntermediateDirectories: true)
+                NSWorkspace.shared.open(workstation)
+            } catch {
+                AppLog.write("couldn't open Workstation: \(error.localizedDescription)")
+            }
         }
     }
 
