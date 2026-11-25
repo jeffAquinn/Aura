@@ -214,7 +214,7 @@ public enum ChatAppearance {
 
     /// Quick choices, so a color can be picked without leaving the settings popover.
     public static let swatches: [(name: String, hex: String)] = [
-        ("Blue", ""), ("Violet", defaultAura), ("Indigo", "#4F46E5"), ("Teal", "#0E7C7E"),
+        ("Blue", ""), ("White", "#FFFFFF"), ("Black", "#000000"), ("Violet", defaultAura), ("Indigo", "#4F46E5"), ("Teal", "#0E7C7E"),
         ("Green", "#1F7A3D"), ("Orange", "#B35400"), ("Pink", "#D6336C"), ("Graphite", "#5B6270"),
     ]
 
