@@ -1,13 +1,6 @@
+import AppKit
 import AuraKit
 import SwiftUI
-
-/// Visual theme (Gemma's mandate): plain system glass, or Aura's starfield beneath it.
-public enum Theme: String, CaseIterable, Sendable {
-    case glass, starfield
-    public static let key = "auraTheme"
-
-    var label: String { self == .glass ? "Clean Glass" : "Aura Starfield" }
-}
 
 /// Voice, appearance, persona and keys. Changes made here are the user acting directly: no approval.
 struct SettingsView: View {
@@ -50,6 +43,7 @@ struct SettingsView: View {
                 .pickerStyle(.segmented)
                 ChatAppearanceSettings()
             }
+            UserProfileSection()
             Section("Persona") {
                 LabeledContent("Name", value: store.persona.name)
                 if !store.persona.tone.isEmpty {
@@ -80,6 +74,7 @@ struct SettingsView: View {
         .confirmationDialog("Reset \(store.persona.name)'s persona to the default?", isPresented: $confirmReset) {
             Button("Reset", role: .destructive) { Task { await store.resetPersona() } }
         }
+        .background { AuraThemeBackdrop() }
     }
 
     static let spokenContentSettings = URL(string: "x-apple.systempreferences:com.apple.preference.universalaccess?SpokenContent")!
@@ -98,6 +93,51 @@ struct SettingsView: View {
                 if !editing { Task { await store.updateVoice(patch(value.wrappedValue)) } }
             }
         }
+    }
+}
+
+/// The user's identity is local application preference, independent of Aura's editable persona.
+struct UserProfileSection: View {
+    @AppStorage(UserProfile.nameKey) private var name = ""
+    @AppStorage(UserProfile.avatarPathKey) private var avatarPath = ""
+    @AppStorage(UserProfile.backgroundPathKey) private var backgroundPath = ""
+    @AppStorage(Theme.key) private var theme = Theme.glass.rawValue
+    @State private var error: String?
+
+    var body: some View {
+        Section("Your Profile") {
+            HStack(spacing: 10) {
+                UserAvatarView(size: 44)
+                TextField("Display name", text: $name, prompt: Text("Your name"))
+                    .onChange(of: name) { _, value in if value.count > 80 { name = String(value.prefix(80)) } }
+            }
+            Text("This name and avatar identify you locally in Aura. They are not sent to a model or stored in Aura_Vault.")
+                .font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Button("Choose Avatar…") { choose("avatar") }
+                if !avatarPath.isEmpty { Button("Remove", role: .destructive) { avatarPath = "" } }
+            }
+            HStack {
+                Button("Choose Background…") { choose("background") }
+                if !backgroundPath.isEmpty { Button("Remove", role: .destructive) { backgroundPath = ""; if theme == Theme.custom.rawValue { theme = Theme.glass.rawValue } } }
+            }
+            Text("Images are copied to Aura’s local Application Support folder (20 MB maximum). Custom backgrounds receive a dark contrast overlay.")
+                .font(.caption).foregroundStyle(.secondary)
+            if let error { Label(error, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange) }
+        }
+    }
+
+    private func choose(_ kind: String) {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.image]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            let path = try UserProfile.importImage(url, named: kind)
+            if kind == "avatar" { avatarPath = path } else { backgroundPath = path; theme = Theme.custom.rawValue }
+            error = nil
+        } catch { self.error = error.localizedDescription }
     }
 }
 

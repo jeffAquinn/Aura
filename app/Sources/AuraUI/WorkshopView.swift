@@ -13,6 +13,7 @@ public struct WorkshopView: View {
     }
 
     public var body: some View {
+        AuraThemedPage {
         NavigationSplitView {
             WorkshopSidebar(store: store, onBuild: { sheet = BuildSheetRequest(improve: $0) })
                 .navigationSplitViewColumnWidth(min: 240, ideal: 280)
@@ -60,6 +61,7 @@ public struct WorkshopView: View {
         }
         .sheet(item: $sheet) { request in NewBuildSheet(store: store, improve: request.improve) }
         .task { await store.refresh() }
+        }
     }
 }
 

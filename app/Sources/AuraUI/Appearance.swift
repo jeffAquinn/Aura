@@ -1,5 +1,115 @@
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
+
+/// Shared window appearance.  The value is stored locally in UserDefaults and is read by every
+/// native Aura surface; it is never part of the Vault or an agent prompt.
+public enum Theme: String, CaseIterable, Sendable {
+    case glass, starfield, custom
+    public static let key = "auraTheme"
+
+    var label: String {
+        switch self {
+        case .glass: "Clean Glass"
+        case .starfield: "Aura Starfield"
+        case .custom: "My Background"
+        }
+    }
+}
+
+public enum UserProfile {
+    public static let nameKey = "auraUserDisplayName"
+    public static let avatarPathKey = "auraUserAvatarPath"
+    public static let backgroundPathKey = "auraUserBackgroundPath"
+    private static let limit = 20 * 1_024 * 1_024
+
+    static func image(_ path: String) -> Image? {
+        guard !path.isEmpty, let image = NSImage(contentsOfFile: path), image.size.width > 0, image.size.height > 0 else { return nil }
+        return Image(nsImage: image)
+    }
+
+    static func importImage(_ url: URL, named name: String) throws -> String {
+        let bytes = try Data(contentsOf: url, options: [.mappedIfSafe])
+        guard bytes.count <= limit else { throw ProfileImageError.tooLarge }
+        guard let image = NSImage(data: bytes), image.size.width > 0, image.size.height > 0 else { throw ProfileImageError.invalid }
+        let root = try FileManager.default.url(for: .applicationSupportDirectory, in: .userDomainMask,
+                                               appropriateFor: nil, create: true)
+            .appending(path: "Aura/Profile", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let ext = ["png", "jpg", "jpeg", "heic", "tiff", "gif"].contains(url.pathExtension.lowercased())
+            ? url.pathExtension.lowercased() : "png"
+        let destination = root.appending(path: "\(name).\(ext)")
+        try bytes.write(to: destination, options: .atomic)
+        return destination.path
+    }
+
+    enum ProfileImageError: LocalizedError { case tooLarge, invalid
+        var errorDescription: String? { self == .tooLarge ? "Choose an image smaller than 20 MB." : "That file is not a supported image." }
+    }
+}
+
+/// Shared backdrop for the chat panel and all auxiliary Aura windows.  A dark scrim is always
+/// placed over custom imagery so system text and controls retain a reliable contrast floor.
+public struct AuraThemeBackdrop: View {
+    @AppStorage(Theme.key) private var selected = Theme.glass.rawValue
+    @AppStorage(UserProfile.backgroundPathKey) private var backgroundPath = ""
+    let starfield: Image?
+
+    public init(starfield: Image? = nil) { self.starfield = starfield }
+
+    public var body: some View {
+        switch Theme(rawValue: selected) ?? .glass {
+        case .glass: Color.clear
+        case .starfield:
+            if let image = starfield ?? UserProfile.image(Bundle.main.path(forResource: "Starfield", ofType: "png") ?? "") {
+                image.resizable().scaledToFill().blur(radius: 18).opacity(0.38)
+            } else { Color.clear }
+        case .custom:
+            if let image = UserProfile.image(backgroundPath) {
+                image.resizable().scaledToFill().blur(radius: 10).overlay(Color.black.opacity(0.42))
+            } else { Color.clear }
+        }
+    }
+}
+
+/// Explicit variant used by visual regression tests, where the chosen theme is injected rather
+/// than read from UserDefaults.
+struct ThemeBackdrop: View {
+    let theme: Theme
+    let image: Image?
+    var body: some View {
+        switch theme {
+        case .glass: Color.clear
+        case .starfield:
+            if let image { image.resizable().scaledToFill().blur(radius: 18).opacity(0.38) } else { Color.clear }
+        case .custom: Color.clear
+        }
+    }
+}
+
+/// Applies the selected visual language to any full-window Aura feature.
+public struct AuraThemedPage<Content: View>: View {
+    let content: Content
+    public init(@ViewBuilder content: () -> Content) { self.content = content() }
+    public var body: some View {
+        content.background { AuraThemeBackdrop() }.background(.regularMaterial)
+    }
+}
+
+public struct UserAvatarView: View {
+    @AppStorage(UserProfile.avatarPathKey) private var avatarPath = ""
+    let size: CGFloat
+    public init(size: CGFloat = 22) { self.size = size }
+    public var body: some View {
+        Group {
+            if let image = UserProfile.image(avatarPath) { image.resizable().scaledToFill() }
+            else { Image(systemName: "person.crop.circle.fill").resizable().scaledToFit().padding(size * 0.12).foregroundStyle(.secondary) }
+        }
+        .frame(width: size, height: size).clipShape(Circle())
+        .overlay(Circle().strokeBorder(.white.opacity(0.45), lineWidth: 0.75))
+        .accessibilityLabel("Your avatar")
+    }
+}
 
 // MARK: - chat appearance (Settings → Appearance): font, size and bubble colors
 

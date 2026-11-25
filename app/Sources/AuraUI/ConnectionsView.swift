@@ -11,6 +11,7 @@ public struct ConnectionsView: View {
     }
 
     public var body: some View {
+        AuraThemedPage {
         NavigationSplitView {
             List(selection: Binding(get: { store.selectedID }, set: { store.selectedID = $0 })) {
                 Section("Connections") {
@@ -31,6 +32,7 @@ public struct ConnectionsView: View {
             }
         }
         .task { await store.refresh() }
+        }
     }
 }
 

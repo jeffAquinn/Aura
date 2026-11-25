@@ -31,6 +31,7 @@ public struct WorkstationView: View {
     }
 
     public var body: some View {
+        AuraThemedPage {
         NavigationSplitView {
             List(selection: selection) {
                 Section("Registry health") {
@@ -113,6 +114,7 @@ public struct WorkstationView: View {
         .sheet(item: $sheet) { request in NewAgentSheet(store: store, imported: request == .import) }
         .task { await store.refresh() }
         .frame(minHeight: 520)
+        }
     }
 
     private func auditStage(_ task: TaskInfo) -> String {

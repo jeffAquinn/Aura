@@ -16,6 +16,7 @@ public struct HOLTerminalView: View {
     }
 
     public var body: some View {
+        AuraThemedPage {
         VStack(spacing: 0) {
             header
             Divider()
@@ -40,6 +41,7 @@ public struct HOLTerminalView: View {
             Button("Cancel", role: .cancel) { restoreSavepoint = nil }
         } message: {
             Text("The current Vault Aura copy will be replaced by this savepoint. The Git checkout is unaffected.")
+        }
         }
     }
 

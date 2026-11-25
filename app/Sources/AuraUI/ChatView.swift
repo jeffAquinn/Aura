@@ -12,7 +12,6 @@ public struct ChatView: View {
     let onOpenWorkstation: () -> Void
     let onOpenVault: () -> Void
     let onOpenAuditLog: () -> Void
-    @AppStorage(Theme.key) private var theme = Theme.glass.rawValue
     @AppStorage(ChatAppearance.sizeKey) private var fontSize = ChatAppearance.defaultSize
     @AppStorage(ChatAppearance.styleKey) private var fontStyle = ChatFontStyle.system.rawValue
     @AppStorage(ChatAppearance.userBubbleKey) private var userBubble = ""
@@ -46,24 +45,13 @@ public struct ChatView: View {
             InputBar(store: store)
         }
         .frame(minWidth: 360, minHeight: 440)
-        .background { ThemeBackdrop(theme: Theme(rawValue: theme) ?? .glass, image: backdrop) }
+        .background { AuraThemeBackdrop(starfield: backdrop) }
         .environment(\.chatText, ChatAppearance.textStyle(size: fontSize, style: fontStyle))
         .environment(\.bubbles, ChatAppearance.bubbles(user: userBubble, aura: auraBubble))
     }
 }
 
 /// "Aura Starfield": a faint, blurred starfield from the portrait, under the system glass.
-struct ThemeBackdrop: View {
-    let theme: Theme
-    let image: Image?
-
-    var body: some View {
-        if theme == .starfield, let image {
-            image.resizable().scaledToFill().blur(radius: 18).opacity(0.38).allowsHitTesting(false)
-        }
-    }
-}
-
 // MARK: - header
 
 struct AvatarView: View {
@@ -372,6 +360,7 @@ struct ItemView: View {
                         .foregroundStyle(bubbles.userText)
                         .background(bubbles.user, in: .rect(cornerRadius: 16))
                         .contextMenu { MessageMenu(item: item, store: store) }
+                    UserAvatarView(size: 22)
                 }
                 if let developer = item.developer {  // handed to Claude Code or Codex in the chat box
                     Label("To \(EngineInfo.named(developer)?.label ?? developer)", systemImage: DeveloperPicker.symbol)
