@@ -108,6 +108,7 @@ class Sandbox:
             "--read-only", "--tmpfs", "/tmp:rw,size=64m,mode=1777",  # scratch space only
             "--memory", "512m", "--memory-swap", "512m",      # no swap beyond the cap
             "--cpus", "1", "--pids-limit", "64",
+            "--ulimit", "nofile=256:256",                        # prevent descriptor exhaustion
             "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
             "--user", "65534:65534",                          # nobody
             "--workdir", "/tmp", "--env", "HOME=/tmp",

@@ -35,6 +35,7 @@ def test_command_carries_every_hardening_flag(tmp_path):
         "--memory 512m --memory-swap 512m",
         "--cpus 1",
         "--pids-limit 64",
+        "--ulimit nofile=256:256",
         "--cap-drop ALL",
         "--security-opt no-new-privileges",
         "--user 65534:65534",
@@ -217,6 +218,12 @@ print([l for l in open('/proc/self/status') if l.startswith('CapEff')][0].split(
 """)
     uid_gid, cap_eff = r.stdout.splitlines()
     assert uid_gid == "65534 65534" and int(cap_eff, 16) == 0
+
+
+@live
+def test_file_descriptors_are_limited(box):
+    r = py(box, "import resource\nprint(*resource.getrlimit(resource.RLIMIT_NOFILE))")
+    assert r.stdout.strip() == "256 256"
 
 
 @live
