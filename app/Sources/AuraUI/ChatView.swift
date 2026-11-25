@@ -143,10 +143,8 @@ struct HeaderView: View {
                     HStack(alignment: .center, spacing: 8) {
                         VStack(alignment: .leading, spacing: 1) {
                             Text(subtitle).font(.caption.weight(.medium)).lineLimit(1)
-                            Text(statusDetail).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+                            StatusChips(activityColor: dotColor, activityDetail: activityDetail, health: store.health)
                         }
-                        Spacer(minLength: 4)
-                        StatusDots(activityColor: dotColor, activityDetail: activityDetail, health: store.health)
                     }
                 }
                 Spacer(minLength: 0)
@@ -228,32 +226,6 @@ struct HeaderView: View {
         }
     }
 
-    private var statusDetail: String {
-        [connectionStatus, runtimeStatus, governanceStatus].joined(separator: " · ")
-    }
-
-    private var connectionStatus: String {
-        switch store.connection {
-        case .starting: "Connecting"
-        case .connected: "Connected"
-        case .offline: "Offline"
-        }
-    }
-
-    private var runtimeStatus: String {
-        switch store.health?.runtimeHealth?.state {
-        case "loaded": "Model loaded"
-        case "idle": "Model idle"
-        case "unavailable": "Model unavailable"
-        default: "Checking model"
-        }
-    }
-
-    private var governanceStatus: String {
-        guard let governance = store.health?.governanceHealth else { return "Checking safeguards" }
-        return governance.state == "attention" ? "Review needed" : "Safeguards ready"
-    }
-
     private var dotColor: Color {
         switch store.connection {
         case .starting: .orange
@@ -268,24 +240,38 @@ struct HeaderView: View {
     }
 }
 
-/// Three compact, evidence-scoped indicators for the current session, runtime, and safeguards.
-/// The dots sit to the right of the explanatory text so they reinforce, rather than replace, it.
-private struct StatusDots: View {
+/// Three compact, evidence-scoped status chips. Each dot stays beside the label it represents.
+private struct StatusChips: View {
     let activityColor: Color
     let activityDetail: String
     let health: Health?
 
     var body: some View {
-        HStack(spacing: 3) {
-            Circle().fill(activityColor).frame(width: 6, height: 6)
-                .help(activityDetail)
-            Circle().fill(runtimeColor).frame(width: 6, height: 6)
-                .help(runtimeDetail)
-            Circle().fill(governanceColor).frame(width: 6, height: 6)
-                .help(governanceDetail)
+        HStack(spacing: 4) {
+            StatusChip(label: activityLabel, color: activityColor, detail: activityDetail)
+            StatusChip(label: runtimeLabel, color: runtimeColor, detail: runtimeDetail)
+            StatusChip(label: governanceLabel, color: governanceColor, detail: governanceDetail)
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Session: \(activityDetail). Runtime: \(runtimeDetail). Safeguards: \(governanceDetail)")
+    }
+
+    private var activityLabel: String {
+        activityDetail.hasPrefix("Aura Server is connected") ? "Connected" : activityDetail.hasPrefix("Aura Server is starting") ? "Starting" : "Offline"
+    }
+
+    private var runtimeLabel: String {
+        switch health?.runtimeHealth?.state {
+        case "loaded": "Model loaded"
+        case "idle": "Model idle"
+        case "unavailable": "Model unavailable"
+        default: "Checking model"
+        }
+    }
+
+    private var governanceLabel: String {
+        guard let governance = health?.governanceHealth else { return "Checking safeguards" }
+        return governance.state == "attention" ? "Review needed" : "Safeguards ready"
     }
 
     private var runtimeColor: Color {
@@ -303,6 +289,29 @@ private struct StatusDots: View {
         guard let governance = health?.governanceHealth else { return "Governance state has not been checked yet." }
         let connections = governance.optionalConnectionAttention
         return connections.isEmpty ? governance.agent.detail : "Optional connection attention: \(connections.joined(separator: ", ")). \(governance.agent.detail)"
+    }
+}
+
+/// A small outlined capsule that uses the configured Aura-message border, so status reads as
+/// part of the same visual system without impersonating a message bubble.
+private struct StatusChip: View {
+    let label: String
+    let color: Color
+    let detail: String
+    @Environment(\.bubbles) private var bubbles
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Circle().fill(color).frame(width: 6, height: 6)
+            Text(label).lineLimit(1)
+        }
+        .font(.caption2.weight(.medium))
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 3)
+        .overlay(Capsule().strokeBorder(bubbles.auraBorder, lineWidth: 1))
+        .help(detail)
+        .accessibilityLabel("\(label): \(detail)")
     }
 }
 
