@@ -48,8 +48,8 @@ public enum UserProfile {
     }
 }
 
-/// Shared backdrop for the chat panel and all auxiliary Aura windows.  A dark scrim is always
-/// placed over custom imagery so system text and controls retain a reliable contrast floor.
+/// Shared backdrop for the chat panel and all auxiliary Aura windows. A light scrim keeps text
+/// readable without hiding the user's chosen image beneath transparent chat bubbles.
 public struct AuraThemeBackdrop: View {
     @AppStorage(Theme.key) private var selected = Theme.glass.rawValue
     @AppStorage(UserProfile.backgroundPathKey) private var backgroundPath = ""
@@ -66,7 +66,7 @@ public struct AuraThemeBackdrop: View {
             } else { Color.clear }
         case .custom:
             if let image = UserProfile.image(backgroundPath) {
-                image.resizable().scaledToFill().blur(radius: 10).overlay(Color.black.opacity(0.42))
+                image.resizable().scaledToFill().overlay(Color.black.opacity(0.16))
             } else { Color.clear }
         }
     }
@@ -92,7 +92,9 @@ public struct AuraThemedPage<Content: View>: View {
     let content: Content
     public init(@ViewBuilder content: () -> Content) { self.content = content() }
     public var body: some View {
-        content.background { AuraThemeBackdrop() }.background(.regularMaterial)
+        // The panel provides the glass boundary; adding a second material here would mute a
+        // custom image again. Individual controls keep their own subtle surfaces for contrast.
+        content.background { AuraThemeBackdrop() }
     }
 }
 

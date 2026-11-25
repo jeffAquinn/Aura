@@ -109,7 +109,9 @@ final class AuraPanel: NSPanel {
         setFrameAutosaveName("AuraPanel")  // remembers its size
 
         let glass = NSGlassEffectView()
-        glass.style = .regular
+        // Custom themes supply their own contrast scrim. Clear glass preserves the chosen
+        // background rather than adding a second dark material layer over it.
+        glass.style = .clear
         glass.cornerRadius = Self.cornerRadius
         glass.contentView = NSHostingView(rootView: rootView)
         glass.autoresizingMask = [.width, .height]
