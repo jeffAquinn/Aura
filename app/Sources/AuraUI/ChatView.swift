@@ -8,22 +8,33 @@ public struct ChatView: View {
     let avatar: Image?
     let backdrop: Image?
     let onRestart: () -> Void
+    let onOpenHOLTerminal: () -> Void
+    let onOpenWorkstation: () -> Void
+    let onOpenVault: () -> Void
+    let onOpenAuditLog: () -> Void
     @AppStorage(Theme.key) private var theme = Theme.glass.rawValue
     @AppStorage(ChatAppearance.sizeKey) private var fontSize = ChatAppearance.defaultSize
     @AppStorage(ChatAppearance.styleKey) private var fontStyle = ChatFontStyle.system.rawValue
     @AppStorage(ChatAppearance.userBubbleKey) private var userBubble = ""
     @AppStorage(ChatAppearance.auraBubbleKey) private var auraBubble = ChatAppearance.defaultAura
 
-    public init(store: ChatStore, avatar: Image?, backdrop: Image? = nil, onRestart: @escaping () -> Void) {
+    public init(store: ChatStore, avatar: Image?, backdrop: Image? = nil, onRestart: @escaping () -> Void,
+                onOpenHOLTerminal: @escaping () -> Void = {}, onOpenWorkstation: @escaping () -> Void = {},
+                onOpenVault: @escaping () -> Void = {}, onOpenAuditLog: @escaping () -> Void = {}) {
         self.store = store
         self.avatar = avatar
         self.backdrop = backdrop
         self.onRestart = onRestart
+        self.onOpenHOLTerminal = onOpenHOLTerminal
+        self.onOpenWorkstation = onOpenWorkstation
+        self.onOpenVault = onOpenVault
+        self.onOpenAuditLog = onOpenAuditLog
     }
 
     public var body: some View {
         VStack(spacing: 0) {
-            HeaderView(store: store, avatar: avatar)
+            HeaderView(store: store, avatar: avatar, onRestart: onRestart, onOpenHOLTerminal: onOpenHOLTerminal,
+                       onOpenWorkstation: onOpenWorkstation, onOpenVault: onOpenVault, onOpenAuditLog: onOpenAuditLog)
             if case let .offline(message) = store.connection {
                 OfflineBanner(message: message, onRestart: onRestart)
             }
@@ -88,10 +99,30 @@ struct AvatarView: View {
 struct HeaderView: View {
     let store: ChatStore
     let avatar: Image?
+    let onRestart: () -> Void
+    let onOpenHOLTerminal: () -> Void
+    let onOpenWorkstation: () -> Void
+    let onOpenVault: () -> Void
+    let onOpenAuditLog: () -> Void
     @State private var showSettings = false
+    @State private var confirmRestart = false
     @Environment(\.rendersOffscreen) private var offscreen
+    @Environment(\.openWorkshop) private var openWorkshop
+    @Environment(\.openConnections) private var openConnections
 
     private var speaking: Bool { store.speech?.isSpeaking == true }
+
+    init(store: ChatStore, avatar: Image?, onRestart: @escaping () -> Void = {},
+         onOpenHOLTerminal: @escaping () -> Void = {}, onOpenWorkstation: @escaping () -> Void = {},
+         onOpenVault: @escaping () -> Void = {}, onOpenAuditLog: @escaping () -> Void = {}) {
+        self.store = store
+        self.avatar = avatar
+        self.onRestart = onRestart
+        self.onOpenHOLTerminal = onOpenHOLTerminal
+        self.onOpenWorkstation = onOpenWorkstation
+        self.onOpenVault = onOpenVault
+        self.onOpenAuditLog = onOpenAuditLog
+    }
 
     var body: some View {
         HStack(spacing: 10) {
@@ -121,11 +152,31 @@ struct HeaderView: View {
             .foregroundStyle(store.voice.speak ? Color.accentColor : .secondary)
             .help(store.voice.speak ? "Spoken replies are on" : "Spoken replies are off")
             .disabled(store.transport == nil)
-            Button { showSettings.toggle() } label: { Image(systemName: "gearshape") }
-                .buttonStyle(.plain)
+            Menu {
+                Button("Settings…") { showSettings = true }
+                Divider()
+                Button("Connections…") { openConnections(nil) }
+                Button("Open Workshop…") { openWorkshop(nil) }
+                Button("Open HOL Terminal…", action: onOpenHOLTerminal)
+                Button("Open Workstation…", action: onOpenWorkstation)
+                Divider()
+                Button("Open Vault in Finder", action: onOpenVault)
+                Button("Open Audit Log", action: onOpenAuditLog)
+                Divider()
+                Button("Restart Aura Server") { confirmRestart = true }
+            } label: {
+                Image(systemName: "ellipsis.circle")
+            }
+            .menuStyle(.borderlessButton)
                 .foregroundStyle(.secondary)
-                .help("Settings")
+                .help("Open settings and Aura panels")
                 .popover(isPresented: $showSettings, arrowEdge: .bottom) { SettingsView(store: store) }
+                .confirmationDialog("Restart Aura Server?", isPresented: $confirmRestart, titleVisibility: .visible) {
+                    Button("Restart Server", role: .destructive, action: onRestart)
+                    Button("Cancel", role: .cancel) {}
+                } message: {
+                    Text("This temporarily disconnects Aura and interrupts active sessions.")
+                }
             Button {
                 Task { await store.newConversation() }
             } label: {

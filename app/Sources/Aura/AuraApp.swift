@@ -44,9 +44,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return { text, profile in try await transport.speech(text, voice: profile.voice ?? "", speed: profile.speed) }
         }
         store.speech = SpeechController(engine: RoutingSpeechEngine(system: SystemSpeechEngine(), neural: neural))
-        let chat = ChatView(store: store, avatar: avatar, backdrop: starfield) { [weak self] in
+        let chat = ChatView(store: store, avatar: avatar, backdrop: starfield, onRestart: { [weak self] in
             self?.restartServer()
-        }
+        }, onOpenHOLTerminal: { [weak self] in
+            self?.openHOLTerminal()
+        }, onOpenWorkstation: { [weak self] in
+            self?.openWorkstation()
+        }, onOpenVault: { [weak self] in
+            self?.openVault()
+        }, onOpenAuditLog: { [weak self] in
+            self?.openAuditLog()
+        })
         .environment(\.openWorkshop, OpenWorkshopAction { [weak self] taskID in self?.openWorkshop(taskID) })
         .environment(\.openConnections, OpenConnectionsAction { [weak self] id in self?.openConnections(id) })
         panel = AuraPanel(rootView: chat)

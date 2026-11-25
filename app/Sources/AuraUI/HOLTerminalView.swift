@@ -47,8 +47,12 @@ public struct HOLTerminalView: View {
         HStack {
             Label("HOL Terminal", systemImage: "terminal.fill").font(.title3.weight(.semibold))
             Spacer()
-            Text("Vault-only").font(.caption.weight(.medium)).padding(.horizontal, 8).padding(.vertical, 4)
+            Text("Vault-only container").font(.caption.weight(.medium)).padding(.horizontal, 8).padding(.vertical, 4)
                 .background(.green.opacity(0.15), in: Capsule()).foregroundStyle(.green)
+            if store.terminal?.running == true {
+                Button("Stop session", role: .destructive) { Task { await store.stopTerminal() } }
+                    .disabled(store.busy)
+            }
             Button { Task { await store.refresh() } } label: { Image(systemName: "arrow.clockwise") }
                 .disabled(store.busy)
         }
@@ -122,8 +126,9 @@ public struct HOLTerminalView: View {
                 Text("Human Out of Loop").font(.headline).foregroundStyle(.green)
                 Text(store.overview?.notice ?? "Connecting to Aura…").foregroundStyle(.secondary)
                 Divider().overlay(.white.opacity(0.2))
+                preflight
                 if store.output.isEmpty {
-                    Text("Choose an approved session to start its disposable container.").foregroundStyle(.secondary)
+                    Text(readiness.emptyOutputMessage).foregroundStyle(.secondary)
                 } else {
                     ForEach(Array(store.output.enumerated()), id: \.offset) { _, line in
                         Text(line).frame(maxWidth: .infinity, alignment: .leading)
@@ -148,11 +153,46 @@ public struct HOLTerminalView: View {
                 .disabled(store.terminal?.running != true)
             Button("Send", action: send)
                 .disabled(command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.terminal?.running != true)
-            Button("Stop", role: .destructive) { Task { await store.stopTerminal() } }
-                .disabled(store.terminal?.running != true)
         }
         .padding(12)
         .background(.bar)
+    }
+
+    /// This remains visible before terminal output arrives: it makes the execution boundary and
+    /// input state explicit instead of making a newly prepared session look stalled.
+    private var preflight: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Label(readiness.title, systemImage: readiness.symbol)
+                    .font(.headline)
+                    .foregroundStyle(readiness.tint)
+                Spacer()
+                Text(readiness.badge).font(.caption.weight(.bold)).foregroundStyle(readiness.tint)
+            }
+            Text(readiness.instruction).font(.caption).foregroundStyle(.white.opacity(0.78))
+            Divider().overlay(.white.opacity(0.18))
+            boundaryRow("Mount point", "/vault (full Aura_Vault)", systemImage: "folder")
+            boundaryRow("Working directory", "/vault/Aura", systemImage: "arrow.turn.down.right")
+            boundaryRow("Network", "Disabled in this container", systemImage: "wifi.slash")
+            boundaryRow("Host checkout", "Not mounted or writable", systemImage: "lock.fill")
+            if let id = readiness.terminalID {
+                boundaryRow("Container", "aura-hol-\(id)", systemImage: "cube.transparent")
+            }
+        }
+        .padding(12)
+        .background(readiness.tint.opacity(0.12), in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).stroke(readiness.tint.opacity(0.35)))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("HOL pre-flight. \(readiness.title). \(readiness.instruction). The full Aura Vault is mounted at slash vault. Network is disabled in the container.")
+    }
+
+    private func boundaryRow(_ label: String, _ detail: String, systemImage: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 7) {
+            Image(systemName: systemImage).frame(width: 15).foregroundStyle(.white.opacity(0.7))
+            Text("\(label):").foregroundStyle(.white.opacity(0.7))
+            Text(detail).foregroundStyle(.white.opacity(0.95))
+        }
+        .font(.caption.monospaced())
     }
 
     private func send() {
@@ -184,5 +224,98 @@ public struct HOLTerminalView: View {
 
     private var effort: Binding<String> {
         Binding(get: { store.effort }, set: { store.effort = $0 })
+    }
+
+    private var readiness: HOLTerminalReadiness {
+        HOLTerminalReadiness(overview: store.overview, terminal: store.terminal, busy: store.busy)
+    }
+}
+
+/// Presentation-only state for the terminal's pre-flight card.  It intentionally derives from
+/// the existing server state; it neither starts a shell nor changes any authority boundary.
+enum HOLTerminalReadiness: Equatable {
+    case connecting
+    case approvalRequired
+    case preparing
+    case standby
+    case active(String)
+    case stopped
+
+    init(overview: HOLOverview?, terminal: HOLTerminalState?, busy: Bool) {
+        if let terminal {
+            self = terminal.running ? .active(terminal.id) : .stopped
+        } else if overview == nil {
+            self = .connecting
+        } else if overview?.sessions.isEmpty == true {
+            self = .approvalRequired
+        } else if busy {
+            self = .preparing
+        } else {
+            self = .standby
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .connecting: "Connecting to Aura"
+        case .approvalRequired: "Session approval required"
+        case .preparing: "Preparing container"
+        case .standby: "System ready — standby"
+        case .active: "Container active"
+        case .stopped: "Container stopped"
+        }
+    }
+
+    var badge: String {
+        switch self {
+        case .connecting: "CONNECTING"
+        case .approvalRequired: "BLOCKED"
+        case .preparing: "STARTING"
+        case .standby: "STANDBY"
+        case .active: "INPUT READY"
+        case .stopped: "STOPPED"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .connecting: "arrow.triangle.2.circlepath"
+        case .approvalRequired: "checkmark.shield"
+        case .preparing: "hourglass"
+        case .standby: "checkmark.circle"
+        case .active: "play.circle.fill"
+        case .stopped: "stop.circle"
+        }
+    }
+
+    var tint: Color {
+        switch self {
+        case .active, .standby: .green
+        case .approvalRequired, .preparing: .orange
+        case .connecting: .secondary
+        case .stopped: .red
+        }
+    }
+
+    var instruction: String {
+        switch self {
+        case .connecting: "Loading approved sessions and the model catalog."
+        case .approvalRequired: "Review and deploy a declarative session in Workshop before it can run."
+        case .preparing: "Starting a disposable container; command input will enable when its stream connects."
+        case .standby: "Choose an approved session and prepare it to start a disposable container."
+        case .active: "System ready. Command input is connected only to this Vault container."
+        case .stopped: "This container is stopped. Prepare an approved session to start a new one."
+        }
+    }
+
+    var emptyOutputMessage: String {
+        switch self {
+        case .active: "The container is ready; waiting for its first output."
+        default: instruction
+        }
+    }
+
+    var terminalID: String? {
+        if case let .active(id) = self { id } else { nil }
     }
 }

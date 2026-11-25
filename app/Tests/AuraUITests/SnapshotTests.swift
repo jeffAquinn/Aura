@@ -335,6 +335,22 @@ struct SnapshotTests {
         return CGSize(width: image.width, height: image.height)
     }
 
+    @Test func holPreflightMakesTheContainerBoundaryAndInputStateVisible() throws {
+        let approved = HOLOverview(
+            vaultProject: "/Users/example/Aura_Vault/Aura",
+            sessions: [HOLSession(name: "aura_session_review", purpose: "Review Aura changes.", runner: "codex", prompt: "")],
+            savepoints: [], defaults: HOLDefaults(model: ModelChoice(provider: "ollama", model: "qwen"), effort: "medium"),
+            notice: "Approved sessions only.")
+        let terminal = HOLTerminalState(id: "abc123", running: true, output: [], next: 0)
+
+        #expect(HOLTerminalReadiness(overview: nil, terminal: nil, busy: false).badge == "CONNECTING")
+        #expect(HOLTerminalReadiness(overview: HOLOverview(vaultProject: "", sessions: [], savepoints: [], defaults: approved.defaults, notice: ""), terminal: nil, busy: false).badge == "BLOCKED")
+        #expect(HOLTerminalReadiness(overview: approved, terminal: nil, busy: false).badge == "STANDBY")
+        let active = HOLTerminalReadiness(overview: approved, terminal: terminal, busy: false)
+        #expect(active.badge == "INPUT READY" && active.terminalID == "abc123")
+        #expect(active.instruction.contains("Vault container"))
+    }
+
     @Test func workshopBuildLiveAndReady() throws {
         let t = { (s: Int) in ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: 1_795_000_000 + Double(s))) }
         let running = BuildInfo(
