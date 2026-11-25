@@ -405,9 +405,14 @@ struct ChatAppearanceSettings: View {
     @AppStorage(ChatAppearance.styleKey) private var fontStyle = ChatFontStyle.system.rawValue
     @AppStorage(ChatAppearance.userBubbleKey) private var userBubble = ""
     @AppStorage(ChatAppearance.auraBubbleKey) private var auraBubble = ChatAppearance.defaultAura
+    @AppStorage(ChatAppearance.userTextKey) private var userText = ""
+    @AppStorage(ChatAppearance.auraTextKey) private var auraText = ""
+    @AppStorage(ChatAppearance.bubbleOpacityKey) private var bubbleOpacity = 1.0
+    @AppStorage(ChatAppearance.textOpacityKey) private var textOpacity = 1.0
+    @AppStorage(ChatAppearance.avatarSizeKey) private var avatarSize = "small"
 
     private var text: ChatTextStyle { ChatAppearance.textStyle(size: fontSize, style: fontStyle) }
-    private var colors: BubbleColors { ChatAppearance.bubbles(user: userBubble, aura: auraBubble) }
+    private var colors: BubbleColors { ChatAppearance.bubbles(user: userBubble, aura: auraBubble, userText: userText, auraText: auraText, bubbleOpacity: bubbleOpacity, textOpacity: textOpacity) }
 
     var body: some View {
         Picker("Font", selection: $fontStyle) {
@@ -423,6 +428,19 @@ struct ChatAppearanceSettings: View {
         }
         BubbleColorRow(title: "Your bubbles", hex: $userBubble)
         BubbleColorRow(title: "Aura's bubbles", hex: $auraBubble)
+        BubbleColorRow(title: "Your text color", hex: $userText)
+        BubbleColorRow(title: "Aura's text color", hex: $auraText)
+        LabeledContent("Bubble transparency") {
+            Slider(value: $bubbleOpacity, in: 0.25...1, step: 0.05)
+        }
+        LabeledContent("Text opacity") {
+            Slider(value: $textOpacity, in: 0.4...1, step: 0.05)
+        }
+        Picker("Chat avatar size", selection: $avatarSize) {
+            Text("Small").tag("small")
+            Text("Medium").tag("medium")
+            Text("Large").tag("large")
+        }
         BubblePreview(text: text, colors: colors)
         HStack {
             Spacer()
@@ -431,6 +449,11 @@ struct ChatAppearanceSettings: View {
                 fontStyle = ChatFontStyle.system.rawValue
                 userBubble = ""
                 auraBubble = ChatAppearance.defaultAura
+                userText = ""
+                auraText = ""
+                bubbleOpacity = 1
+                textOpacity = 1
+                avatarSize = "small"
             }
             .controlSize(.small)
         }

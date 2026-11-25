@@ -173,16 +173,27 @@ public extension EnvironmentValues {
 public struct BubbleColors: Equatable, Sendable {
     public var user: Color
     public var aura: Color
+    public var userTextOverride: Color?
+    public var auraTextOverride: Color?
+    public var bubbleOpacity: Double
+    public var textOpacity: Double
 
     public static let standard = BubbleColors(user: .accentColor, aura: ChatAppearance.color(hex: ChatAppearance.defaultAura)!)
 
-    public init(user: Color, aura: Color) {
+    public init(user: Color, aura: Color, userTextOverride: Color? = nil, auraTextOverride: Color? = nil,
+                bubbleOpacity: Double = 1, textOpacity: Double = 1) {
         self.user = user
         self.aura = aura
+        self.userTextOverride = userTextOverride
+        self.auraTextOverride = auraTextOverride
+        self.bubbleOpacity = bubbleOpacity
+        self.textOpacity = textOpacity
     }
 
-    public var userText: Color { ChatAppearance.textColor(on: user) }
-    public var auraText: Color { ChatAppearance.textColor(on: aura) }
+    public var userText: Color { (userTextOverride ?? ChatAppearance.textColor(on: user)).opacity(textOpacity) }
+    public var auraText: Color { (auraTextOverride ?? ChatAppearance.textColor(on: aura)).opacity(textOpacity) }
+    public var userBackground: Color { user.opacity(bubbleOpacity) }
+    public var auraBackground: Color { aura.opacity(bubbleOpacity) }
 }
 
 /// Stored preferences (UserDefaults via @AppStorage) and the color arithmetic behind them.
@@ -191,6 +202,11 @@ public enum ChatAppearance {
     public static let styleKey = "chatFontStyle"
     public static let userBubbleKey = "chatUserBubble"  // "" = the system accent color (blue)
     public static let auraBubbleKey = "chatAuraBubble"
+    public static let userTextKey = "chatUserText"
+    public static let auraTextKey = "chatAuraText"
+    public static let bubbleOpacityKey = "chatBubbleOpacity"
+    public static let textOpacityKey = "chatTextOpacity"
+    public static let avatarSizeKey = "chatAvatarSize"
 
     public static let defaultSize = 13.0  // macOS body text
     public static let sizes = 11.0...22.0
@@ -207,9 +223,16 @@ public enum ChatAppearance {
                       style: ChatFontStyle(rawValue: style) ?? .system)
     }
 
-    public static func bubbles(user: String, aura: String) -> BubbleColors {
+    public static func bubbles(user: String, aura: String, userText: String = "", auraText: String = "",
+                               bubbleOpacity: Double = 1, textOpacity: Double = 1) -> BubbleColors {
         BubbleColors(user: color(hex: user) ?? .accentColor,
-                     aura: color(hex: aura) ?? color(hex: defaultAura)!)
+                     aura: color(hex: aura) ?? color(hex: defaultAura)!,
+                     userTextOverride: color(hex: userText), auraTextOverride: color(hex: auraText),
+                     bubbleOpacity: min(max(bubbleOpacity, 0.2), 1), textOpacity: min(max(textOpacity, 0.35), 1))
+    }
+
+    public static func avatarSize(_ value: String) -> CGFloat {
+        switch value { case "large": 38; case "medium": 30; default: 22 }
     }
 
     /// "#RRGGBB" → Color (sRGB); nil for "" or anything malformed.

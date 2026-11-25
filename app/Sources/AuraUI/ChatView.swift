@@ -16,6 +16,10 @@ public struct ChatView: View {
     @AppStorage(ChatAppearance.styleKey) private var fontStyle = ChatFontStyle.system.rawValue
     @AppStorage(ChatAppearance.userBubbleKey) private var userBubble = ""
     @AppStorage(ChatAppearance.auraBubbleKey) private var auraBubble = ChatAppearance.defaultAura
+    @AppStorage(ChatAppearance.userTextKey) private var userText = ""
+    @AppStorage(ChatAppearance.auraTextKey) private var auraText = ""
+    @AppStorage(ChatAppearance.bubbleOpacityKey) private var bubbleOpacity = 1.0
+    @AppStorage(ChatAppearance.textOpacityKey) private var textOpacity = 1.0
 
     public init(store: ChatStore, avatar: Image?, backdrop: Image? = nil, onRestart: @escaping () -> Void,
                 onOpenHOLTerminal: @escaping () -> Void = {}, onOpenWorkstation: @escaping () -> Void = {},
@@ -47,7 +51,7 @@ public struct ChatView: View {
         .frame(minWidth: 360, minHeight: 440)
         .background { AuraThemeBackdrop(starfield: backdrop) }
         .environment(\.chatText, ChatAppearance.textStyle(size: fontSize, style: fontStyle))
-        .environment(\.bubbles, ChatAppearance.bubbles(user: userBubble, aura: auraBubble))
+        .environment(\.bubbles, ChatAppearance.bubbles(user: userBubble, aura: auraBubble, userText: userText, auraText: auraText, bubbleOpacity: bubbleOpacity, textOpacity: textOpacity))
     }
 }
 
@@ -344,6 +348,7 @@ struct ItemView: View {
     let avatar: Image?
     @Environment(\.chatText) private var chat
     @Environment(\.bubbles) private var bubbles
+    @AppStorage(ChatAppearance.avatarSizeKey) private var avatarSize = "small"
 
     var body: some View {
         switch item.role {
@@ -351,6 +356,7 @@ struct ItemView: View {
             VStack(alignment: .trailing, spacing: 3) {
                 HStack {
                     Spacer(minLength: 56)
+                    UserAvatarView(size: ChatAppearance.avatarSize(avatarSize))
                     Text(item.text)
                         .font(chat.font())
                         .textSelection(.enabled)
@@ -358,9 +364,8 @@ struct ItemView: View {
                         .padding(.horizontal, 12)
                         .padding(.vertical, 8)
                         .foregroundStyle(bubbles.userText)
-                        .background(bubbles.user, in: .rect(cornerRadius: 16))
+                        .background(bubbles.userBackground, in: .rect(cornerRadius: 16))
                         .contextMenu { MessageMenu(item: item, store: store) }
-                    UserAvatarView(size: 22)
                 }
                 if let developer = item.developer {  // handed to Claude Code or Codex in the chat box
                     Label("To \(EngineInfo.named(developer)?.label ?? developer)", systemImage: DeveloperPicker.symbol)
@@ -470,19 +475,20 @@ struct AuraMessage: View {
     let store: ChatStore
     let avatar: Image?
     @Environment(\.bubbles) private var bubbles
+    @AppStorage(ChatAppearance.avatarSizeKey) private var avatarSize = "small"
     @State private var hovering = false
     @State private var copied = false
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 6) {
             HStack(alignment: .top, spacing: 10) {
-                AvatarView(image: avatar, size: 22)
+                AvatarView(image: avatar, size: ChatAppearance.avatarSize(avatarSize))
                 MarkdownView(item.text)
                     .foregroundStyle(bubbles.auraText)
                     .tint(bubbles.auraText)  // links: underlined, in the bubble's text color
                     .padding(.horizontal, 12)
                     .padding(.vertical, 8)
-                    .background(bubbles.aura, in: .rect(cornerRadius: 16))
+                    .background(bubbles.auraBackground, in: .rect(cornerRadius: 16))
                     .contextMenu { MessageMenu(item: item, store: store) }
             }
             Button {
