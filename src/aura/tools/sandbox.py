@@ -27,7 +27,7 @@ RUN pip install --no-cache-dir numpy==2.5.5 pandas==3.1.1
 """
 OUTPUT_LIMIT = 8_000
 DOCKER_CANDIDATES = ("~/.docker/bin/docker", "/usr/local/bin/docker", "/opt/homebrew/bin/docker")
-AURA_CONTAINER_PREFIXES = ("aura-run-", "aura-dev-")
+AURA_CONTAINER_PREFIXES = ("aura-run-", "aura-dev-", "aura-hol-")
 AURA_NETWORK = "aura-dev"
 
 

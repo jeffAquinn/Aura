@@ -103,8 +103,23 @@ def load_manifest(folder: Path) -> dict[str, Any]:
     tree = ast.parse((folder / "skill.py").read_text(encoding="utf-8"))
     if not any(isinstance(n, ast.FunctionDef) and n.name == "run" for n in tree.body):
         raise SkillError("skill.py must define run(args)")
+    # A HOL session is deliberately declarative.  It may select one of Aura's fixed runners and
+    # provide a task brief, but it cannot smuggle a shell command or a host path through a skill
+    # review.  This keeps the source checkout outside the HOL's authority.
+    hol = m.get("hol")
+    if hol is not None:
+        if not isinstance(hol, dict):
+            raise SkillError("[hol] must be a table")
+        if set(hol) != {"runner", "prompt"}:
+            raise SkillError("[hol] permits only runner and prompt")
+        if hol.get("runner") != "aura_session_review":
+            raise SkillError("[hol].runner must be 'aura_session_review'")
+        prompt = hol.get("prompt")
+        if not isinstance(prompt, str) or not 10 <= len(prompt) <= 12_000:
+            raise SkillError("[hol].prompt must be 10-12000 characters")
     return {"name": name, "version": m["version"], "purpose": m["purpose"], "inputs": inputs,
-            "permissions": {"network": False, "vault": perms.get("vault", "none")}, "dependencies": deps}  # fmt: skip
+            "permissions": {"network": False, "vault": perms.get("vault", "none")}, "dependencies": deps,
+            "hol": hol}  # fmt: skip
 
 
 def content_hash(folder: Path) -> str:

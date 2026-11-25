@@ -25,6 +25,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var buildCheck: Timer?
     private lazy var workshop = WorkshopStore { [weak self] in self?.store.transport }
     private var workshopWindow: NSWindow?
+    private lazy var hol = HOLStore { [weak self] in self?.store.transport }
+    private var holWindow: NSWindow?
     private var workstationWindow: NSWindow?
     private lazy var connections = ConnectionsStore(transport: { [weak self] in self?.store.transport },
                                                     openURL: { NSWorkspace.shared.open($0) })  // the user's browser
@@ -271,6 +273,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         add(hotKey == nil ? "Open Aura" : "Open Aura (⌥Space)", #selector(openPanel))
         add("New Conversation", #selector(newConversation))
         add("Open Workshop…", #selector(openWorkshopFromMenu))
+        add("Open HOL Terminal…", #selector(openHOLTerminal))
         add("Open Workstation…", #selector(openWorkstation))
         add("Connections…", #selector(openConnectionsFromMenu))
         menu.addItem(.separator())
@@ -285,6 +288,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func openPanel() { showPanel() }
 
     @objc private func openWorkshopFromMenu() { openWorkshop(nil) }
+
+    /// A terminal-shaped session runner. Its only mutable project is Aura_Vault/Aura.
+    @objc private func openHOLTerminal() {
+        if holWindow == nil {
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 1080, height: 700),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+                backing: .buffered, defer: false)
+            window.title = "Aura HOL Terminal"
+            window.isReleasedWhenClosed = false
+            window.contentView = NSHostingView(rootView: HOLTerminalView(store: hol, openWorkshop: { [weak self] in
+                self?.openWorkshop(nil)
+            }))
+            window.setFrameAutosaveName("AuraHOLTerminal")
+            if window.frame.origin == .zero { window.center() }
+            holWindow = window
+        }
+        panel.hide()
+        NSApp.activate()
+        holWindow?.makeKeyAndOrderFront(nil)
+        Task { await hol.refresh() }
+        AppLog.write("HOL terminal opened")
+    }
 
     /// The Workshop: a normal, resizable window (code review needs room), optionally on a task.
     func openWorkshop(_ taskID: String?) {

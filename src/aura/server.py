@@ -43,6 +43,8 @@ from aura.model_routing import ROLES, ModelChoice, ModelRouting, SleepMode, infe
 from aura.governor.continuous import DEEP
 from aura.developer.workflow import DeveloperError
 from aura.governor.workshop import WorkshopError
+from aura.hol import HolError, HolManager
+from aura.hol_terminal import HolTerminal, HolTerminalError
 from aura.connections import ConnectionsError
 from aura.secrets import KEYS, SecretError
 from aura.skills import SkillError
@@ -480,6 +482,23 @@ class BuildIn(BaseModel):
     improve: bool = False
 
 
+class HolStartIn(BaseModel):
+    model: ModelChoiceIn | None = None
+    effort: Literal["none", "low", "medium", "high"] | None = None
+
+
+class HolSavepointIn(BaseModel):
+    label: str = Field(default="Before HOL changes", max_length=120)
+
+
+class HolRestoreIn(BaseModel):
+    confirmation: str = Field(max_length=32)
+
+
+class HolCommandIn(BaseModel):
+    command: str = Field(min_length=1, max_length=12_000)
+
+
 def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kokoro | None = None) -> FastAPI:
     if len(token) < MIN_TOKEN_CHARS:
         raise ValueError(f"token must be at least {MIN_TOKEN_CHARS} characters")
@@ -779,6 +798,81 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
     # ── the Workshop: skills, audits, decisions (Sprint 5) ──────────────────────────────────
 
     workshop, skills = aura.toolbox.workshop, aura.toolbox.skills
+    hol = HolManager(aura.settings, skills, aura.toolbox.audit)
+    hol_terminal = HolTerminal(aura.settings.vault_dir, aura.toolbox.sandbox, aura.toolbox.audit,
+                               masker=aura.toolbox.masker)
+
+    def hol_choice(body: HolStartIn) -> tuple[dict[str, str], str | None]:
+        default = routing.choice("coding")
+        chosen = (ModelChoice(body.model.provider, body.model.model).validate()
+                  if body.model is not None else default)
+        return chosen.public(), body.effort if body.effort is not None else aura.settings.reasoning_effort
+
+    @app.get("/v1/hol")
+    def hol_overview() -> Response:
+        try:
+            # Opening HOL offers its standard session to the Vault Inbox. It remains non-runnable
+            # until the user has reviewed and deployed it through Workshop.
+            hol.ensure_builtin_candidate()
+            return JSONResponse(hol.public(model=routing.choice("coding").public(), effort=aura.settings.reasoning_effort))
+        except HolError as e:
+            return _error(409, str(e))
+
+    @app.post("/v1/hol/{name}/start")
+    def start_hol(name: str, body: HolStartIn) -> Response:
+        try:
+            model, effort = hol_choice(body)
+            prepared = hol.start(name, model=model, effort=effort)
+            return JSONResponse({**prepared, "terminal": hol_terminal.start(name)})
+        except (HolError, HolTerminalError, ValueError) as e:
+            return _error(409, str(e))
+
+    @app.get("/v1/hol/terminals/{terminal_id}")
+    def hol_terminal_status(terminal_id: str, after: int = 0) -> Response:
+        try:
+            return JSONResponse(hol_terminal.status(terminal_id, after))
+        except HolTerminalError as e:
+            return _error(404, str(e))
+
+    @app.post("/v1/hol/terminals/{terminal_id}/command")
+    def hol_terminal_command(terminal_id: str, body: HolCommandIn) -> Response:
+        try:
+            return JSONResponse(hol_terminal.send(terminal_id, body.command))
+        except HolTerminalError as e:
+            return _error(409, str(e))
+
+    @app.post("/v1/hol/terminals/{terminal_id}/stop")
+    def stop_hol_terminal(terminal_id: str) -> Response:
+        try:
+            return JSONResponse(hol_terminal.stop(terminal_id))
+        except HolTerminalError as e:
+            return _error(404, str(e))
+
+    @app.post("/v1/hol/savepoints", status_code=201)
+    def create_hol_savepoint(body: HolSavepointIn) -> Response:
+        try:
+            return JSONResponse(hol.create_savepoint(body.label), status_code=201)
+        except HolError as e:
+            return _error(409, str(e))
+
+    @app.post("/v1/hol/savepoints/{savepoint_id}/restore")
+    def restore_hol_savepoint(savepoint_id: str) -> Response:
+        try:
+            hol_terminal.stop_all()  # no container may write while its mount is atomically replaced
+            return JSONResponse(hol.restore_savepoint(savepoint_id))
+        except HolError as e:
+            return _error(409, str(e))
+
+    @app.post("/v1/hol/restore-original")
+    def restore_hol_original(body: HolRestoreIn) -> Response:
+        if body.confirmation != "RESTORE":
+            return _error(422, "Type RESTORE to replace the Vault Aura copy with clean Git HEAD.")
+        try:
+            hol_terminal.stop_all()
+            hol.restore_original()
+        except HolError as e:
+            return _error(409, str(e))
+        return JSONResponse({"restored": True, "vault_project": str(aura.settings.project_sandbox_dir)})
 
     @app.get("/v1/skills")
     def get_skills() -> dict:

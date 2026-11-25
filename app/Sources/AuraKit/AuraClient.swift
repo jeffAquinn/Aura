@@ -68,6 +68,14 @@ public protocol AuraTransport: Sendable {
     func conversation() async throws -> ConversationInfo
     func retryBuild(_ id: String) async throws -> BuildInfo
     func dismissRecovery(_ id: String) async throws
+    func hol() async throws -> HOLOverview
+    func startHOL(_ name: String, request: HOLStart) async throws -> HOLRun
+    func createHOLSavepoint(_ label: String) async throws -> HOLSavepoint
+    func restoreHOLSavepoint(_ id: String) async throws -> HOLSavepoint
+    func restoreHOLOriginal() async throws
+    func holTerminal(_ id: String, after: Int) async throws -> HOLTerminalState
+    func sendHOLCommand(_ id: String, command: String) async throws -> HOLTerminalState
+    func stopHOLTerminal(_ id: String) async throws -> HOLTerminalState
 }
 
 /// Defaults so test fakes only implement what they exercise.
@@ -130,6 +138,14 @@ extension AuraTransport {
     public func conversation() async throws -> ConversationInfo { throw AuraClientError.badResponse }
     public func retryBuild(_ id: String) async throws -> BuildInfo { throw AuraClientError.badResponse }
     public func dismissRecovery(_ id: String) async throws {}
+    public func hol() async throws -> HOLOverview { throw AuraClientError.badResponse }
+    public func startHOL(_ name: String, request: HOLStart) async throws -> HOLRun { throw AuraClientError.badResponse }
+    public func createHOLSavepoint(_ label: String) async throws -> HOLSavepoint { throw AuraClientError.badResponse }
+    public func restoreHOLSavepoint(_ id: String) async throws -> HOLSavepoint { throw AuraClientError.badResponse }
+    public func restoreHOLOriginal() async throws {}
+    public func holTerminal(_ id: String, after: Int) async throws -> HOLTerminalState { throw AuraClientError.badResponse }
+    public func sendHOLCommand(_ id: String, command: String) async throws -> HOLTerminalState { throw AuraClientError.badResponse }
+    public func stopHOLTerminal(_ id: String) async throws -> HOLTerminalState { throw AuraClientError.badResponse }
 }
 
 /// The ids that bind what the user does to what the server is doing: the turn being streamed
@@ -222,6 +238,41 @@ public final class AuraClient: AuraTransport {
 
     public func dismissRecovery(_ id: String) async throws {
         _ = try await send(request("/v1/recovery/\(id)/dismiss", body: [String: String]()))
+    }
+
+    public func hol() async throws -> HOLOverview {
+        try Self.decoder.decode(HOLOverview.self, from: await send(request("/v1/hol")))
+    }
+
+    public func startHOL(_ name: String, request body: HOLStart) async throws -> HOLRun {
+        try Self.decoder.decode(HOLRun.self, from: await send(request("/v1/hol/\(name)/start", body: body)))
+    }
+
+    public func createHOLSavepoint(_ label: String) async throws -> HOLSavepoint {
+        struct Body: Encodable { let label: String }
+        return try Self.decoder.decode(HOLSavepoint.self, from: await send(request("/v1/hol/savepoints", body: Body(label: label))))
+    }
+
+    public func restoreHOLSavepoint(_ id: String) async throws -> HOLSavepoint {
+        try Self.decoder.decode(HOLSavepoint.self, from: await send(request("/v1/hol/savepoints/\(id)/restore", body: [String: String]())))
+    }
+
+    public func restoreHOLOriginal() async throws {
+        _ = try await send(request("/v1/hol/restore-original", body: ["confirmation": "RESTORE"]))
+    }
+
+    public func holTerminal(_ id: String, after: Int) async throws -> HOLTerminalState {
+        var r = request("/v1/hol/terminals/\(id)")
+        r.url = r.url?.appending(queryItems: [URLQueryItem(name: "after", value: String(after))])
+        return try Self.decoder.decode(HOLTerminalState.self, from: await send(r))
+    }
+
+    public func sendHOLCommand(_ id: String, command: String) async throws -> HOLTerminalState {
+        try Self.decoder.decode(HOLTerminalState.self, from: await send(request("/v1/hol/terminals/\(id)/command", body: ["command": command])))
+    }
+
+    public func stopHOLTerminal(_ id: String) async throws -> HOLTerminalState {
+        try Self.decoder.decode(HOLTerminalState.self, from: await send(request("/v1/hol/terminals/\(id)/stop", body: [String: String]())))
     }
 
     public func newConversation() async throws {
