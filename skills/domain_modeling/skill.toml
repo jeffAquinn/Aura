@@ -1,0 +1,12 @@
+name = "domain_modeling"
+version = "1.0.0"
+purpose = "Read a Vault scope for explicit glossary labels and produce a bounded domain-model review with terminology and edge-case questions."
+dependencies = []
+
+[inputs]
+scope = "vault-relative folder or document to inspect, for example 'Aura'"
+focus = "optional concept whose terminology or boundaries need review"
+
+[permissions]
+network = false
+vault = "read"

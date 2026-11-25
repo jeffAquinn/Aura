@@ -173,6 +173,42 @@ def test_project_copy_is_one_way_and_cannot_carry_git_or_links(env):
     assert audit.entries()[-1]["event"] == "project_sandbox_seeded"
 
 
+def test_missing_legacy_skills_are_copied_to_the_vault_registry_without_overwriting(env):
+    vault, _, root, _, audit = env
+    source = root.parent / "Aura"
+    legacy = source / "skills"
+    legacy.mkdir(parents=True)
+    (legacy / "from_root").mkdir()
+    (legacy / "from_root" / "skill.py").write_text("root version\n")
+    (root / "Aura" / "skills").mkdir(parents=True)
+    (root / "Aura" / "skills" / "already_local").mkdir()
+    (root / "Aura" / "skills" / "already_local" / "skill.py").write_text("vault version\n")
+    (legacy / "already_local").mkdir()
+    (legacy / "already_local" / "skill.py").write_text("root version\n")
+
+    migrated = vault.migrate_skill_registry(source)
+
+    assert migrated == ["from_root"]
+    assert (root / "Aura" / "skills" / "from_root" / "skill.py").read_text() == "root version\n"
+    assert (root / "Aura" / "skills" / "already_local" / "skill.py").read_text() == "vault version\n"
+    assert audit.entries()[-1]["event"] == "skill_registry_migrated"
+
+
+def test_only_approved_legacy_skills_migrate_when_an_approval_set_is_supplied(env):
+    vault, _, root, _, _ = env
+    source = root.parent / "Aura"
+    legacy = source / "skills"
+    for name in ("approved", "pending"):
+        (legacy / name).mkdir(parents=True, exist_ok=True)
+        (legacy / name / "skill.py").write_text(name)
+
+    migrated = vault.migrate_skill_registry(source, approved={"approved"})
+
+    assert migrated == ["approved"]
+    assert (root / "Aura" / "skills" / "approved").is_dir()
+    assert not (root / "Aura" / "skills" / "pending").exists()
+
+
 # ── approval prompt text: honest about what will happen ────────────────────────────────────
 
 

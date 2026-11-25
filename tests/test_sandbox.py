@@ -137,7 +137,10 @@ def _docker_up() -> bool:
         return False
 
 
-live = pytest.mark.skipif(not _docker_up(), reason="Docker isn't running")
+def live(test):
+    """Mark Docker-backed integration probes so offline audit suites never collect them."""
+    test = pytest.mark.skipif(not _docker_up(), reason="Docker isn't running")(test)
+    return pytest.mark.live(test)
 
 
 @pytest.fixture

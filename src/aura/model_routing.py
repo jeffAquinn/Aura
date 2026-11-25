@@ -25,9 +25,22 @@ ROLE_LABELS = {
     "deep_research": "Deep Research",
     "web_search": "Web Search",
 }
-# Deliberately curated rather than a remote list: model availability changes, but a saved model
-# name remains usable and the key never has to leave Aura merely to populate a picker.
-ANTHROPIC_MODELS = ("claude-sonnet-4-6", "claude-opus-4-6", "claude-haiku-4-5-20251001")
+# A useful offline catalog. The Settings "Sync cloud models" control replaces this with the
+# account-visible list returned by Anthropic's Models API. A saved model name remains valid even
+# when it is no longer in this suggestion list, so updating the catalog never destroys a choice.
+ANTHROPIC_MODELS = (
+    "claude-fable-5-2",
+    "claude-opus-5-5",
+    "claude-sonnet-5-5",
+    "claude-haiku-5-5",
+    "claude-opus-5",
+    "claude-opus-4-8",
+    "claude-opus-4-7",
+    "claude-opus-4-6",
+    "claude-sonnet-5",
+    "claude-sonnet-4-6",
+    "claude-haiku-4-5-20251001",
+)
 _MODEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/+-]{0,199}$")
 
 
@@ -47,6 +60,21 @@ class ModelChoice:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class SleepMode:
+    """An opt-in local model that Ollama should keep resident until the user turns it off."""
+
+    enabled: bool
+    model: str
+
+    def validate(self) -> SleepMode:
+        ModelChoice("ollama", self.model).validate()
+        return self
+
+    def public(self) -> dict[str, str | bool]:
+        return asdict(self)
+
+
 class ModelRouting:
     """Load and atomically save the five model-role preferences."""
 
@@ -54,6 +82,8 @@ class ModelRouting:
         self.path = settings.data_dir / "model_routing.json"
         fallback = ModelChoice("ollama", settings.model)
         self._choices: dict[str, ModelChoice] = {role: fallback for role in ROLES}
+        self._sleep_mode = SleepMode(False, settings.model)
+        self._anthropic_models: tuple[str, ...] = ANTHROPIC_MODELS
         self.load()
 
     def load(self) -> None:
@@ -64,6 +94,14 @@ class ModelRouting:
                 item = choices.get(role)
                 if isinstance(item, dict):
                     self._choices[role] = ModelChoice(str(item["provider"]), str(item["model"])).validate()
+            sleep = raw.get("sleep_mode")
+            if isinstance(sleep, dict):
+                self._sleep_mode = SleepMode(bool(sleep["enabled"]), str(sleep["model"])).validate()
+            models = raw.get("anthropic_models")
+            if isinstance(models, list):
+                valid = tuple(sorted({ModelChoice("anthropic", str(model)).validate().model for model in models}))
+                if valid:
+                    self._anthropic_models = valid
         except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
             # The safe fallback is local Ollama. A malformed hand-edited preference must never
             # cause Aura to contact a cloud provider.
@@ -78,11 +116,36 @@ class ModelRouting:
         if set(values) != set(ROLES):
             raise ValueError("Provide one model choice for every role.")
         checked = {role: choice.validate() for role, choice in values.items()}
+        self._choices = checked
+        self._save()
+
+    def sleep_mode(self) -> SleepMode:
+        return self._sleep_mode
+
+    def replace_sleep_mode(self, value: SleepMode) -> None:
+        self._sleep_mode = value.validate()
+        self._save()
+
+    def anthropic_models(self) -> tuple[str, ...]:
+        return self._anthropic_models
+
+    def replace_anthropic_models(self, values: list[str]) -> None:
+        """Persist the API-confirmed cloud catalog without ever storing credentials."""
+        checked = tuple(sorted({ModelChoice("anthropic", value).validate().model for value in values}))
+        if not checked:
+            raise ValueError("Anthropic did not return any usable cloud models.")
+        self._anthropic_models = checked
+        self._save()
+
+    def _save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".tmp")
-        tmp.write_text(json.dumps({"roles": {role: choice.public() for role, choice in checked.items()}}, indent=2) + "\n")
+        tmp.write_text(json.dumps({
+            "roles": {role: choice.public() for role, choice in self._choices.items()},
+            "sleep_mode": self._sleep_mode.public(),
+            "anthropic_models": list(self._anthropic_models),
+        }, indent=2) + "\n")
         tmp.replace(self.path)
-        self._choices = checked
 
     def public(self) -> dict[str, dict[str, str]]:
         return {role: self.choice(role).public() for role in ROLES}

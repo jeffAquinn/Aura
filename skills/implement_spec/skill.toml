@@ -1,0 +1,12 @@
+name = "implement_spec"
+version = "1.0.0"
+purpose = "Prepare a constrained Developer handoff from an approved specification, including seams, evidence, and approval boundaries before implementation."
+dependencies = []
+
+[inputs]
+spec = "the approved specification or ticket set to hand to a Developer"
+scope = "the exact Vault folder or project area the Developer may change"
+
+[permissions]
+network = false
+vault = "none"

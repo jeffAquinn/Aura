@@ -12,6 +12,7 @@ from aura.brain import ApprovalNeeded, Aura, Event, Status, Text
 from aura.tools import vault_map
 
 _TTY = sys.stdout.isatty()
+TERMINAL_ROLE = "terminal"
 
 
 def _dim(s: str) -> str:
@@ -61,7 +62,8 @@ def _ask(request: ApprovalNeeded) -> list[bool]:
 
 def main() -> None:
     try:
-        aura = Aura()
+        # Its own conversation, not the Mac app's: /new here must never erase the app's chat.
+        aura = Aura(role=TERMINAL_ROLE)
         vault_map.seed(aura.toolbox.vault)  # the Codex of Emergence, laid out once
     except OSError as e:
         sys.exit(f"Aura couldn't start: {e}")

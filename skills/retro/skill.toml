@@ -1,0 +1,12 @@
+name = "retro"
+version = "1.0.0"
+purpose = "Turn a supplied development-session summary into ranked, reviewable improvements for Aura's future workflow and guardrails."
+dependencies = []
+
+[inputs]
+session_summary = "what was slow, confusing, failed, repeated, or needed manual correction"
+scope = "the project, vault area, or workflow that the retrospective concerns"
+
+[permissions]
+network = false
+vault = "none"

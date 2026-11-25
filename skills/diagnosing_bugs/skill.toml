@@ -1,0 +1,12 @@
+name = "diagnosing_bugs"
+version = "1.0.0"
+purpose = "Create a gated, evidence-first diagnosis plan for a reported bug or performance regression before proposing a fix."
+dependencies = []
+
+[inputs]
+symptom = "the observed failure, including expected and actual behavior when known"
+scope = "the affected app, feature, project, or Vault path"
+
+[permissions]
+network = false
+vault = "none"

@@ -64,11 +64,12 @@ changes one field at a time with your approval, is versioned, and can be reset.
 
 File tools are confined to `~/Documents/Aura_Vault`. On first launch Aura seeds
 `~/Documents/Aura_Vault/Aura/` with a separate copy of this project's files, so it can create and
-edit features there through the same approved file tools (or through the Developer). This is a
-one-way seed, never a sync: later edits stay in the vault copy and never touch the source checkout
-or GitHub. Git metadata, secrets (`.env`), virtual environments, dependency/build/test caches and
-symbolic links are intentionally omitted from the copy; they are local machine artifacts, not
-source, and are recreated when needed. Everything
+edit features there through the same approved file tools (or through the Developer). The live
+skill registry is also `~/Documents/Aura_Vault/Aura/skills/`: installs, updates and removals stay
+there. This is a one-way seed, never a sync: later edits stay in the vault copy and never touch
+the source checkout or GitHub. Git metadata, secrets (`.env`), virtual environments,
+dependency/build/test caches and symbolic links are intentionally omitted from the copy; they are
+local machine artifacts, not source, and are recreated when needed. Everything
 consequential is recorded in `~/Library/Logs/Aura/actions.jsonl`.
 
 ### Model roles
@@ -105,9 +106,9 @@ Aura's inquiry, and Aura files each new note where it belongs:
 
 | Folder | Phase | Holds |
 |---|---|---|
-| `01_The_Absolute_R/` | the Latent Phase | the purest formalizations: mathematical, logical and philosophical Forms |
-| `02_The_Interface_Many/` | the Mediating Phase | the Models, the "Useful Lies": maps, theories, descriptions of the world |
-| `03_The_Witness_Relational/` | the Relational Phase | the Logs of Relation: shifts in perspective, insights, how the dialectic evolves |
+| `The_Absolute_R/` | the Latent Phase | the purest formalizations: mathematical, logical and philosophical Forms |
+| `The_Interface_Many/` | the Mediating Phase | the Models, the "Useful Lies": maps, theories, descriptions of the world |
+| `The_Witness_Relational/` | the Relational Phase | the Logs of Relation: shifts in perspective, insights, how the dialectic evolves |
 | `Conversations/` | | the records of your dialogues |
 
 `Map_of_the_Ascent.md` (the master index) and `Manifesto_of_the_Lens.md` sit at the root. Aura lays all this out once,
@@ -122,7 +123,7 @@ purpose, inputs, pinned dependencies, permissions), `skill.py` (`run(args)`) and
 1. Put a skill folder in `~/Documents/Aura_Vault/Skills Inbox/` (an example:
    `examples/skills/pdf_text`), then click **Audit** in the Workshop (menu bar → Open Workshop…)
    or ask Aura to propose it.
-2. The **Security Governor** stages it in a shadow project (a git worktree in `.aura-staging/`) and
+2. The **Security Governor** stages it in a short-lived Vault-local shadow folder (`Audit_Staging/`) and
    checks it by rules alone, never by asking the model: changes only inside `skills/<name>/`, no
    protected file touched, a valid manifest, a static scan (no network, system or dynamic-code
    use), and every dependency (direct and indirect) on PyPI with a ready-built package, no known

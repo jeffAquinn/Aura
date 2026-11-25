@@ -29,6 +29,9 @@ MAX_CHANGES = 40  # changes one task may bring back for approval
 MAX_FILE_BYTES = 10 * 1024 * 1024  # a single file it may write
 DIFF_LINES = 60  # diff lines shown per change
 SKIP = {".DS_Store"}  # Finder's files: never copied, never compared
+# A task aimed at the whole Vault is for the user's content, not Aura's runtime machinery. A user
+# can still explicitly choose `Aura/` when they want a Developer to work on the project sandbox.
+SYSTEM_ROOTS = {"Aura", "Audit_Staging", "Audit_Temp", "Skills Inbox"}
 TASK_LIMITS = (10, 8_000)  # characters
 
 
@@ -38,7 +41,7 @@ class VaultTaskError(ValueError):
 
 @dataclass
 class Change:
-    path: str  # vault-relative, e.g. "01_The_Absolute_R/forms.md"
+    path: str  # vault-relative, e.g. "The_Absolute_R/forms.md"
     kind: str  # "create" | "modify" | "delete" | "create_folder" | "delete_folder"
     source: str = ""  # workspace-relative file holding the new content
     before: str | None = None  # the vault file's sha256 when it was copied (None: it didn't exist)
@@ -87,7 +90,7 @@ def _walk(root: Path) -> tuple[list[Path], list[Path]]:
     for dirpath, dirnames, filenames in os.walk(root):  # followlinks=False: a linked folder isn't entered
         base = Path(dirpath)
         for d in list(dirnames):
-            if (base / d).is_symlink():
+            if (base / d).is_symlink() or (base == root and d in SYSTEM_ROOTS):
                 dirnames.remove(d)
             else:
                 folders.append(base / d)

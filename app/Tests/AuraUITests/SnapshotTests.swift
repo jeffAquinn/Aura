@@ -122,7 +122,7 @@ struct SnapshotTests {
     }
 
     @Test func claudeCodeFromTheChatBox() throws {
-        let task = "Move forms.md into 01_The_Absolute_R/ and add it to the Map of the Ascent's index."
+        let task = "Move forms.md into The_Absolute_R/ and add it to the Map of the Ascent's index."
         let handOff = PendingAction(tool: "ask_developer", description: """
             have Claude Code work on a copy of your whole vault (your Claude plan, up to 10 minutes):
                 Sent to Anthropic: this task and a copy of your whole vault (4 files, 4.1 KB), which Claude Code reads. Nothing else from your Mac or this conversation.
@@ -135,10 +135,10 @@ struct SnapshotTests {
                     │ @@ -24,3 +24,4 @@
                     │  ## Index
                     │  - [The Architecture of Emergence](<Conversations/The_Architecture_of_Emergence.md>)
-                    │ +- [The Forms](<01_The_Absolute_R/forms.md>)
+                    │ +- [The Forms](<The_Absolute_R/forms.md>)
                 """, args: ["path": .string("Map_of_the_Ascent.md"), "change": .string("modify"), "engine": .string("claude")]),
-            PendingAction(tool: "apply_change", description: "create '01_The_Absolute_R/forms.md' (31 B, +2 lines):\n    │ +# The Forms\n    │ +The Good, the True.",
-                          args: ["path": .string("01_The_Absolute_R/forms.md"), "change": .string("create"), "engine": .string("claude")]),
+            PendingAction(tool: "apply_change", description: "create 'The_Absolute_R/forms.md' (31 B, +2 lines):\n    │ +# The Forms\n    │ +The Good, the True.",
+                          args: ["path": .string("The_Absolute_R/forms.md"), "change": .string("create"), "engine": .string("claude")]),
             PendingAction(tool: "apply_change", description: "delete 'forms.md' (31 B, −2 lines)",
                           args: ["path": .string("forms.md"), "change": .string("delete"), "engine": .string("claude")]),
         ]
@@ -148,7 +148,7 @@ struct SnapshotTests {
             ask,
             item(.approval, actions: [handOff], decisions: [true]),
             item(.status, "[Tool: Developer] Handing the task to Claude Code..."),
-            item(.status, "[Tool: Developer] · Claude Code: Writing 01_The_Absolute_R/forms.md"),
+            item(.status, "[Tool: Developer] · Claude Code: Writing The_Absolute_R/forms.md"),
             item(.approval, actions: changes),
         ], phase: .awaitingApproval)
         store.developer = "claude"

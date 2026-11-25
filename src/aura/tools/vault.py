@@ -282,6 +282,34 @@ class Vault:
         )
         return ProjectCopy(target, copied=True, files=files, folders=folders)
 
+    def migrate_skill_registry(self, source: Path, approved: set[str] | None = None) -> list[str]:
+        """Copy only missing legacy skills into the Vault's live registry.
+
+        Before the registry moved into the Vault, approved skills lived in the source checkout.
+        This one-way migration preserves them without altering that checkout. When an approval
+        set is supplied, only those approved skills migrate; unaudited code remains exclusively
+        in the Skills Inbox. An existing Vault skill always wins: it may be user work and must be
+        re-audited if its digest differs from the old approval rather than silently overwritten.
+        """
+        source = source.expanduser().resolve()
+        legacy = source / "skills"
+        target = self.root / source.name / "skills"
+        if not legacy.is_dir() or target.is_symlink():
+            return []
+        target.mkdir(parents=True, exist_ok=True)
+        migrated: list[str] = []
+        for folder in sorted(legacy.iterdir()):
+            if (not folder.is_dir() or folder.is_symlink() or folder.name.startswith((".", "_"))
+                    or (approved is not None and folder.name not in approved) or (target / folder.name).exists()):
+                continue
+            shutil.copytree(folder, target / folder.name, symlinks=False,
+                            ignore=shutil.ignore_patterns("__pycache__", ".DS_Store"))
+            migrated.append(folder.name)
+        if migrated:
+            self.audit.record("skill_registry_migrated", source=str(legacy),
+                              path=(target.relative_to(self.root)).as_posix(), skills=migrated)
+        return migrated
+
     # ── the whitelist ──────────────────────────────────────────────────────────────────────
 
     def _candidate(self, path: str) -> Path:

@@ -18,11 +18,11 @@ from aura.tools.vault import Vault
 
 PARTS: tuple[tuple[str, str, str], ...] = (
     # (folder, phase, what it holds)
-    ("01_The_Absolute_R", "The Latent Phase",
+    ("The_Absolute_R", "The Latent Phase",
      "the purest formalizations: the mathematical, logical and philosophical Forms we derive"),
-    ("02_The_Interface_Many", "The Mediating Phase",
+    ("The_Interface_Many", "The Mediating Phase",
      "the Models, our \"Useful Lies\": maps, theories and descriptions of the world"),
-    ("03_The_Witness_Relational", "The Relational Phase",
+    ("The_Witness_Relational", "The Relational Phase",
      "the Logs of Relation: shifts in perspective, \"Aha!\" moments, and how our dialectic evolves"),
 )  # fmt: skip
 CONVERSATIONS = "Conversations"

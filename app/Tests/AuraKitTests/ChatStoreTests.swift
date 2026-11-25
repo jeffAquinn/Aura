@@ -118,12 +118,12 @@ struct ChatStoreTests {
         let s = store(FakeTransport(chat: [[.thinking,
             .status("[Tool: Developer] Handing the task to Claude Code..."),
             .status("[Tool: Developer] · Claude Code: Reading Map_of_the_Ascent.md"),
-            .status("[Tool: Developer] · Claude Code: Writing 01_The_Absolute_R/forms.md"),
+            .status("[Tool: Developer] · Claude Code: Writing The_Absolute_R/forms.md"),
             .text("Done."), .done]]))
         s.send("Go.")
         await s.turnTask?.value
         #expect(roles(s) == [.user, .status, .status, .aura])
-        #expect(s.items[2].text == "[Tool: Developer] · Claude Code: Writing 01_The_Absolute_R/forms.md")
+        #expect(s.items[2].text == "[Tool: Developer] · Claude Code: Writing The_Absolute_R/forms.md")
     }
 
     @Test func filesADeveloperChangedArriveAsOneCardWithAnEntryPerFile() async {

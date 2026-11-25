@@ -139,6 +139,57 @@ def test_the_conversation_survives_a_restart(settings):
     assert [m["role"] for m in again.transcript()] == ["user", "aura", "user", "aura"]
 
 
+def _terminal_aura(settings, model=None):
+    """A second Aura process on the same data folder, as `uv run aura` builds it."""
+    from conftest import ScriptedModel
+
+    from aura.brain import Aura
+    from aura.main import TERMINAL_ROLE
+    from aura.tools import Toolbox
+
+    return Aura(settings=settings, model=model or ScriptedModel(script=[]), toolbox=Toolbox.from_settings(settings),
+                role=TERMINAL_ROLE)  # fmt: skip
+
+
+def test_a_terminal_reset_does_not_erase_the_apps_conversation(settings):
+    app, _ = make_aura(settings, AIMessage("Nice to meet you, Ada."))
+    app.chat("My name is Ada.")
+    terminal = _terminal_aura(settings)
+    assert terminal.thread_id != app.thread_id  # its own conversation, not the app's
+    terminal.new_conversation()  # what /new in the terminal does
+    restarted, _ = make_aura(settings, fresh=False)
+    assert restarted.thread_id == app.thread_id
+    assert [m["role"] for m in restarted.transcript()] == ["user", "aura"]
+
+
+def test_the_terminal_resumes_its_own_conversation(settings):
+    from conftest import ScriptedModel
+
+    first = _terminal_aura(settings, ScriptedModel(script=[AIMessage("Hello from the terminal.")]))
+    first.chat("Hi.")
+    again = _terminal_aura(settings)
+    assert again.thread_id == first.thread_id
+    app, _ = make_aura(settings, fresh=False)
+    assert app.thread_id != first.thread_id
+
+
+def test_the_terminal_entry_point_uses_its_own_role(settings, monkeypatch):
+    import builtins
+
+    import aura.main as terminal_main
+
+    built = []
+
+    def fake_aura(**kwargs):
+        built.append(kwargs)
+        return _terminal_aura(settings)
+
+    monkeypatch.setattr(terminal_main, "Aura", fake_aura)
+    monkeypatch.setattr(builtins, "input", lambda prompt="": (_ for _ in ()).throw(EOFError))
+    terminal_main.main()
+    assert built == [{"role": terminal_main.TERMINAL_ROLE}]
+
+
 def test_the_conversation_store_is_bounded_and_a_reset_forgets_on_disk(settings):
     from aura.brain import CHECKPOINTS_KEPT
 
@@ -400,7 +451,7 @@ def test_a_vault_review_survives_a_restart_and_still_guards_each_write(settings,
     again, model = make_aura(settings, AIMessage("Done."), fresh=False)  # the restart
     assert again.awaiting_approval and again.approval_id == review.approval_id
     list(again.resume([True] * len(review.actions), approval_id=review.approval_id))
-    assert (vault_files / "01_The_Absolute_R" / "forms.md").exists()
+    assert (vault_files / "The_Absolute_R" / "forms.md").exists()
     assert (vault_files / "Map_of_the_Ascent.md").read_text() == "# Map, edited by hand meanwhile\n"
     result = next(m for m in model.agent_calls()[-1] if isinstance(m, ToolMessage) and m.name == "ask_developer")
     assert "changed after the task started" in result.text

@@ -27,15 +27,22 @@ from langchain.agents.middleware import (
 )
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, ToolMessage
 from langchain_core.runnables import RunnableConfig
 from langchain_anthropic import ChatAnthropic
 from langchain_openai import ChatOpenAI
+from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.types import Command, Interrupt
 
 from aura.config import Settings
 from aura.model_routing import ModelChoice
-from aura.middleware import REJECTION_NOTE, DenialMiddleware, ToolStatusMiddleware
+from aura.middleware import (
+    REJECTION_NOTE,
+    DenialMiddleware,
+    RecursionCircuitBreaker,
+    RecursionMiddleware,
+    ToolStatusMiddleware,
+)
 from aura.persona import MEMORY_PROMPT, system_prompt
 from aura.developer.workflow import describe_build, describe_task
 from aura.connections.actions import OUTWARD, describe_outward, inbox_exchange, turn_is_tainted
@@ -50,6 +57,90 @@ TRANSCRIPT_CHARS = 20_000  # of one message, when the app restores the conversat
 CUT_SHORT = ("This was cut short (the user stopped the turn, or Aura restarted) before it finished, so it may "
              "have partly run. Don't assume either way; check before relying on it, and don't repeat it unless "
              "the user asks.")  # fmt: skip
+
+
+class UsageAwareSummarizationMiddleware(SummarizationMiddleware):
+    """Retain the configured fraction of context when a provider reports prompt usage.
+
+    LangChain uses reported usage to decide *when* to summarize, but its normal cutoff is based
+    only on conversation messages. System prompts and tool schemas can make the provider's count
+    reach the trigger while those messages still fit inside the local keep budget, yielding a
+    zero-length summary. Reserve the provider-reported fixed overhead from the whole-prompt keep
+    budget before choosing a local-message cutoff instead.
+    """
+
+    def _trigger_tokens(self) -> int | None:
+        return next((int(clause["tokens"]) for clause in self._trigger_clauses if "tokens" in clause), None)
+
+    @staticmethod
+    def _reported_input_tokens(messages: Sequence[Any]) -> int | None:
+        last_ai = next((message for message in reversed(messages) if isinstance(message, AIMessage)), None)
+        reported = (last_ai.usage_metadata or {}).get("input_tokens") if last_ai else None
+        return reported if isinstance(reported, int) and reported > 0 else None
+
+    @staticmethod
+    def _has_new_history(messages: Sequence[Any]) -> bool:
+        """A reported-usage fallback may not summarize a previous summary by itself."""
+        return any(
+            not (
+                isinstance(message, HumanMessage)
+                and message.additional_kwargs.get("lc_source") == "summarization"
+            )
+            for message in messages
+        )
+
+    def _reported_cutoff(self, messages: Sequence[Any]) -> int:
+        if self.keep[0] != "tokens":
+            return 0
+        reported = self._reported_input_tokens(messages)
+        if reported is None:
+            return 0
+        local_total = self._partial_token_counter(messages)
+        if local_total <= 0:
+            return 0
+        trigger = self._trigger_tokens()
+        overhead = max(0, reported - local_total)
+        # Compaction cannot solve a prompt whose fixed system/tool overhead already reaches the
+        # trigger. Let the normal local-history path govern that case instead of re-summarizing
+        # every turn from a provider count that no amount of history trimming can reduce.
+        if trigger is None or overhead >= trigger:
+            return 0
+        # The configured keep budget is a whole-prompt budget. Reserve its fixed system/tool
+        # portion first; scaling the whole local history would incorrectly assume that overhead
+        # shrinks along with the conversation.
+        local_keep = max(0, self.keep[1] - overhead)
+        for index in range(1, len(messages)):
+            if self._partial_token_counter(messages[index:]) <= local_keep:
+                cutoff = self._find_safe_cutoff_point(messages, index)
+                if cutoff > 0:
+                    return cutoff
+        if local_keep == 0 and len(messages) > 1:
+            # Keep the current message (or its complete tool-call group) so it can still be
+            # answered; the prior conversation is represented by the summary.
+            return self._find_safe_cutoff_point(messages, len(messages) - 1)
+        return 0
+
+    def before_model(self, state: Any, runtime: Any) -> dict[str, Any] | None:
+        messages = state["messages"]
+        # Preserve LangChain's normal path, including local-only compaction when usage is absent.
+        if update := super().before_model(state, runtime):
+            return update
+        if not self._should_summarize(messages, self.token_counter(messages)):
+            return None
+        cutoff = self._reported_cutoff(messages)
+        if cutoff <= 0:
+            return None
+        messages_to_summarize = messages[:cutoff]
+        if not self._has_new_history(messages_to_summarize):
+            return None
+        summary = self._create_summary(messages_to_summarize)
+        return {
+            "messages": [
+                RemoveMessage(id=REMOVE_ALL_MESSAGES),
+                *self._build_new_messages(summary),
+                *messages[cutoff:],
+            ]
+        }
 
 # Layer 1, the Soul: Aura's constitutional directive (Gemma's mandate, verbatim). It is the very
 # first thing the model reads in every conversation. No tool, setting or persona change can
@@ -160,10 +251,16 @@ class Aura:
         model: BaseChatModel | None = None,
         toolbox: Toolbox | None = None,
         primary: bool = True,
+        role: str | None = None,
     ):
         """`primary`: the Mac panel's Aura. Another (Slack chat, remote.py) shares the toolbox and
         model but keeps its own conversation, and leaves the reload hooks and the live-message
-        notices to the primary."""
+        notices to the primary.
+
+        `role` names the saved conversation this Aura resumes and owns (default: "mac" for the
+        primary, "slack" otherwise). A second process on the same data folder, such as the
+        terminal (`uv run aura`), must use its own role: a new conversation deletes the old one on
+        disk, so sharing "mac" would erase the app's conversation from under it."""
         self.settings = settings or Settings.from_env()
         self.toolbox = toolbox or Toolbox.from_settings(self.settings)
         self.toolbox.vault.ensure_exists()
@@ -171,6 +268,9 @@ class Aura:
         self.active_model = ModelChoice("ollama", self.settings.model)
         self._injected_model = model is not None
         self.llm = model or build_model(self.settings, self.active_model)
+        # This guard is reset only for a new user turn. It survives an approval/resume within that
+        # turn so an agent cannot evade the retry limit by splitting the same failed work in two.
+        self._circuit_breaker = RecursionCircuitBreaker()
         budget = self.settings.context_tokens
         vault = self.toolbox.vault
         identity = self.toolbox.identity
@@ -184,7 +284,7 @@ class Aura:
             return system_prompt(
                 date.today(), self.active_model.model, vault.root, identity.load(), SOUL_DIRECTIVE,
                 project_sandbox=self.settings.project_sandbox_dir,
-            )
+            ) + "\n\n" + self._live_skill_context()
 
         def describe(tool_call: dict, state: Any, runtime: Any) -> str:
             args = tool_call["args"]
@@ -213,11 +313,22 @@ class Aura:
         # Conversation memory (and paused approvals): checkpointed per thread_id in SQLite, so it
         # survives agent rebuilds (deploying a skill) and restarts of the server.
         self._checkpointer = self.toolbox.checkpointer()
-        self.role = "mac" if primary else "slack"
+        self.role = role or ("mac" if primary else "slack")
         self.turn_id: str | None = None  # the server's correlation id for the turn running now
         self.recovery_note: str | None = None  # what a restart left unfinished (shown once by the app)
 
         def build(tools: list) -> Any:
+            self._summarization = UsageAwareSummarizationMiddleware(
+                model=self.llm,
+                trigger=("tokens", int(budget * 0.6)),
+                keep=("tokens", int(budget * 0.3)),
+                summary_prompt=MEMORY_PROMPT,
+                # LangChain's default trims what it summarizes to 4k tokens by dropping
+                # the *oldest* messages: at a 16k budget that discards the earlier summary
+                # (every fact so far) before re-summarizing. Size it to the budget so the
+                # whole slice is summarized; it is ~30% of the budget in practice.
+                trim_tokens_to_summarize=int(budget * 0.6),
+            )
             return create_agent(
                 model=self.llm,
                 tools=tools,
@@ -226,19 +337,10 @@ class Aura:
                     DenialMiddleware(),
                     # Short-term memory compaction: when the history nears the server's context
                     # window, older turns are folded into a summary instead of silently falling off.
-                    SummarizationMiddleware(
-                        model=self.llm,
-                        trigger=("tokens", int(budget * 0.6)),
-                        keep=("tokens", int(budget * 0.3)),
-                        summary_prompt=MEMORY_PROMPT,  # lossless fact extraction
-                        # LangChain's default trims what it summarizes to 4k tokens by dropping
-                        # the *oldest* messages: at a 16k budget that discards the earlier summary
-                        # (every fact so far) before re-summarizing. Size it to the budget so the
-                        # whole slice is summarized; it is ~30% of the budget in practice.
-                        trim_tokens_to_summarize=int(budget * 0.6),
-                    ),
+                    self._summarization,
                     ToolCallLimitMiddleware(run_limit=TOOL_CALLS_PER_TURN),
-                    ToolStatusMiddleware(self.toolbox.masker),
+                    ToolStatusMiddleware(self.toolbox.masker, self._circuit_breaker, self.toolbox.audit),
+                    RecursionMiddleware(),
                     HumanInTheLoopMiddleware(interrupt_on={
                         **{name: editable if name in EDITABLE else approval for name in NEEDS_APPROVAL},
                         "web_search": tainted}),
@@ -372,6 +474,25 @@ class Aura:
             skills = []
         return json.dumps({"connections": self.toolbox.connections.signature(), "skills": skills}, default=str)
 
+    def _live_skill_context(self) -> str:
+        """A compact, current skill fact base that takes precedence over restored chat text."""
+        try:
+            registry = self.toolbox.skills.scan()
+            active = sorted(skill.name for skill in registry if skill.loaded)
+            inactive = sorted(f"{skill.name} ({skill.status})" for skill in registry if not skill.loaded)
+        except Exception:  # noqa: BLE001: an unavailable registry must not make chat unavailable
+            active, inactive = [], []
+        running = sorted(task.skill for task in self.toolbox.workshop.tasks.values()
+                         if task.stage in ("staging", "auditing", "awaiting"))
+        return "\n".join([
+            "Live skills (authoritative; overrides chat history):",
+            "- Active and callable now: " + (", ".join(active) if active else "none"),
+            "- Unavailable: " + (", ".join(inactive) if inactive else "none"),
+            "- Under audit: " + (", ".join(running) if running else "none"),
+            "Never call an active skill pending or auditing. Use its skill_<name> tool with real user input; if "
+            "input is missing, ask briefly. Do not invent files, tests, or results.",
+        ])
+
     def _actions(self, interrupt: Interrupt) -> tuple[Action, ...]:
         return tuple(Action(a["name"], a["args"], a.get("description", "")) for a in interrupt.value["action_requests"])
 
@@ -429,6 +550,7 @@ class Aura:
         if self._pending:
             raise RuntimeError("An approval is pending; answer it with resume() first.")
         self.turn_id = turn_id
+        self._circuit_breaker.reset()
         self._settle()  # the last turn was stopped mid-way: give its open tool calls a result
         if self.toolbox.connections.signature() != self._connected:  # an account was connected or removed
             self.reload_tools()

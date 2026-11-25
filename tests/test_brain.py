@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import dataclasses
+import shutil
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -14,7 +16,8 @@ from aura.audit import AuditLog
 from aura.tools import Toolbox
 from aura.brain import ApprovalNeeded, Aura, Event, Status, Text
 from aura.config import Settings
-from aura.middleware import DENIAL
+from aura.middleware import DENIAL, RETRY_LIMIT
+from aura.skills import content_hash
 from aura.tools.web import FALLBACK_NOTICE, Hit, WebSearch
 
 
@@ -60,6 +63,38 @@ def test_persona_describes_the_tools_and_their_limits(settings):
     assert "Aura project sandbox" in prompt and "never update the root project or GitHub" in prompt
     assert "never ask for permission in chat" in prompt  # no double confirmation
     assert "Never say an action happened unless a tool result confirms it" in prompt
+    assert "use English for every user-facing chat reply" in prompt
+
+
+def test_live_skill_registry_prompt_overrides_stale_conversation_claims(settings):
+    aura, model = make_aura(settings)
+    example = Path(__file__).resolve().parents[1] / "examples" / "skills" / "pdf_text"
+    live = aura.toolbox.skills.dir / "pdf_text"
+    if not live.exists():
+        shutil.copytree(example, live)
+    aura.toolbox.skills.approve("pdf_text", content_hash(live), "1.0.0", "aura-deps:test")
+
+    aura.chat("Use the installed PDF skill.")
+
+    prompt = model.agent_calls()[0][0].text
+    assert "Active and callable now: pdf_text" in prompt
+    assert "Under audit: none" in prompt
+    assert "overrides chat history" in prompt
+    assert "Do not invent files" in prompt
+
+
+def test_repeated_identical_tool_result_halts_the_turn_after_three_attempts(settings):
+    repeated = [tool_turn(call("list_vault", path="")) for _ in range(RETRY_LIMIT)]
+    aura, model = make_aura(settings, *repeated, AIMessage("This fourth model reply must not run."))
+
+    reply = aura.chat("List my vault until it works.")
+
+    assert reply.startswith("HALT: RECURSION DETECTED")
+    assert "list_vault" in reply
+    assert f"Last {RETRY_LIMIT} attempts" in reply
+    # The guard ends the graph before it can ask the model to issue another command.
+    assert len(model.agent_calls()) == RETRY_LIMIT
+    assert aura.toolbox.audit.entries()[-1]["event"] == "recursion_halted"
 
 
 # ── Sprint 1 · Robustness: .env configuration flows into the logic ─────────────────────────
@@ -148,7 +183,7 @@ def run_turns(aura: Aura, model: ScriptedModel, n: int) -> list[tuple[int, bool]
 
 def test_compaction_triggers_at_60_percent_of_context_budget(settings):
     aura, model = make_aura(settings, context_tokens=1000)  # -> compact at 600 tokens, keep 300
-    turns = run_turns(aura, model, 25)
+    turns = run_turns(aura, model, 40)
 
     for i, (size, compacted) in enumerate(turns):
         assert compacted == (size >= 600), f"turn {i}: {size} tokens, compacted={compacted}"
@@ -171,8 +206,22 @@ def test_compaction_counts_tokens_the_local_estimate_cannot_see(settings):
 
     first = next(i for i, (_, compacted) in enumerate(turns) if compacted)
     assert turns[first][0] < budget * 0.6  # the conversation-only estimate alone would not have fired
+    assert count_tokens_approximately(model.agent_calls()[first]) < budget * 0.6
     for c in model.agent_calls():
         assert count_tokens_approximately(c) < budget  # whole prompt, system prompt included
+
+
+def test_reported_usage_does_not_recompact_on_the_next_turn(settings):
+    probe, probe_model = make_aura(settings)
+    probe.chat("hi")
+    budget = max(2000, 2 * count_tokens_approximately(probe_model.agent_calls()[0][:1]))
+    aura, model = make_aura(dataclasses.replace(settings, data_dir=settings.data_dir / "2"),
+                            context_tokens=budget, report_usage=True)  # fmt: skip
+
+    turns = run_turns(aura, model, 15)
+    first = next(i for i, (_, compacted) in enumerate(turns) if compacted)
+
+    assert not any(compacted for _, compacted in turns[first + 1:])  # no stale usage re-compacts this window
 
 
 def test_compaction_folds_old_turns_into_a_summary(settings):
@@ -277,7 +326,9 @@ def test_vault_change_pauses_for_approval_and_runs_once_approved(settings):
     assert (settings.vault_dir / "Project Aura").is_dir()
 
     log = [(e["event"], e.get("decision")) for e in aura.toolbox.audit.entries()]
-    assert log == [("approval", "approved"), ("folder_created", None)]
+    assert [event for event in log if event[0] != "project_sandbox_seeded"] == [
+        ("approval", "approved"), ("folder_created", None)
+    ]
 
 
 @pytest.mark.parametrize(
@@ -300,7 +351,8 @@ def test_denied_action_gets_the_exact_denial_and_nothing_happens(settings, reque
     assert said(events) == DENIAL  # exact wording, no apology or retry
     assert statuses(events) == []  # the tool never ran
     assert len(model.agent_calls()) == 1  # the model wasn't asked to improvise a reply
-    assert sorted(p.name for p in settings.vault_dir.iterdir()) == ["keep.txt"]
+    # Aura's isolated project copy is seeded at startup; the denied action adds nothing else.
+    assert sorted(p.name for p in settings.vault_dir.iterdir()) == ["Aura", "keep.txt"]
     assert (settings.vault_dir / "keep.txt").read_text() == "precious"
     assert aura.toolbox.audit.entries()[-1]["decision"] == "denied"
 
@@ -354,7 +406,8 @@ def test_runaway_tool_loops_are_capped(settings):
     aura, model = make_aura(settings, *loop, AIMessage("Stopping."))
 
     events = list(aura.stream("List forever."))
-    assert len(statuses(events)) == 8  # TOOL_CALLS_PER_TURN; the rest were refused
+    assert len(statuses(events)) == RETRY_LIMIT
+    assert said(events).startswith("HALT: RECURSION DETECTED")
 
 
 # ── Sprint 2 · Search fallback is announced ────────────────────────────────────────────────

@@ -1,0 +1,12 @@
+name = "to_tickets"
+version = "1.0.0"
+purpose = "Break a supplied plan into small, reviewable implementation tickets with explicit assumptions and blocking edges."
+dependencies = []
+
+[inputs]
+plan = "the approved plan, specification, or list of desired outcomes"
+scope = "optional project or Vault scope"
+
+[permissions]
+network = false
+vault = "none"

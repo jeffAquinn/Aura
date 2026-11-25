@@ -1,0 +1,12 @@
+name = "wayfinder"
+version = "1.0.0"
+purpose = "Convert a large objective into a small decision map that preserves uncertainty and blocking relationships across sessions."
+dependencies = []
+
+[inputs]
+objective = "the long-running outcome to plan"
+scope = "optional project or vault scope"
+
+[permissions]
+network = false
+vault = "none"

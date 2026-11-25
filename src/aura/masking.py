@@ -41,11 +41,12 @@ PATTERNS = [
         r"1//[0-9A-Za-z_-]{30,}",  # Google refresh tokens
         r"[MNO][A-Za-z0-9_-]{23,27}\.[A-Za-z0-9_-]{6}\.[A-Za-z0-9_-]{27,40}",  # Discord bot tokens
         r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}",  # JWTs
-        r"(?i)(?<=bearer )[A-Za-z0-9._~+/=-]{16,}",  # an Authorization header's credential
     )
 ]
 TOKEN_CHARS = re.compile(r"[A-Za-z0-9_\-.+/=~]+$")
-BEARER_BEFORE = re.compile(r"(?i)bearer\s+$")  # "Bearer " right before a held token stays with it
+TOKEN_PREFIX = re.compile(r"[A-Za-z0-9_\-.+/=~]+")
+BEARER_PATTERN = re.compile(r"(?i)(\bbearer\s+)([A-Za-z0-9._~+/=-]{16,})")
+BEARER_BEFORE = re.compile(r"(?i)bearer\s+$")  # a Bearer header right before a held token stays with it
 
 
 def _strings(value: str) -> Iterable[str]:
@@ -53,6 +54,11 @@ def _strings(value: str) -> Iterable[str]:
     try:
         data = json.loads(value)
     except ValueError:
+        yield value
+        return
+    if not isinstance(data, (dict, list, str)):
+        # A Keychain value is always text. JSON parsing is only for connection-token objects;
+        # preserve a numeric or null-looking scalar rather than silently losing it.
         yield value
         return
     stack: list[Any] = [data]
@@ -97,7 +103,10 @@ class Masker:
                 try:
                     found = {v for v in self._values() if isinstance(v, str) and len(v) >= MIN_LITERAL}
                 except Exception:  # noqa: BLE001: a locked Keychain still leaves the patterns
-                    found = set()
+                    # Keep the last successfully read literals: a briefly locked Keychain must not
+                    # turn a previously protected secret into plain text.
+                    self._loaded = time.monotonic()
+                    return self._literals
                 self._literals = sorted(found, key=len, reverse=True)  # longest first: no partial leftovers
                 self._loaded = time.monotonic()
             return self._literals
@@ -105,12 +114,35 @@ class Masker:
     def mask(self, text: str) -> str:
         if not text:
             return text
+        # Find every secret in the original text before replacing anything.  Replacing a stored
+        # literal first could split a larger shaped credential and let its suffix evade a later
+        # pattern match.
+        spans: list[tuple[int, int]] = []
         for literal in self.literals():
-            if literal in text:
-                text = text.replace(literal, MASK)
+            start = text.find(literal)
+            while start != -1:
+                spans.append((start, start + len(literal)))
+                start = text.find(literal, start + 1)
         for pattern in PATTERNS:
-            text = pattern.sub(MASK, text)
-        return text
+            spans.extend(match.span() for match in pattern.finditer(text))
+        # Preserve the Bearer header, but redact its credential range.
+        spans.extend(match.span(2) for match in BEARER_PATTERN.finditer(text))
+        if not spans:
+            return text
+        spans.sort()
+        merged: list[tuple[int, int]] = []
+        for start, end in spans:
+            if merged and start <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+            else:
+                merged.append((start, end))
+        parts: list[str] = []
+        position = 0
+        for start, end in merged:
+            parts.extend((text[position:start], MASK))
+            position = end
+        parts.append(text[position:])
+        return "".join(parts)
 
     def mask_value(self, value: Any) -> Any:
         """Masks every string inside a JSON-like value (an audit entry's fields)."""
@@ -135,8 +167,16 @@ class StreamMasker:
     def __init__(self, masker: Masker):
         self.masker = masker
         self._held = ""
+        self._discarding_long_token = False
 
     def feed(self, chunk: str) -> str:
+        if self._discarding_long_token:
+            prefix = TOKEN_PREFIX.match(chunk)
+            if prefix:
+                chunk = chunk[prefix.end():]
+            if not chunk:
+                return ""
+            self._discarding_long_token = False
         text = self._held + chunk
         tail = TOKEN_CHARS.search(text)
         cut = tail.start() if tail else len(text)
@@ -154,11 +194,22 @@ class StreamMasker:
                 if literal.startswith(text[-k:]):
                     cut = min(cut, len(text) - k)
                     break
-        if len(text) - cut > MAX_HOLD:  # an endless run: release all but the last MAX_HOLD, masked
-            cut = len(text) - MAX_HOLD
+        if len(text) - cut > MAX_HOLD:
+            # A token-shaped run is unbounded until its delimiter arrives. A complete secret in
+            # the run does not make the rest safe: another secret may start near MAX_HOLD and
+            # complete in a later chunk. Mask one marker and discard through the delimiter rather
+            # than releasing any fragment of that unbounded run.
+            safe = text[:cut]
+            self._held = ""
+            self._discarding_long_token = True
+            return self.masker.mask(safe) + MASK
         ready, self._held = text[:cut], text[cut:]
         return self.masker.mask(ready) if ready else ""
 
     def flush(self) -> str:
+        if self._discarding_long_token:
+            self._discarding_long_token = False
+            self._held = ""
+            return ""
         ready, self._held = self._held, ""
         return self.masker.mask(ready) if ready else ""

@@ -1,0 +1,12 @@
+name = "grill_with_docs"
+version = "1.0.0"
+purpose = "Create a read-only, document-grounded intake brief for a Vault or project change before planning or implementation."
+dependencies = []
+
+[inputs]
+intent = "the change, decision, or problem the user wants to work through"
+scope = "vault-relative folder or document to inspect, for example 'Aura' or 'Projects/Website'"
+
+[permissions]
+network = false
+vault = "read"

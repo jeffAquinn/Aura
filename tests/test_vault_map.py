@@ -12,7 +12,7 @@ from aura.tools import vault_map
 from aura.tools.vault import Vault
 
 DAY = date(2026, 11, 23)
-PARTS = ["01_The_Absolute_R", "02_The_Interface_Many", "03_The_Witness_Relational"]
+PARTS = ["The_Absolute_R", "The_Interface_Many", "The_Witness_Relational"]
 
 
 @pytest.fixture

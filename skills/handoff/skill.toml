@@ -1,0 +1,13 @@
+name = "handoff"
+version = "1.0.0"
+purpose = "Turn a supplied session summary into a concise, redacted handoff for the next Aura, Developer, or human session."
+dependencies = []
+
+[inputs]
+summary = "what was learned, decided, attempted, or left unresolved in the session"
+next_focus = "what the next session should accomplish"
+artifacts = "optional vault-relative paths or URLs already containing durable work"
+
+[permissions]
+network = false
+vault = "none"

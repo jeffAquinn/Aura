@@ -7,7 +7,7 @@ import httpx
 import pytest
 
 from aura.brain import build_model
-from aura.model_routing import ROLES, ModelChoice, ModelRouting, infer_role
+from aura.model_routing import ROLES, ModelChoice, ModelRouting, SleepMode, infer_role
 from aura import server as server_module
 from aura.server import create_app
 from conftest import make_aura
@@ -40,6 +40,12 @@ def test_routing_persists_validated_role_choices(settings):
     assert (settings.data_dir / "model_routing.json").is_file()
 
 
+def test_sleep_mode_persists_separately_from_role_choices(settings):
+    routing = ModelRouting(settings)
+    routing.replace_sleep_mode(SleepMode(True, "qwen3:8b"))
+    assert ModelRouting(settings).sleep_mode() == SleepMode(True, "qwen3:8b")
+
+
 def test_task_words_choose_the_corresponding_model_role():
     assert infer_role("Find the latest weather with a web search") == "web_search"
     assert infer_role("Research this and compare sources") == "deep_research"
@@ -58,9 +64,68 @@ def test_models_api_saves_all_roles_and_switches_before_a_turn(settings):
     assert aura.active_model == ModelChoice("ollama", "qwen3:8b")
 
 
+def test_models_api_restores_every_role_after_a_server_restart(settings):
+    aura, _ = make_aura(settings)
+    client = TestClient(create_app(aura, TOKEN, NoopKeeper()), base_url="http://127.0.0.1")
+    roles = choices("qwen3:8b")
+    roles["coding"] = ModelChoice("ollama", "phi4:latest")
+    roles["deep_research"] = ModelChoice("ollama", "gemma3:12b")
+    body = {"roles": {role: choice.public() for role, choice in roles.items()}}
+    assert client.put("/v1/models", json=body, headers=AUTH).status_code == 200
+
+    restarted, _ = make_aura(settings)
+    reloaded = TestClient(create_app(restarted, TOKEN, NoopKeeper()), base_url="http://127.0.0.1")
+
+    assert reloaded.get("/v1/models", headers=AUTH).json()["roles"] == body["roles"]
+    assert restarted.active_model == roles["startup"]
+
+
 def test_selecting_claude_without_an_api_key_refuses_before_the_turn(settings):
     with pytest.raises(ValueError, match="Anthropic API key"):
         build_model(settings, ModelChoice("anthropic", "claude-sonnet-4-6"))
+
+
+def test_cloud_catalog_includes_current_opus_5_5_when_offline(settings):
+    assert "claude-opus-5-5" in ModelRouting(settings).anthropic_models()
+
+
+def test_opus_5_5_is_a_usable_anthropic_model_choice(settings):
+    model = build_model(settings, ModelChoice("anthropic", "claude-opus-5-5"), api_key="sk-ant-api03-" + "a" * 40)
+    assert model.model == "claude-opus-5-5"
+
+
+def test_cloud_model_sync_uses_the_anthropic_catalog_and_persists_only_model_ids(settings, monkeypatch):
+    calls = []
+
+    def get(url, **kwargs):
+        if url == "http://localhost:11434/api/tags":
+            return httpx.Response(200, json={"models": []}, request=httpx.Request("GET", url))
+        calls.append((url, kwargs))
+        assert url == "https://api.anthropic.com/v1/models"
+        assert kwargs["headers"]["anthropic-version"] == "2023-06-01"
+        assert kwargs["headers"]["x-api-key"].startswith("sk-ant-")
+        return httpx.Response(200, json={"data": [
+            {"id": "claude-opus-5-5"}, {"id": "claude-sonnet-5-5"},
+        ], "has_more": False}, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(server_module.httpx, "get", get)
+    aura, _ = make_aura(settings)
+    aura.toolbox.secrets.set("anthropic_api_key", "sk-ant-api03-" + "a" * 40)
+    client = TestClient(create_app(aura, TOKEN, NoopKeeper()), base_url="http://127.0.0.1")
+
+    response = client.post("/v1/models/sync-cloud", json={}, headers=AUTH)
+
+    assert response.status_code == 200
+    assert response.json()["anthropic_models"] == ["claude-opus-5-5", "claude-sonnet-5-5"]
+    assert calls and "sk-ant-" not in response.text
+    assert ModelRouting(settings).anthropic_models() == ("claude-opus-5-5", "claude-sonnet-5-5")
+
+
+def test_cloud_model_sync_requires_an_anthropic_api_key(settings):
+    aura, _ = make_aura(settings)
+    client = TestClient(create_app(aura, TOKEN, NoopKeeper()), base_url="http://127.0.0.1")
+    response = client.post("/v1/models/sync-cloud", json={}, headers=AUTH)
+    assert response.status_code == 422 and "API key" in response.json()["error"]
 
 
 def test_user_confirmed_ollama_pull_refreshes_models_and_can_be_selected(settings, monkeypatch):
@@ -99,3 +164,19 @@ def test_local_model_pull_rejects_unsafe_names_without_contacting_ollama(setting
     client = TestClient(create_app(aura, TOKEN, NoopKeeper()), base_url="http://127.0.0.1")
     response = client.post("/v1/models/pull", json={"model": "../../not-a-model"}, headers=AUTH)
     assert response.status_code == 422 and "unsupported characters" in response.json()["error"]
+
+
+def test_sleep_mode_keeps_only_the_chosen_local_model_resident(settings, monkeypatch):
+    calls = []
+    monkeypatch.setattr(server_module, "installed_ollama_models", lambda _settings: ["qwen3:8b"])
+    monkeypatch.setattr(server_module.ModelKeeper, "warm_soon", lambda self: calls.append((self.model, self.keep_alive)))
+    aura, _ = make_aura(settings)
+    client = TestClient(create_app(aura, TOKEN, NoopKeeper()), base_url="http://127.0.0.1")
+
+    enabled = client.put("/v1/models/sleep", json={"enabled": True, "model": "qwen3:8b"}, headers=AUTH)
+    assert enabled.status_code == 200
+    assert enabled.json()["sleep_mode"] == {"enabled": True, "model": "qwen3:8b"}
+    assert calls == [("qwen3:8b", -1)]
+
+    disabled = client.put("/v1/models/sleep", json={"enabled": False, "model": "qwen3:8b"}, headers=AUTH)
+    assert disabled.status_code == 200 and calls[-1] == ("qwen3:8b", settings.model_keep_alive)

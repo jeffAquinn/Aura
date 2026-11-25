@@ -30,7 +30,7 @@ from aura.tools.vault import Vault
 
 ENGINES = {"claude": Stub("claude", "Claude Code", "Anthropic", False),
            "codex": Stub("codex", "Codex", "OpenAI", False)}  # fmt: skip
-TASK = "Move forms.md into 01_The_Absolute_R/ and add a line about it to the Map."
+TASK = "Move forms.md into The_Absolute_R/ and add a line about it to the Map."
 
 
 class FakeVaultContainer:
@@ -60,8 +60,8 @@ class FakeVaultContainer:
 
 def tidy(work):
     """Move forms.md into the first part, and add a line to the Map."""
-    (work / "01_The_Absolute_R").mkdir(exist_ok=True)
-    (work / "01_The_Absolute_R" / "forms.md").write_text((work / "forms.md").read_text())
+    (work / "The_Absolute_R").mkdir(exist_ok=True)
+    (work / "The_Absolute_R" / "forms.md").write_text((work / "forms.md").read_text())
     (work / "forms.md").unlink()
     with (work / "Map_of_the_Ascent.md").open("a") as f:
         f.write("- Forms\n")
@@ -107,18 +107,18 @@ def test_every_kind_of_change_is_seen_and_shown_with_its_diff(tmp_path):
 
     (work / "notes" / "a.md").write_text("one\nthree\n")
     (work / "notes" / "b.md").unlink()
-    (work / "01_The_Absolute_R").mkdir()
-    (work / "01_The_Absolute_R" / "forms.md").write_text("# Forms\n")
+    (work / "The_Absolute_R").mkdir()
+    (work / "The_Absolute_R" / "forms.md").write_text("# Forms\n")
     (work / "empty").mkdir()
     (work / "old").rmdir()
     (work / "sneaky").symlink_to("/etc")  # links the engine makes are never brought back
     changes = {c.path: c for c in vt.collect(vault, copy, work)}
     assert {p: c.kind for p, c in changes.items()} == {
-        "notes/a.md": "modify", "notes/b.md": "delete", "01_The_Absolute_R/forms.md": "create",
+        "notes/a.md": "modify", "notes/b.md": "delete", "The_Absolute_R/forms.md": "create",
         "empty": "create_folder", "old": "delete_folder"}  # fmt: skip
     shown = changes["notes/a.md"].describe()
     assert shown.startswith("change 'notes/a.md' (+1 −1):") and "    │ -two" in shown and "    │ +three" in shown
-    assert changes["01_The_Absolute_R/forms.md"].describe().startswith("create '01_The_Absolute_R/forms.md' (8 B, +1 lines)")
+    assert changes["The_Absolute_R/forms.md"].describe().startswith("create 'The_Absolute_R/forms.md' (8 B, +1 lines)")
     assert changes["notes/b.md"].headline() == "delete 'notes/b.md' (10 B, −1 lines)"
 
 
@@ -169,6 +169,23 @@ def test_a_task_copies_one_folder_inside_the_vault_within_limits(tmp_path, monke
     assert c.path == "Conversations/two.md"
 
 
+def test_whole_vault_task_excludes_aura_runtime_folders_but_can_target_the_sandbox(tmp_path):
+    root = tmp_path / "vault"
+    (root / "notes.md").parent.mkdir(parents=True)
+    (root / "notes.md").write_text("user content")
+    (root / "Aura").mkdir()
+    (root / "Aura" / "project.py").write_text("sandbox source")
+    (root / "Skills Inbox").mkdir()
+    (root / "Skills Inbox" / "pending.py").write_text("pending code")
+    vault = Vault(root, AuditLog(tmp_path / "a.jsonl"))
+
+    whole = vt.prepare(vault, ".", tmp_path / "whole")
+    sandbox = vt.prepare(vault, "Aura", tmp_path / "sandbox")
+
+    assert list(whole.files) == ["notes.md"]
+    assert list(sandbox.files) == ["project.py"]
+
+
 def test_developer_prompt_uses_the_master_programmer_workflow_when_present():
     prompt = vt.prompt("Improve the project without changing its behavior.")
     assert "If AURA_ENGINEERING.md is present" in prompt
@@ -197,7 +214,7 @@ def test_from_the_chat_the_user_approves_the_hand_off_then_each_file(settings, v
     assert "[Tool: Developer] · Claude Code: Reading Map_of_the_Ascent.md" in statuses
     assert {a.tool for a in per_file.actions} == {"apply_change"}
     paths = {a.args["path"]: a for a in per_file.actions}
-    assert set(paths) == {"01_The_Absolute_R/forms.md", "forms.md", "Map_of_the_Ascent.md"}  # a new folder comes with its files
+    assert set(paths) == {"The_Absolute_R/forms.md", "forms.md", "Map_of_the_Ascent.md"}  # a new folder comes with its files
     assert "    │ +- Forms" in paths["Map_of_the_Ascent.md"].description
     assert container.runs[0]["files"] == ["Map_of_the_Ascent.md", "forms.md"]
     assert TASK in container.runs[0]["prompt"]
@@ -205,7 +222,7 @@ def test_from_the_chat_the_user_approves_the_hand_off_then_each_file(settings, v
     decisions = [a.args["path"] != "Map_of_the_Ascent.md" for a in per_file.actions]  # all but the Map
     evs, more = run(aura.resume(decisions))
     assert more is None and len(container.runs) == 1  # the engine ran once
-    assert (vault_files / "01_The_Absolute_R" / "forms.md").read_text() == "# The Forms\nThe Good, the True.\n"
+    assert (vault_files / "The_Absolute_R" / "forms.md").read_text() == "# The Forms\nThe Good, the True.\n"
     assert not (vault_files / "forms.md").exists()
     assert (vault_files / "Map_of_the_Ascent.md").read_text() == "# Map\n\n## Index\n"  # denied
     result = next(m for m in model.agent_calls()[-1] if isinstance(m, ToolMessage))
@@ -306,14 +323,14 @@ def _live_task(settings, engine, secrets):
                         run_suite=False)  # fmt: skip
     d = Developer(settings, workshop, DevContainer(sandbox, secrets, audit), secrets, audit, engines={engine.name: engine})
     lines: list[str] = []
-    task = d.run_task("live", "Create the file 03_The_Witness_Relational/hello.md containing exactly one line: "
+    task = d.run_task("live", "Create the file The_Witness_Relational/hello.md containing exactly one line: "
                       "'Hello from the Developer'. Change nothing else.", engine.name, ".", vault, lines.append)  # fmt: skip
     print("\n".join(lines[-8:]), f"\nsummary: {task.summary}\nerror: {task.error}")
     assert not task.error and not task.stopped, task.error
-    assert [(c.path, c.kind) for c in task.changes] == [("03_The_Witness_Relational/hello.md", "create")]
-    assert not (settings.vault_dir / "03_The_Witness_Relational" / "hello.md").exists()  # not before approval
-    assert d.finish_task("live", vault, [True]) == ["Created '03_The_Witness_Relational/hello.md'"]
-    assert (settings.vault_dir / "03_The_Witness_Relational" / "hello.md").read_text().strip() == "Hello from the Developer"
+    assert [(c.path, c.kind) for c in task.changes] == [("The_Witness_Relational/hello.md", "create")]
+    assert not (settings.vault_dir / "The_Witness_Relational" / "hello.md").exists()  # not before approval
+    assert d.finish_task("live", vault, [True]) == ["Created 'The_Witness_Relational/hello.md'"]
+    assert (settings.vault_dir / "The_Witness_Relational" / "hello.md").read_text().strip() == "Hello from the Developer"
     assert not any(settings.dev_dir.glob("v-*"))
 
 

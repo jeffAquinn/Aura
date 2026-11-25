@@ -105,11 +105,19 @@ struct SettingsView: View {
 struct ModelsSection: View {
     let store: ChatStore
     @State private var roles: [String: ModelChoice] = [:]
+    /// The last role map confirmed by the server.  Model choices should persist as soon as a user
+    /// picks them; requiring a second, easy-to-miss Save button made them appear to reset later.
+    @State private var savedRoles: [String: ModelChoice] = [:]
+    @State private var saveGeneration = 0
     @State private var error: String?
     @State private var saving = false
     @State private var localModel = ""
     @State private var confirmDownload = false
     @State private var downloading = false
+    @State private var syncingCloudModels = false
+    @State private var sleepMode = SleepMode(model: "")
+    @State private var savingSleep = false
+    @State private var confirmSleep = false
 
     private static let order = ["startup", "coding", "chat", "deep_research", "web_search"]
 
@@ -122,15 +130,51 @@ struct ModelsSection: View {
                     Label("Add an Anthropic API key below before choosing Claude.", systemImage: "key.fill")
                         .font(.caption).foregroundStyle(.orange)
                 }
+                HStack {
+                    Button(syncingCloudModels ? "Syncing cloud models…" : "Sync cloud models") { syncCloudModels() }
+                        .disabled(syncingCloudModels || !catalog.anthropicKeySet)
+                    if syncingCloudModels { ProgressView().controlSize(.small) }
+                    Spacer()
+                    Text("\(catalog.anthropicModels.count) available")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                .controlSize(.small)
+                Text("Sync checks Anthropic with your saved API key and lists the cloud models available to that account. It never exposes the key to Aura’s interface.")
+                    .font(.caption).foregroundStyle(.secondary)
                 ForEach(Self.order, id: \.self) { role in
-                    ModelRoleRow(title: catalog.roleLabels[role] ?? role, choice: binding(role), catalog: catalog)
+                    ModelRoleRow(
+                        title: catalog.roleLabels[role] ?? role,
+                        choice: binding(role),
+                        catalog: catalog,
+                        isStartup: role == "startup"
+                    )
                 }
                 if let problem = catalog.startupModelProblem {
                     Label(problem, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
                 }
                 Divider()
+                Toggle("Sleep Mode", isOn: sleepEnabled)
+                    .disabled(savingSleep || catalog.ollamaModels.isEmpty)
+                if !catalog.ollamaModels.isEmpty {
+                    Picker("Keep this local model loaded", selection: $sleepMode.model) {
+                        ForEach(catalog.ollamaModels, id: \.self) { Text($0).tag($0) }
+                    }
+                    .disabled(savingSleep)
+                    .onChange(of: sleepMode.model) { _ in
+                        if sleepMode.enabled { saveSleepMode() }
+                    }
+                }
+                Text("When on, Aura asks Ollama to keep this local model in memory even after the normal five-minute idle period. It can reserve several GB of unified memory and continues after Aura closes. Turning it off returns the model to Aura's normal idle lifecycle.")
+                    .font(.caption).foregroundStyle(.secondary)
+                if let startup = roles["startup"]?.model, sleepMode.enabled && sleepMode.model != startup {
+                    Label("The Startup and Sleep models differ. Aura may load both models at launch, which increases memory use.", systemImage: "exclamationmark.triangle")
+                        .font(.caption).foregroundStyle(.orange)
+                }
+                Divider()
                 Text("Install a local Ollama model")
                     .font(.callout.weight(.medium))
+                Link("Browse Ollama’s most-downloaded models", destination: Self.ollamaPopularModels)
+                    .font(.caption)
                 TextField("Model name, e.g. qwen3:8b", text: $localModel)
                     .textFieldStyle(.roundedBorder)
                     .disabled(downloading)
@@ -147,8 +191,10 @@ struct ModelsSection: View {
                     Label(error, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
                 }
                 HStack {
+                    Text(saving ? "Saving model settings…" : "Model choices save automatically.")
+                        .font(.caption).foregroundStyle(.secondary)
                     Spacer()
-                    Button("Save Model Settings") { save() }.disabled(saving || roles.count != Self.order.count)
+                    Button("Save now") { saveNow() }.disabled(saving || roles.count != Self.order.count)
                 }
                 .controlSize(.small)
             } else {
@@ -156,6 +202,7 @@ struct ModelsSection: View {
             }
         }
         .onChange(of: store.modelCatalog) { sync() }
+        .onChange(of: roles) { _, _ in scheduleSave() }
         .onAppear(perform: sync)
         .confirmationDialog("Download local model?", isPresented: $confirmDownload, titleVisibility: .visible) {
             Button("Download \(localModel.trimmingCharacters(in: .whitespacesAndNewlines))") { download() }
@@ -163,7 +210,18 @@ struct ModelsSection: View {
         } message: {
             Text("Aura will ask Ollama to download this named model. The model is stored by Ollama outside Aura_Vault and can consume several GB of disk space.")
         }
+        .confirmationDialog("Enable Sleep Mode?", isPresented: $confirmSleep, titleVisibility: .visible) {
+            Button("Keep \(sleepMode.model) Loaded") {
+                sleepMode.enabled = true
+                saveSleepMode()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("This keeps the selected local model resident in Ollama memory until you turn Sleep Mode off. It may make a smaller Mac feel less responsive.")
+        }
     }
+
+    private static let ollamaPopularModels = URL(string: "https://ollama.com/library?sort=popular")!
 
     private func binding(_ role: String) -> Binding<ModelChoice> {
         Binding(
@@ -173,15 +231,41 @@ struct ModelsSection: View {
     }
 
     private func sync() {
-        if let loaded = store.modelCatalog?.roles { roles = loaded }
+        if let catalog = store.modelCatalog {
+            roles = catalog.roles
+            savedRoles = catalog.roles
+            sleepMode = catalog.sleepMode
+        }
     }
 
-    private func save() {
-        saving = true
+    private func scheduleSave() {
+        guard roles.count == Self.order.count, roles != savedRoles else { return }
+        saveGeneration += 1
+        let generation = saveGeneration
+        // A provider switch changes both provider and model.  Debouncing lets those two picker
+        // updates settle into one validated, atomic server preference update.
         Task {
-            error = await store.updateModels(roles)
-            saving = false
+            try? await Task.sleep(nanoseconds: 350_000_000)
+            guard generation == saveGeneration else { return }
+            await persist(roles)
         }
+    }
+
+    private func saveNow() {
+        saveGeneration += 1  // supersede any queued automatic save
+        Task { await persist(roles) }
+    }
+
+    private func persist(_ requested: [String: ModelChoice]) async {
+        guard requested.count == Self.order.count else { return }
+        saving = true
+        error = await store.updateModels(requested)
+        if error == nil { savedRoles = requested }
+        saving = false
+        // If the user made another selection while the request was in flight, persist that newer
+        // choice next instead of allowing an older response to silently win. Do not retry a
+        // rejected partial/invalid value by itself: the user should see the validation message.
+        if roles != requested { scheduleSave() }
     }
 
     private func download() {
@@ -194,12 +278,44 @@ struct ModelsSection: View {
             downloading = false
         }
     }
+
+    private func syncCloudModels() {
+        syncingCloudModels = true
+        error = nil
+        Task {
+            error = await store.syncCloudModels()
+            syncingCloudModels = false
+        }
+    }
+
+    private var sleepEnabled: Binding<Bool> {
+        Binding(
+            get: { sleepMode.enabled },
+            set: { enabled in
+                if enabled { confirmSleep = true }
+                else {
+                    sleepMode.enabled = false
+                    saveSleepMode()
+                }
+            }
+        )
+    }
+
+    private func saveSleepMode() {
+        savingSleep = true
+        error = nil
+        Task {
+            error = await store.updateSleepMode(sleepMode)
+            savingSleep = false
+        }
+    }
 }
 
 private struct ModelRoleRow: View {
     let title: String
     @Binding var choice: ModelChoice
     let catalog: ModelCatalog
+    let isStartup: Bool
 
     private var suggestions: [String] {
         choice.provider == "anthropic" ? catalog.anthropicModels : catalog.ollamaModels
@@ -207,7 +323,14 @@ private struct ModelRoleRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
-            Text(title).font(.callout.weight(.medium))
+            HStack(spacing: 5) {
+                Text(title).font(.callout.weight(.medium))
+                if isStartup {
+                    Label("Launch default", systemImage: "power")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(.tint)
+                }
+            }
             HStack {
                 Picker("Provider", selection: $choice.provider) {
                     Text("Ollama (local)").tag("ollama")
@@ -231,6 +354,8 @@ private struct ModelRoleRow: View {
                 .font(.caption).controlSize(.small)
             }
         }
+        .padding(8)
+        .background(isStartup ? Color.accentColor.opacity(0.10) : .clear, in: RoundedRectangle(cornerRadius: 8))
     }
 }
 
