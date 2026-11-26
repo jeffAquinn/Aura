@@ -771,20 +771,20 @@ struct InputBar: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 0) {
-            HStack(spacing: 6) {
+            HStack(spacing: 4) {
                 DeveloperPicker(store: store)
                 if store.developer == nil { ChatModelPicker(store: store) }
             }
             // Keep the controls visually centered in their own left-hand lane whether it holds
             // Aura's two selectors or one chosen Developer.
-            .frame(minWidth: store.developer == nil ? 108 : 96, alignment: .center)
+            .frame(width: store.developer == nil ? 146 : 86, alignment: .center)
             .frame(maxHeight: .infinity)
 
             Rectangle()
-                .fill(bubbles.userBorder.opacity(0.62))
+                .fill(bubbles.userBorder.opacity(0.5))
                 .frame(width: 1)
-                .padding(.vertical, 3)
-                .padding(.horizontal, 8)
+                .padding(.vertical, 5)
+                .padding(.horizontal, 5)
                 .accessibilityHidden(true)
 
             TextField(placeholder, text: $draft, axis: .vertical)
@@ -800,6 +800,7 @@ struct InputBar: View {
                 .onSubmit(send)
                 .disabled(store.transport == nil || store.phase == .awaitingApproval)
                 .padding(.vertical, 4)
+                .layoutPriority(1)
                 .help("Spell checking and text completion follow your Mac’s Writing Tools settings.")
             if store.isBusy {
                 RoundButton(symbol: store.isStopping ? "hourglass" : "stop.fill", enabled: !store.isStopping, action: store.stop)
@@ -862,7 +863,16 @@ struct DeveloperPicker: View {
         .menuIndicator(.hidden)
         .fixedSize()
         .help(store.developer == nil ? "Send to \(store.persona.name), or hand it to Claude Code or Codex"
-              : "Messages go to \(EngineInfo.named(store.developer ?? "")?.label ?? "a Developer"). Add 'Folder: path' on its own line to use a smaller vault folder.")
+              : "Direct handoff to \(EngineInfo.named(store.developer ?? "")?.label ?? "a Developer"): Aura's chat model is bypassed. Add 'Folder: path' on its own line to use a smaller vault folder.")
+        .accessibilityLabel(accessibilityLabel)
+    }
+
+    private var accessibilityLabel: String {
+        guard let developer = store.developer,
+              let engine = EngineInfo.named(developer) else {
+            return "Send to \(store.persona.name), Claude Code, or Codex"
+        }
+        return "Direct handoff to \(engine.label); Aura's chat model is bypassed"
     }
 }
 
