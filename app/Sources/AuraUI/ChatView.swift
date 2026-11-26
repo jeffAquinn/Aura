@@ -116,6 +116,7 @@ struct HeaderView: View {
     let onOpenAuditLog: () -> Void
     @State private var showSettings = false
     @State private var confirmRestart = false
+    @StateObject private var usage = AuraRuntimeUsage()
     @Environment(\.rendersOffscreen) private var offscreen
     @Environment(\.openWorkshop) private var openWorkshop
     @Environment(\.openConnections) private var openConnections
@@ -153,6 +154,8 @@ struct HeaderView: View {
             .contentShape(.rect)
             .overlay { if !offscreen { WindowDragArea() } }  // the panel moves by its header; elsewhere, drags select text
             .help("Drag to move")
+            AuraUsageView(usage: usage)
+                .task { usage.start() }
             Button {
                 if speaking { store.speech?.stop() }
                 Task { await store.updateVoice(VoicePatch(speak: !store.voice.speak)) }
@@ -768,7 +771,7 @@ struct InputBar: View {
     var body: some View {
         HStack(alignment: .bottom, spacing: 8) {
             DeveloperPicker(store: store)
-            ChatModelPicker(store: store)
+            if store.developer == nil { ChatModelPicker(store: store) }
             TextField(placeholder, text: $draft, axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(chat.font())
@@ -867,8 +870,30 @@ struct DeveloperChip: View {
     }
 }
 
+/// Live, scoped resource use for Aura's macOS app process. GPU use cannot be measured per app
+/// through a supported public macOS API, so it is intentionally shown as unavailable.
+private struct AuraUsageView: View {
+    @ObservedObject var usage: AuraRuntimeUsage
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Label("CPU \(usage.cpuText)", systemImage: "gauge.with.dots.needle.50percent")
+                .help("CPU currently used by Aura's macOS app process.")
+            Label("GPU —", systemImage: "cpu")
+                .help("macOS does not expose supported per-app GPU utilisation to Aura.")
+            Label("Disk \(usage.storageText)", systemImage: "internaldrive")
+                .help("Aura app bundle, application data and logs. Local model downloads and disposable developer workspaces are excluded.")
+        }
+        .font(.system(size: 10, weight: .medium, design: .rounded).monospacedDigit())
+        .foregroundStyle(.secondary)
+        .fixedSize()
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Aura resource use: CPU \(usage.cpuText), GPU unavailable, storage \(usage.storageText)")
+    }
+}
+
 /// A per-message override. "Automatic" follows the user's Chat role configured in Settings.
-/// Developer turns use the selected coding harness, so this control stays visible but disabled.
+/// Developer turns use the selected coding harness, so this control is shown only for Aura turns.
 struct ChatModelPicker: View {
     let store: ChatStore
     static let automatic = ""
