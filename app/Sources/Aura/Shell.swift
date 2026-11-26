@@ -81,7 +81,8 @@ final class StatusItemController: NSObject {
     }
 }
 
-/// A floating panel that takes keyboard input without stealing focus from the app you're in.
+/// Aura's main chat window. It behaves like a normal app window: it comes forward when Aura is
+/// selected, and yields to another app when that app becomes active.
 @MainActor
 final class AuraPanel: NSPanel {
     var onHide: (() -> Void)?
@@ -90,12 +91,12 @@ final class AuraPanel: NSPanel {
         // Borderless + native glass: a rounded sheet of system glass, like Spotlight.
         super.init(
             contentRect: NSRect(x: 0, y: 0, width: 420, height: 620),
-            styleMask: [.borderless, .nonactivatingPanel, .resizable, .fullSizeContentView],
+            styleMask: [.borderless, .resizable, .fullSizeContentView],
             backing: .buffered,
             defer: false
         )
-        isFloatingPanel = true
-        level = .floating
+        isFloatingPanel = false
+        level = .normal
         hidesOnDeactivate = false
         isReleasedWhenClosed = false
         // Not movable by its background: dragging over the conversation selects text. The header
@@ -143,8 +144,7 @@ final class AuraPanel: NSPanel {
         DispatchQueue.main.async { [weak self] in self?.invalidateShadow() }
     }
 
-    /// ⌘C, ⌘V, ⌘X, ⌘A, ⌘Z and ⇧⌘Z in the panel, whether or not the app has an Edit menu (a menu
-    /// bar app's menus aren't shown, and the panel doesn't activate the app).
+    /// ⌘C, ⌘V, ⌘X, ⌘A, ⌘Z and ⇧⌘Z in the borderless chat window.
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
         if flags == .command || flags == [.command, .shift],
@@ -174,6 +174,7 @@ final class AuraPanel: NSPanel {
             let x = min(max(midX - size.width / 2, visible.minX + 8), visible.maxX - size.width - 8)
             setFrameOrigin(NSPoint(x: x, y: visible.maxY - size.height - 6))
         }
+        NSApp.activate()
         makeKeyAndOrderFront(nil)
         invalidateShadow()  // the shadow follows the glass's rounded shape
     }
