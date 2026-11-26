@@ -197,6 +197,24 @@ def test_developer_handoff_preloads_the_smallest_ready_local_model(settings, mon
     assert "preload the smallest available local model 'small:latest' while Claude Code works" in reply.text
 
 
+def test_automatic_local_chat_does_not_preload_a_competing_empty_generation(settings, monkeypatch):
+    aura, _ = make_aura(settings)
+    warm = []
+    monkeypatch.setattr(server_module, "usable_ollama_models", lambda _settings: {settings.model})
+    monkeypatch.setattr(server_module.ModelKeeper, "warm_soon", lambda self: warm.append((self.model, self.keep_alive)))
+    client = TestClient(create_app(aura, TOKEN, NoopKeeper()), base_url="http://127.0.0.1")
+
+    # Exercise production automatic routing while retaining the scripted test model for the
+    # actual reply. The only production-only branch here is the native Ollama prewarm.
+    aura._injected_model = False
+    aura.select_model = lambda choice: setattr(aura, "active_model", choice)  # type: ignore[method-assign]
+    reply = client.post("/v1/chat", json={"text": "Hello"}, headers=AUTH)
+
+    assert reply.status_code == 200
+    assert aura.active_model == ModelChoice("ollama", settings.model)
+    assert warm == []
+
+
 def test_developer_handoff_refuses_before_sending_when_no_local_model_is_usable(settings, monkeypatch):
     aura, _ = make_aura(settings)
     monkeypatch.setattr(server_module, "usable_ollama_model_sizes", lambda _settings: {})

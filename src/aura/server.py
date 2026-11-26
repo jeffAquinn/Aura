@@ -844,11 +844,8 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
             else:
                 role = infer_role(body.text, body.developer)
                 # A code request is delegated through the user's preferred Developer harness.
-                # For a Claude Code/Codex job, Aura's model only supplies the brief final
-                # handoff after the Developer finishes.  Use the smallest ready local model for
-                # that short response, and start loading it before the user has answered the
-                # send card.  The Developer itself remains the coding agent; a cloud chat model
-                # is never substituted for it.
+                # Use the smallest ready local model while the Developer works. The Developer
+                # itself remains the coding agent; a cloud chat model is never substituted for it.
                 if role == "coding" and developer is None:
                     developer = routing.coding_engine()
                 if developer is not None:
@@ -876,9 +873,11 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
                         cloud_availability.unavailable_models(),
                     )
                 aura.select_model(chosen)
-                if chosen.provider == "ollama" and not aura._injected_model:
-                    # Preload only a model proven to exist locally.  It happens off the request
-                    # thread so the app can still render the turn and offer Stop immediately.
+                if developer is not None and chosen.provider == "ollama" and not aura._injected_model:
+                    # A Developer can work for a while before Aura needs its local model, so it
+                    # is useful to preload it in parallel.  A normal Aura turn begins inference
+                    # immediately; a second empty generation there competes for the same local
+                    # runtime and makes the visible reply slower.
                     ModelKeeper(aura.settings.base_url, chosen.model, aura.settings.model_keep_alive).warm_soon()
             events = aura.stream(body.text, developer=developer, turn_id=t.id, cancel=t.cancel)
             if route_notice:
