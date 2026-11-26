@@ -148,6 +148,33 @@ def prepare(vault: Vault, folder: str, work: Path) -> Copy:
     return copy
 
 
+def baseline_drift(vault: Vault, copy: Copy) -> list[str]:
+    """Bounded, synchronous differences between a session's copy and its Vault source.
+
+    This is deliberately a just-in-time check, not a watcher.  HOL already bounds a copied
+    project at session start, so checking that same bounded baseline before another connected
+    turn prevents an external edit from silently becoming part of the agent's mental model.
+    """
+    try:
+        _, origin = source_folder(vault, copy.folder)
+    except VaultTaskError as error:
+        return [str(error)]
+    files, folders = _walk(origin)
+    current = {path.relative_to(origin).as_posix(): path for path in files}
+    current_folders = {path.relative_to(origin).as_posix() for path in folders}
+    changed = [rel for rel in sorted(set(copy.files) & set(current)) if _sha(current[rel]) != copy.files[rel]]
+    missing = sorted(set(copy.files) - set(current))
+    added = sorted(set(current) - set(copy.files))
+    missing_folders = sorted(copy.folders - current_folders)
+    added_folders = sorted(current_folders - copy.folders)
+    findings = ([f"changed file: {rel}" for rel in changed]
+                + [f"missing file: {rel}" for rel in missing]
+                + [f"new file: {rel}" for rel in added]
+                + [f"missing folder: {rel}" for rel in missing_folders]
+                + [f"new folder: {rel}" for rel in added_folders])
+    return findings[:8]
+
+
 def prompt(task: str) -> str:
     return (
         "You are working for Aura, the user's personal AI agent, on a copy of a folder from the user's notes "
@@ -264,6 +291,10 @@ def _apply_one(vault: Vault, work: Path, c: Change) -> str:
         tmp = target.with_name(target.name + ".aura-new")
         shutil.copyfile(src, tmp)
         tmp.replace(target)
+        if not target.is_file() or _sha(target) != _sha(src):
+            # Do not try to restore a value after a concurrent writer won the race: that would
+            # overwrite an external change.  The caller refreshes its workspace before another turn.
+            return f"Not applied: {c.headline()}: the vault's copy did not match the approved content after writing"
         return ("Created" if c.kind == "create" else "Updated") + f" '{c.path}'"
     if c.kind == "delete":
         if not target.is_file():

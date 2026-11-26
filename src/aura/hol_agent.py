@@ -92,6 +92,16 @@ class HolAgent:
         session = self._session(terminal_id)
         if session.pending:
             raise HolAgentError("Review or deny the pending file changes before sending another message.")
+        if drift := vt.baseline_drift(self.vault, session.copy):
+            self._refresh_workspace(session)
+            self.audit.record("hol_agent_vault_drift", terminal=terminal_id, changes=len(drift))
+            summary = "; ".join(drift[:3])
+            notice = ("Aura_Vault changed outside this HOL session (" + summary
+                      + "). The isolated workspace was refreshed; review the Vault and send again.")
+            # Each Developer invocation is ephemeral, but it receives this bounded transcript on
+            # the next turn.  It must know its workspace changed rather than infer from stale chat.
+            session.transcript.append(("Aura", notice))
+            raise HolAgentError(notice)
         engine = self.developer.engines[session.engine]
         if problem := (self.developer.container.problem() or engine.problem(self.developer.secrets)):
             raise HolAgentError(f"{engine.label} isn't ready: {problem}")
@@ -142,9 +152,17 @@ class HolAgent:
         session.pending = []
         # Recopy from the Vault after the decision.  This drops denied edits and gives the next
         # isolated run a fresh, hash-checked baseline while keeping only the bounded transcript.
-        shutil.rmtree(session.work, ignore_errors=True)
-        session.work, session.copy = self._prepare(self.vault.resolve(session.copy.folder), session.work)
+        self._refresh_workspace(session)
         return {"output": lines, "changes": []}
+
+    def _refresh_workspace(self, session: AgentSession) -> None:
+        """Replace the disposable copy only after a complete fresh copy is ready."""
+        project = self.vault.resolve(session.copy.folder)
+        fresh = session.root / ("work-" + uuid.uuid4().hex[:8])
+        work, copy = self._prepare(project, fresh)
+        previous = session.work
+        session.work, session.copy = work, copy
+        shutil.rmtree(previous, ignore_errors=True)
 
     def stop(self, terminal_id: str) -> None:
         with self._lock:
