@@ -114,6 +114,19 @@ struct ChatStoreTests {
         #expect(fake.selectedModels.count == 2 && fake.selectedModels[1] == nil)
     }
 
+    @Test func aSentTurnKeepsItsModelWhenThePickerChangesDuringStreaming() async {
+        let fake = FakeTransport(chat: [[.thinking, .done]])
+        let s = store(fake)
+        let sent = ModelChoice(provider: "ollama", model: "qwen3:8b")
+        s.chatModel = sent
+
+        s.send("Explain recursion.")
+        s.chatModel = ModelChoice(provider: "ollama", model: "gemma4:12b")
+        await s.turnTask?.value
+
+        #expect(fake.selectedModels == [sent])
+    }
+
     @Test func automaticTurnsExposeTheModelSelectedByTheServer() async {
         let chosen = ModelChoice(provider: "ollama", model: "qwen3:8b")
         let s = store(FakeTransport(chat: [[.model(chosen), .thinking, .done]]))

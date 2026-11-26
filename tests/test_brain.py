@@ -71,9 +71,32 @@ def test_only_plainly_requested_tool_schemas_are_visible_to_a_local_turn():
     assert [tool.name for tool in relevant_turn_tools(tools, "Use Claude Code to fix the repository test suite.")] == ["ask_developer"]
 
 
+def test_compound_requests_receive_every_explicitly_needed_tool_family():
+    tools = [type("Tool", (), {"name": name})() for name in [
+        "read_file", "write_file", "web_search", "run_python", "ask_developer",
+    ]]
+
+    assert [tool.name for tool in relevant_turn_tools(tools, "Search the latest news and summarize it.")] == ["web_search"]
+    assert [tool.name for tool in relevant_turn_tools(
+        tools, "Search the web, calculate the totals, and save them in report.csv."
+    )] == ["read_file", "write_file", "web_search", "run_python"]
+
+
 def test_a_direct_developer_handoff_keeps_its_required_schema_only():
     tools = [type("Tool", (), {"name": name})() for name in ["read_file", "ask_developer", "web_search"]]
     assert [tool.name for tool in relevant_turn_tools(tools, "Anything", developer="claude")] == ["ask_developer"]
+
+
+def test_an_approved_continuation_restores_every_visible_tool_schema(settings):
+    aura, _ = make_aura(settings, tool_turn(call("create_folder", path="Receipts")), AIMessage("Created it."))
+    all_tools = frozenset(tool.name for tool in aura.toolbox.all_tools())
+
+    events = list(aura.stream("Create a folder named Receipts."))
+    assert isinstance(events[-1], ApprovalNeeded)
+    assert aura._visible_tool_names < all_tools and "create_folder" in aura._visible_tool_names
+
+    list(aura.resume([True]))
+    assert aura._visible_tool_names == all_tools
 
 
 # ── Sprint 1 · Integrity: persona initialization prevents model identity leakage ──────────

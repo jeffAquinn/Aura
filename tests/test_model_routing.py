@@ -251,6 +251,19 @@ def test_models_api_saves_all_roles_and_switches_before_a_turn(settings):
     assert aura.active_model == ModelChoice("ollama", "qwen3:8b")
 
 
+def test_saving_model_preferences_does_not_change_an_already_active_model(settings):
+    aura, _ = make_aura(settings)
+    client = TestClient(create_app(aura, TOKEN, NoopKeeper()), base_url="http://127.0.0.1")
+    original = aura.active_model
+    body = {"roles": {role: {"provider": "ollama", "model": "qwen3:8b"} for role in ROLES}}
+
+    assert client.put("/v1/models", json=body, headers=AUTH).status_code == 200
+    assert aura.active_model == original  # routing is a preference for the next turn, not a live switch
+
+    assert client.post("/v1/chat", json={"text": "Hello"}, headers=AUTH).status_code == 200
+    assert aura.active_model == ModelChoice("ollama", "qwen3:8b")
+
+
 def test_models_api_defaults_coding_to_claude_code_and_persists_a_codex_choice(settings):
     aura, _ = make_aura(settings)
     client = TestClient(create_app(aura, TOKEN, NoopKeeper()), base_url="http://127.0.0.1")

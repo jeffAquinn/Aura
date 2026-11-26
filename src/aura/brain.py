@@ -254,9 +254,10 @@ _TOOL_FAMILIES: tuple[tuple[frozenset[str], re.Pattern[str]], ...] = (
 def relevant_turn_tools(tools: Sequence[Any], text: str, developer: str | None = None) -> list[Any]:
     """Return schemas relevant to a plainly requested capability, preserving every guardrail.
 
-    This selection changes only what the model is told it may call. The full tool implementations,
-    Governor middleware and approval gates remain in the agent; no omitted schema grants or removes
-    authority. A direct Developer handoff needs only its existing ``ask_developer`` schema.
+    This selection changes only what the model is told it may call. The underlying tool
+    implementations, Governor middleware and approval gates remain in Aura; no omitted schema
+    grants or removes authority. A direct Developer handoff needs only its existing
+    ``ask_developer`` schema.
     """
     names = {tool.name for tool in tools}
     if developer is not None:
@@ -473,7 +474,11 @@ class Aura:
 
         self._build = build
         self._connected = self.toolbox.connections.signature()
-        self._agent = build(self.toolbox.all_tools())
+        initial_tools = self.toolbox.all_tools()
+        self._agent = build(initial_tools)
+        # A narrow set is only a model-context optimization. Keeping this evidence lets tests
+        # prove that an approval continuation restores the complete capability menu.
+        self._visible_tool_names = frozenset(tool.name for tool in initial_tools)
         if primary:
             self.toolbox.workshop.on_deployed = self.reload_tools
             self.toolbox.continuous.on_change = self.reload_tools  # the server wraps this in its turn lock
@@ -489,11 +494,15 @@ class Aura:
     def reload_tools(self) -> None:
         """Rebuild the agent with the current tools (e.g. a newly deployed skill). Memory is kept."""
         self._connected = self.toolbox.connections.signature()
-        self._agent = self._build(self.toolbox.all_tools())
+        tools = self.toolbox.all_tools()
+        self._agent = self._build(tools)
+        self._visible_tool_names = frozenset(tool.name for tool in tools)
 
     def _select_turn_tools(self, text: str, developer: str | None = None) -> None:
         """Rebuild only the model-visible schemas for this new turn; durable state is shared."""
-        self._agent = self._build(relevant_turn_tools(self.toolbox.all_tools(), text, developer))
+        tools = relevant_turn_tools(self.toolbox.all_tools(), text, developer)
+        self._agent = self._build(tools)
+        self._visible_tool_names = frozenset(tool.name for tool in tools)
 
     def select_model(self, choice: ModelChoice) -> None:
         """Switch model roles only between turns, preserving the durable conversation state."""
