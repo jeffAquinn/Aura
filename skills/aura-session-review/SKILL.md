@@ -5,12 +5,28 @@ description: Start Aura and run a bounded plan-review-implementation loop for on
 
 # Aura session review
 
-Use Aura as the product architect and adversarial reviewer. Claude Code remains the lead developer: inspect the repository, decide the safe implementation, edit root-project code, run verification, and report concrete evidence.
+Use Aura as the product architect and adversarial reviewer. Claude Code or Codex remains the lead developer: inspect the repository, decide the safe implementation, edit root-project code, run verification, and report concrete evidence.
+
+## Phase routing
+
+This is a selective pipeline, not an instruction to run every available skill. Start each bounded request by naming the smallest applicable phases and the evidence that unlocks the next one.
+
+| Need | Use before implementation | Stop condition |
+| --- | --- | --- |
+| Unclear, cross-cutting objective | `wayfinder` | Outcome, scope, constraints, and proof are explicit. |
+| Existing project conventions or written decisions | `grill_with_docs`; `domain_modeling` when terminology matters | Relevant documents and terms are identified. |
+| Defect or performance regression | `diagnosing_bugs` | A minimal reproduction and discriminating evidence exist. |
+| Notes or PDF material is the source of truth | `synthesize` or `pdf_text` | Evidence is condensed and scoped. |
+| Approved work has several independent slices | `to_tickets`, then `implement_spec` | One smallest vertical slice is ready for the Developer. |
+| Completion or a paused session | `handoff`; use `retro` only when workflow evidence warrants it | Next owner can continue without rediscovery. |
+| User-requested editorial cleanup | `unslop` | The user has reviewed the suggested prose edits. |
+
+Do not claim a skill ran unless its actual output is in the conversation. In the HOL Terminal, the connected Developer is intentionally unable to invoke host skills; request the specific approved Aura skill and its inputs from the user/Aura, then incorporate the returned evidence. Do not infer, paraphrase, or reconstruct a missing skill result from surrounding files. This avoids inventing tool results and keeps the Developer's authority limited to the disposable Vault workspace.
 
 ## Start
 
 1. Load the `anthropic-skills:computer-use` skill, then launch the built app at `app/build/Aura.app` with computer use (or `scripts/start-aura-session-review.sh`). If no current build exists, build it with `scripts/build-app.sh` first. If the computer-use tools are not available in this session (they come from the Claude desktop app), stop and tell the user; do not reach Aura another way (in particular, never send `/new` from a second `uv run aura` process: it deletes the app's saved conversation). Never use `screencapture`.
-2. Ask Aura for one bounded, high-value improvement. Require a dossier with intent, constraints, acceptance evidence, risks, and long-term implications. Aura must not modify the root project. Aura's file tools see `~/Documents/Aura_Vault/Aura`, which can be a stale copy of this repo, so paste the relevant current facts (file excerpts, recent commits) into the request instead of assuming Aura can read them.
+2. Ask Aura for one bounded, high-value improvement. Require a dossier with intent, constraints, acceptance evidence, risks, and long-term implications. Route the request through only the applicable phase skills above; Aura must not modify the root project. Aura's file tools see `~/Documents/Aura_Vault/Aura`, which can be a stale copy of this repo, so paste the relevant current facts (file excerpts, recent commits) into the request instead of assuming Aura can read them.
 3. Read Aura's entire response. Reject or narrow suggestions that add authority, bypass the Security Governor, require ungranted external access, or are too broad for one review loop.
 
 ## Implement

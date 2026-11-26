@@ -16,6 +16,7 @@ import subprocess
 import tarfile
 import tempfile
 import threading
+import tomllib
 import uuid
 from io import BytesIO
 from dataclasses import dataclass, asdict
@@ -31,8 +32,8 @@ MAX_SAVEPOINTS = 3
 SAVEPOINT_ID = re.compile(r"^\d{8}T\d{6}Z-[a-f0-9]{8}$")
 BUILTIN_NAME = "aura_session_review"
 BUILTIN_MANIFEST = '''name = "aura_session_review"
-version = "1.0.0"
-purpose = "Prepare a bounded Aura session-review task inside the Vault copy."
+version = "1.1.0"
+purpose = "Prepare a bounded, phase-based Aura development review inside the Vault copy."
 inputs = {}
 dependencies = []
 
@@ -42,7 +43,7 @@ vault = "none"
 
 [hol]
 runner = "aura_session_review"
-prompt = "Run a bounded Aura session review. Work only in the Vault Aura copy; never modify the source checkout. Begin with a plan, take a savepoint before edits, implement the smallest coherent change, and report verification."
+prompt = "Run a bounded senior-developer review. Work only in the Vault Aura copy; never modify the source checkout. At the start of each user request, classify the work and publish a short phase plan. Use only the relevant upstream Aura skills: wayfinder for an ambiguous or multi-step objective; grill_with_docs for document or repository context; domain_modeling for terminology or durable boundaries; diagnosing_bugs for a defect or performance regression; synthesize or pdf_text only when the requested evidence is in Vault notes or a PDF; to_tickets and implement_spec only after a plan is approved; handoff or retro only at a session boundary; unslop only for user-requested prose review. Do not run every skill and never claim an Aura skill ran unless its result is supplied in this conversation: this isolated Developer has no host skill tools. If a missing skill result is needed, name the exact skill, inputs, and decision it will inform, then wait for the user or Aura to provide it; do not infer, paraphrase, or reconstruct the missing result. Before edits, confirm scope, savepoint, and acceptance evidence. Implement one small vertical slice, preserve per-file approval, verify with focused tests or a build, and report changed files, evidence, and residual risk."
 '''
 BUILTIN_SKILL = '''def run(args):
     return "This declarative HOL session is prepared by Aura's native terminal."
@@ -83,8 +84,17 @@ class HolManager:
         with self._lock:
             live = self.settings.skills_dir / BUILTIN_NAME
             inbox = self.settings.skills_inbox / BUILTIN_NAME
-            if live.exists() or inbox.exists():
+            # A stock, older built-in needs a new Workshop candidate so users can review the
+            # workflow update.  Never replace an approved live skill, and never overwrite an
+            # Inbox skill that could have been edited by the user.
+            if live.exists() and not self._is_stock_builtin(live):
                 return
+            if inbox.exists() and not self._is_stock_builtin(inbox):
+                return
+            if live.exists() and self._is_current_builtin(live):
+                return
+            if inbox.exists():
+                shutil.rmtree(inbox)
             inbox.parent.mkdir(parents=True, exist_ok=True)
             staging = Path(tempfile.mkdtemp(prefix=".hol-session-", dir=inbox.parent))
             try:
@@ -96,6 +106,29 @@ class HolManager:
                 shutil.rmtree(staging, ignore_errors=True)
                 raise
             self.audit.record("hol_session_offered", skill=BUILTIN_NAME, path=str(inbox))
+
+    @staticmethod
+    def _is_current_builtin(folder: Path) -> bool:
+        """Whether a folder is exactly the current generated built-in session."""
+        try:
+            return ((folder / "skill.toml").read_text(encoding="utf-8") == BUILTIN_MANIFEST
+                    and (folder / "skill.py").read_text(encoding="utf-8") == BUILTIN_SKILL
+                    and (folder / "test_skill.py").read_text(encoding="utf-8") == BUILTIN_TEST)
+        except OSError:
+            return False
+
+    @staticmethod
+    def _is_stock_builtin(folder: Path) -> bool:
+        """Recognise only the prior generated session, never a user-authored session."""
+        try:
+            manifest = tomllib.loads((folder / "skill.toml").read_text(encoding="utf-8"))
+            return (manifest.get("name") == BUILTIN_NAME
+                    and manifest.get("version") == "1.0.0"
+                    and manifest.get("hol", {}).get("runner") == "aura_session_review"
+                    and (folder / "skill.py").read_text(encoding="utf-8") == BUILTIN_SKILL
+                    and (folder / "test_skill.py").read_text(encoding="utf-8") == BUILTIN_TEST)
+        except (OSError, tomllib.TOMLDecodeError, AttributeError):
+            return False
 
     def sessions(self) -> list[dict[str, Any]]:
         """Only an approved, enabled, unflagged skill can become a runnable HOL session."""

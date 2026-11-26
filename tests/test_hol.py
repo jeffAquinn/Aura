@@ -5,11 +5,12 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import tomllib
 
 import pytest
 
 from aura.audit import AuditLog
-from aura.hol import BUILTIN_NAME, HolError, HolManager
+from aura.hol import BUILTIN_MANIFEST, BUILTIN_NAME, BUILTIN_SKILL, BUILTIN_TEST, HolError, HolManager
 from aura.skills import SkillManager, content_hash
 from aura.tools.sandbox import Sandbox
 
@@ -27,7 +28,7 @@ def approve_builtin(manager: HolManager, skills: SkillManager, settings) -> None
     source, live = settings.skills_inbox / BUILTIN_NAME, settings.skills_dir / BUILTIN_NAME
     live.parent.mkdir(parents=True, exist_ok=True)
     shutil.copytree(source, live)
-    skills.approve(BUILTIN_NAME, content_hash(live), "1.0.0", "")
+    skills.approve(BUILTIN_NAME, content_hash(live), "1.1.0", "")
 
 
 def test_hol_session_is_offered_to_workshop_but_not_runnable_until_approved(settings):
@@ -42,6 +43,25 @@ def test_hol_session_is_offered_to_workshop_but_not_runnable_until_approved(sett
     started = manager.start(BUILTIN_NAME, model={"provider": "ollama", "model": "test"}, effort="low")
     assert started["working_directory"] == str(settings.project_sandbox_dir)
     assert "disposable, no-network container" in "\n".join(started["output"])
+
+
+def test_stock_builtin_upgrade_is_offered_without_replacing_the_live_session(settings):
+    manager, skills = hol(settings)
+    live = settings.skills_dir / BUILTIN_NAME
+    live.mkdir(parents=True)
+    old_manifest = BUILTIN_MANIFEST.replace('version = "1.1.0"', 'version = "1.0.0"')
+    (live / "skill.toml").write_text(old_manifest, encoding="utf-8")
+    (live / "skill.py").write_text(BUILTIN_SKILL, encoding="utf-8")
+    (live / "test_skill.py").write_text(BUILTIN_TEST, encoding="utf-8")
+    skills.approve(BUILTIN_NAME, content_hash(live), "1.0.0", "")
+
+    manager.ensure_builtin_candidate()
+
+    assert 'version = "1.0.0"' in (live / "skill.toml").read_text()
+    candidate = tomllib.loads((settings.skills_inbox / BUILTIN_NAME / "skill.toml").read_text())
+    assert candidate["version"] == "1.1.0"
+    assert "Do not run every skill" in candidate["hol"]["prompt"]
+    assert "do not infer, paraphrase, or reconstruct" in candidate["hol"]["prompt"]
 
 
 def test_savepoints_restore_only_the_vault_copy_and_keep_three(settings):
