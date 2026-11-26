@@ -39,6 +39,7 @@ from aura.model_routing import ModelChoice
 from aura.middleware import (
     REJECTION_NOTE,
     DenialMiddleware,
+    ProviderThinkingSanitizer,
     RecursionCircuitBreaker,
     RecursionMiddleware,
     ToolStatusMiddleware,
@@ -334,6 +335,10 @@ class Aura:
                 tools=tools,
                 middleware=[
                     persona,
+                    # A provider's signed extended-thinking blocks are valid only for the exact
+                    # request that produced them. Sanitize before compaction or another model
+                    # pass so restart recovery and durable history remain provider-neutral.
+                    ProviderThinkingSanitizer(),
                     DenialMiddleware(),
                     # Short-term memory compaction: when the history nears the server's context
                     # window, older turns are folded into a summary instead of silently falling off.

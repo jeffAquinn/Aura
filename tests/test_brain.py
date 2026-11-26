@@ -16,7 +16,7 @@ from aura.audit import AuditLog
 from aura.tools import Toolbox
 from aura.brain import ApprovalNeeded, Aura, Event, Status, Text
 from aura.config import Settings
-from aura.middleware import DENIAL, RETRY_LIMIT
+from aura.middleware import DENIAL, RETRY_LIMIT, ProviderThinkingSanitizer, without_provider_thinking
 from aura.skills import content_hash
 from aura.tools.web import FALLBACK_NOTICE, Hit, WebSearch
 
@@ -81,6 +81,54 @@ def test_live_skill_registry_prompt_overrides_stale_conversation_claims(settings
     assert "Under audit: none" in prompt
     assert "overrides chat history" in prompt
     assert "Do not invent files" in prompt
+
+
+def test_provider_thinking_blocks_are_removed_without_losing_text_or_tool_calls(settings):
+    message = AIMessage(
+        content=[
+            {"type": "thinking", "thinking": "private reasoning", "signature": "signed-by-provider"},
+            {"type": "reasoning", "reasoning": "normalised private reasoning", "extras": {"signature": "also-signed"}},
+            {"type": "text", "text": "Visible answer."},
+            {"type": "redacted_thinking", "data": "opaque"},
+        ],
+        tool_calls=[call("list_vault", path="")],
+    )
+
+    cleaned = without_provider_thinking(message)
+
+    assert isinstance(cleaned, AIMessage)
+    assert cleaned.content == [{"type": "text", "text": "Visible answer."}]
+    assert cleaned.tool_calls == message.tool_calls
+
+
+def test_provider_thinking_blocks_never_reach_a_durable_checkpoint(settings):
+    reply = AIMessage(content=[
+        {"type": "thinking", "thinking": "private reasoning", "signature": "provider-bound"},
+        {"type": "text", "text": "Visible answer."},
+    ])
+    aura, _ = make_aura(settings, reply)
+
+    aura.chat("Hello.")
+
+    saved = next(message for message in history(aura) if isinstance(message, AIMessage))
+    assert saved.content == [{"type": "text", "text": "Visible answer."}]
+
+
+def test_thinking_sanitizer_repairs_an_old_checkpoint_before_a_model_reads_it(settings):
+    stale = AIMessage(content=[
+        {"type": "thinking", "thinking": "private", "signature": "no-longer-valid"},
+        {"type": "text", "text": "Previous visible answer."},
+    ])
+    aura, model = make_aura(settings, AIMessage("Fresh answer."))
+    # This represents a checkpoint written before ProviderThinkingSanitizer was introduced.
+    aura._agent.update_state(aura._config, {"messages": [stale]}, as_node="model")
+
+    assert ProviderThinkingSanitizer().before_model(aura._agent.get_state(aura._config).values, None)
+    aura.chat("Continue safely.")
+
+    seen = model.agent_calls()[0]
+    previous = next(message for message in seen if isinstance(message, AIMessage) and message.text == "Previous visible answer.")
+    assert previous.content == [{"type": "text", "text": "Previous visible answer."}]
 
 
 def test_repeated_identical_tool_result_halts_the_turn_after_three_attempts(settings):

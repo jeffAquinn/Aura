@@ -23,6 +23,7 @@ REJECTION_NOTE = "The user declined this action. Do not retry it unless they ask
 MAX_TOOL_OUTPUT = 24_000  # characters of one tool result the model reads (about 6k tokens)
 RETRY_LIMIT = 3
 RECURSION_MARKER = "aura_recursion_breaker"
+_PROVIDER_THINKING_BLOCKS = {"thinking", "redacted_thinking", "reasoning"}
 
 
 def bound(text: str, limit: int = MAX_TOOL_OUTPUT) -> str:
@@ -111,6 +112,42 @@ def _is_rejection(m: BaseMessage) -> bool:
         and m.additional_kwargs.get("lc_source") == "hitl_interrupt_decision"
         and m.additional_kwargs.get("lc_data", {}).get("decision") == "reject"
     )
+
+
+def without_provider_thinking(message: BaseMessage) -> BaseMessage:
+    """Drop opaque provider reasoning blocks while retaining visible text and tool calls.
+
+    Anthropic signs extended-thinking blocks against the complete preceding request. Aura's
+    durable conversation can legitimately change that prefix through restart recovery,
+    compaction, or a refreshed dynamic prompt, so retaining those blocks makes an otherwise
+    valid conversation impossible to continue. They are not user-visible history or tool input;
+    removing them also avoids storing provider chain-of-thought in Aura's checkpoints.
+    """
+    if not isinstance(message, AIMessage) or not isinstance(message.content, list):
+        return message
+    content = [
+        block for block in message.content
+        if not (isinstance(block, dict) and block.get("type") in _PROVIDER_THINKING_BLOCKS)
+    ]
+    return message if len(content) == len(message.content) else message.model_copy(update={"content": content})
+
+
+class ProviderThinkingSanitizer(AgentMiddleware):
+    """Keep signed provider reasoning out of durable agent state and future requests."""
+
+    @staticmethod
+    def _update(state: AgentState) -> dict[str, list[BaseMessage]] | None:
+        cleaned = [without_provider_thinking(message) for message in state["messages"]]
+        return {"messages": cleaned} if any(new is not old for new, old in zip(cleaned, state["messages"])) else None
+
+    def before_model(self, state: AgentState, runtime: Runtime) -> dict[str, list[BaseMessage]] | None:
+        # Repairs old checkpoints written before this middleware existed, before any model or
+        # summarizer sees their invalid signed blocks.
+        return self._update(state)
+
+    def after_model(self, state: AgentState, runtime: Runtime) -> dict[str, list[BaseMessage]] | None:
+        # Prevents newly received extended-thinking content from ever reaching a checkpoint.
+        return self._update(state)
 
 
 class DenialMiddleware(AgentMiddleware):
