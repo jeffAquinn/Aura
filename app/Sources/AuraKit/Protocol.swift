@@ -176,13 +176,19 @@ public enum AuraEvent: Sendable, Equatable {
 /// Ollama's OpenAI-compatible API supplies the token counts but not its native verbose timings.
 public struct LocalModelPerformance: Codable, Equatable, Sendable {
     public let totalDuration: Double
+    public let promptDuration: Double
     public let promptTokens: Int
+    public let promptTokensPerSecond: Double
+    public let generationDuration: Double
     public let outputTokens: Int
     public let outputTokensPerSecond: Double
 
     enum CodingKeys: String, CodingKey {
         case totalDuration = "total_duration"
+        case promptDuration = "prompt_duration"
         case promptTokens = "prompt_tokens"
+        case promptTokensPerSecond = "prompt_tokens_per_second"
+        case generationDuration = "generation_duration"
         case outputTokens = "output_tokens"
         case outputTokensPerSecond = "output_tokens_per_second"
     }

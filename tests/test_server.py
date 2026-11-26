@@ -98,14 +98,20 @@ def test_an_automatic_chat_turn_has_one_model_call_and_one_matching_model_event(
 def test_a_local_performance_event_preserves_measured_counts_and_duration():
     data = json.loads(encode(Changed("performance", {
         "total_duration": 57.810607375,
+        "prompt_duration": 0.13364725,
         "prompt_tokens": 34,
+        "prompt_tokens_per_second": 254.40,
+        "generation_duration": 57.674586333,
         "output_tokens": 1657,
         "output_tokens_per_second": 28.73,
     })).split("\n")[1][6:])
 
     assert data == {
         "total_duration": 57.810607375,
+        "prompt_duration": 0.13364725,
         "prompt_tokens": 34,
+        "prompt_tokens_per_second": 254.40,
+        "generation_duration": 57.674586333,
         "output_tokens": 1657,
         "output_tokens_per_second": 28.73,
     }

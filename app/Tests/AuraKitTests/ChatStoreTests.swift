@@ -136,7 +136,8 @@ struct ChatStoreTests {
     }
 
     @Test func aCompletedLocalInferencePublishesItsMeasuredPerformance() async {
-        let measured = LocalModelPerformance(totalDuration: 57.81, promptTokens: 34,
+        let measured = LocalModelPerformance(totalDuration: 57.81, promptDuration: 0.13, promptTokens: 34,
+                                              promptTokensPerSecond: 254.4, generationDuration: 57.67,
                                               outputTokens: 1657, outputTokensPerSecond: 28.73)
         let s = store(FakeTransport(chat: [[.thinking, .performance(measured), .done]]))
 

@@ -225,6 +225,49 @@ class Changed:
 Event = Text | Status | ApprovalNeeded | Changed
 
 
+# A local model need not receive every capability schema to answer a plainly conversational
+# request. These are deliberately broad, additive cues: a matching request gets every tool in the
+# relevant family; an unrecognised request gets no tools rather than a guessed capability. The
+# Governor, approval middleware and the tool implementations stay attached to every agent build.
+_TOOL_FAMILIES: tuple[tuple[frozenset[str], re.Pattern[str]], ...] = (
+    (frozenset({"list_vault", "read_file", "write_file", "create_folder", "delete_path"}),
+     re.compile(r"\b(vault|file|folder|directory|path|read|save|delete|rename|notes?\.txt|\.csv|\.pdf)\b", re.I)),
+    (frozenset({"web_search"}),
+     re.compile(r"\b(search|web|internet|online|news|weather|latest|current|price|today|forecast)\b", re.I)),
+    (frozenset({"run_python"}),
+     re.compile(r"\b(python|calculate|compute|dataframe|chart|plot|dataset|spreadsheet)\b", re.I)),
+    (frozenset({"list_voices", "set_voice"}),
+     re.compile(r"\b(voice|speak|speech|audio|read aloud)\b", re.I)),
+    (frozenset({"view_persona", "update_persona"}),
+     re.compile(r"\b(persona|tone|brevity|formality|backstory|call yourself)\b", re.I)),
+    (frozenset({"check_library", "list_skills", "propose_skill", "list_agents", "create_agent_candidate",
+                "import_agent_candidate", "propose_agent", "develop_skill"}),
+     re.compile(r"\b(skill|workshop|agent candidate|package|library|dependency|provenance)\b", re.I)),
+    (frozenset({"ask_developer", "develop_skill"}),
+     re.compile(r"\b(claude code|codex|codebase|repository|repo|git|implement|bug|test suite)\b", re.I)),
+    (frozenset({"list_connections", "gmail_read", "gmail_draft", "calendar_read", "calendar_add", "drive_read",
+                "slack_read", "slack_send", "discord_read", "discord_send", "new_messages"}),
+     re.compile(r"\b(gmail|email|mailbox|calendar|event|drive|slack|discord|channel|messages?)\b", re.I)),
+)
+
+
+def relevant_turn_tools(tools: Sequence[Any], text: str, developer: str | None = None) -> list[Any]:
+    """Return schemas relevant to a plainly requested capability, preserving every guardrail.
+
+    This selection changes only what the model is told it may call. The full tool implementations,
+    Governor middleware and approval gates remain in the agent; no omitted schema grants or removes
+    authority. A direct Developer handoff needs only its existing ``ask_developer`` schema.
+    """
+    names = {tool.name for tool in tools}
+    if developer is not None:
+        return [tool for tool in tools if tool.name == "ask_developer"]
+    selected = {name for family, pattern in _TOOL_FAMILIES if pattern.search(text) for name in family}
+    # An installed skill is explicitly requested by its public name, or by asking about skills.
+    lowered = text.lower()
+    selected.update(name for name in names if name.startswith("skill_") and (name[6:].replace("_", " ") in lowered or "skill" in lowered))
+    return [tool for tool in tools if tool.name in selected]
+
+
 class _LocalPerformanceRecorder(BaseCallbackHandler):
     """Capture one local LLM call's real wall time and reported token counts.
 
@@ -276,11 +319,16 @@ class _LocalPerformanceRecorder(BaseCallbackHandler):
         finished = time.perf_counter()
         # The first generated token arrives after prompt evaluation. This is the closest
         # observable equivalent of Ollama's native eval rate on the OpenAI-compatible route.
-        generation_seconds = max(0.001, finished - (first_token or started))
+        first_token = first_token or finished
+        prefill_seconds = max(0.0, first_token - started)
+        generation_seconds = max(0.001, finished - first_token)
         with self._lock:
             self._finished.append({
                 "total_duration": max(0.0, finished - started),
+                "prompt_duration": prefill_seconds,
                 "prompt_tokens": prompt_tokens,
+                "prompt_tokens_per_second": prompt_tokens / max(0.001, prefill_seconds),
+                "generation_duration": generation_seconds,
                 "output_tokens": output_tokens,
                 "output_tokens_per_second": output_tokens / generation_seconds,
             })
@@ -442,6 +490,10 @@ class Aura:
         """Rebuild the agent with the current tools (e.g. a newly deployed skill). Memory is kept."""
         self._connected = self.toolbox.connections.signature()
         self._agent = self._build(self.toolbox.all_tools())
+
+    def _select_turn_tools(self, text: str, developer: str | None = None) -> None:
+        """Rebuild only the model-visible schemas for this new turn; durable state is shared."""
+        self._agent = self._build(relevant_turn_tools(self.toolbox.all_tools(), text, developer))
 
     def select_model(self, choice: ModelChoice) -> None:
         """Switch model roles only between turns, preserving the durable conversation state."""
@@ -630,6 +682,7 @@ class Aura:
         if self.toolbox.connections.signature() != self._connected:  # an account was connected or removed
             self.reload_tools()
         self._turn_notices: set[str] = set()  # each notice is said once per turn
+        self._select_turn_tools(text, developer)
         if developer is not None:
             engine = self.toolbox.developer.engines.get(developer)
             if engine is None:
@@ -694,6 +747,10 @@ class Aura:
             raise StaleApproval("That approval was already answered.")
         self.turn_id = turn_id
         self._pending, self.approval_id = None, None  # only once the answer is known to be valid
+        # An approved continuation can legitimately need a follow-up capability that was not
+        # relevant to the initial plain-language request. Restore every schema before resuming;
+        # this affects only the post-approval turn, never the fast first response.
+        self.reload_tools()
         decisions = []
         for action, answer, edit in zip(actions, approvals, edits):
             ok = bool(answer.get("approve")) if isinstance(answer, dict) else bool(answer)

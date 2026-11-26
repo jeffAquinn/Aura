@@ -17,7 +17,7 @@ from langchain_core.outputs import ChatGeneration, LLMResult
 from aura.audit import AuditLog
 from aura.tools import Toolbox
 from aura import brain
-from aura.brain import ApprovalNeeded, Aura, Event, Status, Text, _LocalPerformanceRecorder
+from aura.brain import ApprovalNeeded, Aura, Event, Status, Text, _LocalPerformanceRecorder, relevant_turn_tools
 from aura.config import Settings
 from aura.middleware import DENIAL, RETRY_LIMIT, ProviderThinkingSanitizer, without_provider_thinking
 from aura.skills import content_hash
@@ -51,10 +51,29 @@ def test_local_performance_uses_reported_tokens_and_the_observed_model_stream(mo
 
     assert recorder.drain() == [{
         "total_duration": 3.0,
+        "prompt_duration": 1.0,
         "prompt_tokens": 34,
+        "prompt_tokens_per_second": 34.0,
+        "generation_duration": 2.0,
         "output_tokens": 8,
         "output_tokens_per_second": 4.0,
     }]
+
+
+def test_only_plainly_requested_tool_schemas_are_visible_to_a_local_turn():
+    tools = [type("Tool", (), {"name": name})() for name in [
+        "read_file", "write_file", "web_search", "run_python", "set_voice", "ask_developer", "gmail_read",
+    ]]
+
+    assert relevant_turn_tools(tools, "Explain recursion in two sentences.") == []
+    assert [tool.name for tool in relevant_turn_tools(tools, "Read notes.txt from my vault.")] == ["read_file", "write_file"]
+    assert [tool.name for tool in relevant_turn_tools(tools, "Search the latest weather online.")] == ["web_search"]
+    assert [tool.name for tool in relevant_turn_tools(tools, "Use Claude Code to fix the repository test suite.")] == ["ask_developer"]
+
+
+def test_a_direct_developer_handoff_keeps_its_required_schema_only():
+    tools = [type("Tool", (), {"name": name})() for name in ["read_file", "ask_developer", "web_search"]]
+    assert [tool.name for tool in relevant_turn_tools(tools, "Anything", developer="claude")] == ["ask_developer"]
 
 
 # ── Sprint 1 · Integrity: persona initialization prevents model identity leakage ──────────

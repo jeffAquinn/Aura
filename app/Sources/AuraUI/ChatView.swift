@@ -308,11 +308,11 @@ private struct LocalPerformanceChip: View {
     @Environment(\.bubbles) private var bubbles
 
     private var label: String {
-        "\(performance.totalDuration.formatted(.number.precision(.fractionLength(1))))s · \(performance.outputTokensPerSecond.formatted(.number.precision(.fractionLength(1)))) tok/s"
+        "\(performance.totalDuration.formatted(.number.precision(.fractionLength(1))))s · pre \(performance.promptDuration.formatted(.number.precision(.fractionLength(1))))s · \(performance.outputTokensPerSecond.formatted(.number.precision(.fractionLength(1)))) tok/s"
     }
 
     private var detail: String {
-        "Local model performance: \(performance.totalDuration.formatted(.number.precision(.fractionLength(2)))) seconds total; \(performance.outputTokens) generated tokens at \(performance.outputTokensPerSecond.formatted(.number.precision(.fractionLength(2)))) tokens per second; \(performance.promptTokens) prompt tokens."
+        "Local model performance: \(performance.totalDuration.formatted(.number.precision(.fractionLength(2)))) seconds total; prefill \(performance.promptDuration.formatted(.number.precision(.fractionLength(2)))) seconds for \(performance.promptTokens) prompt tokens at \(performance.promptTokensPerSecond.formatted(.number.precision(.fractionLength(2)))) tokens per second; generation \(performance.generationDuration.formatted(.number.precision(.fractionLength(2)))) seconds for \(performance.outputTokens) tokens at \(performance.outputTokensPerSecond.formatted(.number.precision(.fractionLength(2)))) tokens per second."
     }
 
     var body: some View {
