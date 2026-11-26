@@ -308,11 +308,11 @@ private struct LocalPerformanceChip: View {
     @Environment(\.bubbles) private var bubbles
 
     private var label: String {
-        "\(performance.totalDuration.formatted(.number.precision(.fractionLength(1))))s · pre \(performance.promptDuration.formatted(.number.precision(.fractionLength(1))))s · \(performance.outputTokensPerSecond.formatted(.number.precision(.fractionLength(1)))) tok/s"
+        "\(performance.totalDuration.formatted(.number.precision(.fractionLength(1))))s · \(performance.outputTokensPerSecond.formatted(.number.precision(.fractionLength(1)))) tok/s"
     }
 
     private var detail: String {
-        "Local model performance: \(performance.totalDuration.formatted(.number.precision(.fractionLength(2)))) seconds total; prefill \(performance.promptDuration.formatted(.number.precision(.fractionLength(2)))) seconds for \(performance.promptTokens) prompt tokens at \(performance.promptTokensPerSecond.formatted(.number.precision(.fractionLength(2)))) tokens per second; generation \(performance.generationDuration.formatted(.number.precision(.fractionLength(2)))) seconds for \(performance.outputTokens) tokens at \(performance.outputTokensPerSecond.formatted(.number.precision(.fractionLength(2)))) tokens per second."
+        "Local model performance: \(performance.totalDuration.formatted(.number.precision(.fractionLength(2)))) seconds total; \(performance.outputTokens) generated tokens at \(performance.outputTokensPerSecond.formatted(.number.precision(.fractionLength(2)))) tokens per second."
     }
 
     var body: some View {
@@ -406,6 +406,10 @@ struct TranscriptView: View {
                 Color.clear.frame(height: 1).id("bottom")
             }
             .scrollIndicators(.automatic)
+            // A restored conversation arrives before this view exists (the welcome view shows
+            // while the transcript is empty), so the onChange handlers below never fire for it.
+            // Start at the last message instead of the top.
+            .defaultScrollAnchor(.bottom, for: .initialOffset)
             .onChange(of: store.items.last?.text) { proxy.scrollTo("bottom", anchor: .bottom) }
             .onChange(of: store.items.count) { proxy.scrollTo("bottom", anchor: .bottom) }
             .onChange(of: store.phase) { proxy.scrollTo("bottom", anchor: .bottom) }
