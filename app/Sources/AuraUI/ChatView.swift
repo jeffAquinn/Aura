@@ -770,9 +770,23 @@ struct InputBar: View {
     @Environment(\.bubbles) private var bubbles
 
     var body: some View {
-        HStack(alignment: .bottom, spacing: 8) {
-            DeveloperPicker(store: store)
-            if store.developer == nil { ChatModelPicker(store: store) }
+        HStack(alignment: .center, spacing: 0) {
+            HStack(spacing: 6) {
+                DeveloperPicker(store: store)
+                if store.developer == nil { ChatModelPicker(store: store) }
+            }
+            // Keep the controls visually centered in their own left-hand lane whether it holds
+            // Aura's two selectors or one chosen Developer.
+            .frame(minWidth: store.developer == nil ? 108 : 96, alignment: .center)
+            .frame(maxHeight: .infinity)
+
+            Rectangle()
+                .fill(bubbles.userBorder.opacity(0.62))
+                .frame(width: 1)
+                .padding(.vertical, 3)
+                .padding(.horizontal, 8)
+                .accessibilityHidden(true)
+
             TextField(placeholder, text: $draft, axis: .vertical)
                 .textFieldStyle(.plain)
                 .font(chat.font())
