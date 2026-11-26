@@ -14,7 +14,7 @@ public final class ChatStore {
     }
 
     public struct Item: Identifiable, Equatable, Sendable {
-        public enum Role: Sendable { case user, aura, status, approval, error, task, build, incoming }
+        public enum Role: Sendable { case user, aura, status, approval, error, task, build, incoming, hol }
         public let id = UUID()
         public let role: Role
         public var text: String
@@ -139,9 +139,29 @@ public final class ChatStore {
             case .error: "  [\(item.text)]"
             case .task, .build: "  [\(item.role == .build ? "Building" : "Auditing") the \(item.text) skill]"
             case .incoming: "  [\(item.text)]"
+            case .hol: "  [HOL session]\n\(item.text)"
             }
         }
         .joined(separator: "\n\n")
+    }
+
+    /// Mirrors only already-sanitized output from a Human-Out-of-Loop terminal.  This is a
+    /// read-only observability path: ordinary ChatView messages never travel to the container.
+    public func mirrorHOLTranscript(_ lines: [String]) {
+        let update = lines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !update.isEmpty else { return }
+        if let index = items.indices.last, items[index].role == .hol {
+            items[index].text = boundedHOLTranscript(items[index].text + "\n" + update)
+        } else {
+            items.append(Item(role: .hol, text: boundedHOLTranscript(update)))
+        }
+    }
+
+    /// A busy terminal must not turn the conversation into an unbounded in-memory log.
+    private func boundedHOLTranscript(_ text: String) -> String {
+        let maximum = 24_000
+        guard text.count > maximum else { return text }
+        return "… earlier HOL output omitted …\n" + String(text.suffix(maximum))
     }
     public var isBusy: Bool { phase == .thinking || phase == .waking || phase == .streaming || phase == .stopping }
     public var isStopping: Bool { phase == .stopping }

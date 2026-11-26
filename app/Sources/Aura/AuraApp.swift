@@ -25,7 +25,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var buildCheck: Timer?
     private lazy var workshop = WorkshopStore { [weak self] in self?.store.transport }
     private var workshopWindow: NSWindow?
-    private lazy var hol = HOLStore { [weak self] in self?.store.transport }
+    private lazy var hol: HOLStore = {
+        let hol = HOLStore { [weak self] in self?.store.transport }
+        hol.onOutput = { [weak self] lines in
+            self?.store.mirrorHOLTranscript(lines)
+        }
+        return hol
+    }()
     private var holWindow: NSWindow?
     private var workstationWindow: NSWindow?
     private lazy var connections = ConnectionsStore(transport: { [weak self] in self?.store.transport },
@@ -313,7 +319,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if window.frame.origin == .zero { window.center() }
             holWindow = window
         }
-        panel.hide()
         NSApp.activate()
         holWindow?.makeKeyAndOrderFront(nil)
         Task { await hol.refresh() }

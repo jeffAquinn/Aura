@@ -66,6 +66,9 @@ public final class HOLStore {
 
     @ObservationIgnored private let transport: () -> (any AuraTransport)?
     @ObservationIgnored private var terminalPoll: Task<Void, Never>?
+    /// The desktop host may mirror this safe terminal output elsewhere.  It is deliberately
+    /// one-way: ChatView input is never forwarded to a HOL container.
+    @ObservationIgnored public var onOutput: ([String]) -> Void = { _ in }
 
     public init(transport: @escaping () -> (any AuraTransport)?) { self.transport = transport }
 
@@ -90,7 +93,7 @@ public final class HOLStore {
         do {
             let run = try await transport.startHOL(session.name, request: HOLStart(model: selectedModel, effort: effort))
             terminal = run.terminal
-            output += run.output + run.terminal.output
+            appendOutput(run.output + run.terminal.output)
             startPolling()
             lastError = nil
         } catch { lastError = FriendlyMessage.describe(error) }
@@ -102,7 +105,7 @@ public final class HOLStore {
         defer { busy = false }
         do {
             let point = try await transport.createHOLSavepoint("Before HOL changes")
-            output += ["Savepoint created: \(point.label)"]
+            appendOutput(["Savepoint created: \(point.label)"])
             await refresh()
         } catch { lastError = FriendlyMessage.describe(error) }
     }
@@ -113,7 +116,7 @@ public final class HOLStore {
         defer { busy = false }
         do {
             _ = try await transport.restoreHOLSavepoint(point.id)
-            output += ["Restored savepoint: \(point.label)"]
+            appendOutput(["Restored savepoint: \(point.label)"])
             await refresh()
         } catch { lastError = FriendlyMessage.describe(error) }
     }
@@ -124,7 +127,7 @@ public final class HOLStore {
         defer { busy = false }
         do {
             try await transport.restoreHOLOriginal()
-            output += ["Restored clean Git HEAD into the Vault Aura copy."]
+            appendOutput(["Restored clean Git HEAD into the Vault Aura copy."])
             await refresh()
         } catch { lastError = FriendlyMessage.describe(error) }
     }
@@ -165,7 +168,13 @@ public final class HOLStore {
     }
 
     private func accept(_ state: HOLTerminalState) {
-        output += state.output
+        appendOutput(state.output)
         terminal = state
+    }
+
+    private func appendOutput(_ lines: [String]) {
+        guard !lines.isEmpty else { return }
+        output += lines
+        onOutput(lines)
     }
 }

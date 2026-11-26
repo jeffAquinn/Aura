@@ -518,7 +518,36 @@ struct ItemView: View {
                 IncomingMessageCard(message: message)
                     .contextMenu { MessageMenu(item: item, store: store) }
             }
+        case .hol:
+            HOLTranscriptCard(text: item.text)
+                .contextMenu { MessageMenu(item: item, store: store) }
         }
+    }
+}
+
+/// Read-only, bounded observability from a Human-Out-of-Loop session.  It intentionally has no
+/// reply affordance, so the user's ordinary chat messages cannot reach the isolated container.
+struct HOLTranscriptCard: View {
+    let text: String
+    @Environment(\.chatText) private var chat
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 7) {
+            Label("HOL session", systemImage: "terminal.fill")
+                .font(chat.font(0.82, weight: .semibold))
+                .foregroundStyle(.secondary)
+            Text(text)
+                .font(chat.code(0.84))
+                .textSelection(.enabled)
+                .lineSpacing(3)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(12)
+        .background(Color.accentColor.opacity(0.09), in: .rect(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.accentColor.opacity(0.28), lineWidth: 1))
+        .padding(.leading, 32)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Human Out of Loop session output: \(text)")
     }
 }
 

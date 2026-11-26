@@ -300,6 +300,19 @@ struct ChatStoreTests {
         """)
     }
 
+    @Test func holOutputIsReadOnlyTranscriptAndIsBounded() {
+        let s = ChatStore()
+        s.mirrorHOLTranscript(["Session started", "Running approved task"])
+        s.mirrorHOLTranscript(["Finished safely"])
+        #expect(roles(s) == [.hol])
+        #expect(s.items[0].text == "Session started\nRunning approved task\nFinished safely")
+        #expect(s.conversationText().contains("[HOL session]\nSession started"))
+
+        s.mirrorHOLTranscript([String(repeating: "x", count: 25_000)])
+        #expect(s.items[0].text.hasPrefix("… earlier HOL output omitted …\n"))
+        #expect(s.items[0].text.count <= 24_034)
+    }
+
     // MARK: - live messages
 
     @Test func liveMessagesBecomeCardsButNeverSplitAReply() async {
