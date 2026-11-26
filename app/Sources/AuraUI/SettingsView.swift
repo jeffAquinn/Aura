@@ -631,12 +631,15 @@ struct BubblePreview: View {
     let text: ChatTextStyle
     let colors: BubbleColors
     @AppStorage(ChatAppearance.textPaddingKey) private var textPadding = ChatAppearance.defaultTextPadding
+    @AppStorage(ChatAppearance.avatarSizeKey) private var avatarSize = "small"
+
+    private var avatarDiameter: CGFloat { ChatAppearance.avatarSize(avatarSize) }
 
     var body: some View {
         VStack(spacing: 6) {
             HStack {
                 Spacer(minLength: 40)
-                Circle().fill(.secondary.opacity(0.25)).frame(width: 24, height: 24)
+                Circle().fill(.secondary.opacity(0.25)).frame(width: avatarDiameter, height: avatarDiameter)
                     .overlay(Circle().strokeBorder(colors.userAvatarBorder, lineWidth: 1))
                 Text("Hi Aura, can you summarise my notes?")
                     .font(text.font())
@@ -647,7 +650,7 @@ struct BubblePreview: View {
                     .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(colors.userBorder, lineWidth: 1))
             }
             HStack {
-                Circle().fill(.secondary.opacity(0.25)).frame(width: 24, height: 24)
+                Circle().fill(.secondary.opacity(0.25)).frame(width: avatarDiameter, height: avatarDiameter)
                     .overlay(Circle().strokeBorder(colors.auraAvatarBorder, lineWidth: 1))
                 Text("Of course. Your notes cover **three** things:")
                     .font(text.font())

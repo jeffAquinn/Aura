@@ -282,7 +282,7 @@ public enum ChatAppearance {
     }
 
     public static func avatarSize(_ value: String) -> CGFloat {
-        switch value { case "large": 38; case "medium": 30; default: 22 }
+        switch value { case "large": 46; case "medium": 38; default: 30 }
     }
 
     /// "#RRGGBB" → Color (sRGB); nil for "" or anything malformed.

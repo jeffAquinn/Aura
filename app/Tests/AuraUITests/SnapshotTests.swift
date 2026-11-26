@@ -468,6 +468,8 @@ struct SnapshotTests {
         #expect(ChatAppearance.textStyle(size: 99, style: "nope") == ChatTextStyle(size: 22, style: .system))  // clamped, defaulted
         #expect(ChatAppearance.textStyle(size: 15, style: "georgia") == ChatTextStyle(size: 15, style: .georgia))
         #expect(ChatAppearance.textPadding(99) == 32 && ChatAppearance.verticalTextPadding(18) == 21)
+        #expect(ChatAppearance.avatarSize("small") == 30 && ChatAppearance.avatarSize("medium") == 38
+                    && ChatAppearance.avatarSize("large") == 46)
         #expect(ChatAppearance.bubbles(user: "", aura: "").aura == ChatAppearance.color(hex: ChatAppearance.defaultAura))
     }
 
