@@ -122,6 +122,19 @@ struct ChatStoreTests {
         #expect(s.automaticModel == chosen)
     }
 
+    @Test func anExplicitModelChoiceIsNotReplacedByAnAutomaticModelEvent() async {
+        let explicit = ModelChoice(provider: "ollama", model: "qwen3.5:9b")
+        let reported = ModelChoice(provider: "ollama", model: "gemma4:12b")
+        let s = store(FakeTransport(chat: [[.model(reported), .thinking, .done]]))
+        s.chatModel = explicit
+
+        s.send("Hello")
+        await s.turnTask?.value
+
+        #expect(s.chatModel == explicit)
+        #expect(s.automaticModel == nil)
+    }
+
     @Test func aDevelopersProgressIsOneLineThatKeepsUpdating() async {
         let s = store(FakeTransport(chat: [[.thinking,
             .status("[Tool: Developer] Handing the task to Claude Code..."),
@@ -273,6 +286,7 @@ struct ChatStoreTests {
         #expect(roles(s) == [.incoming] && s.items[0].incoming == ping)
         #expect(s.items[0].text == "Jeff in Slack · #aura-chat: hi Aura" && ChatStore.copyText(s.items[0]) == s.items[0].text)
         s.send("Anything else?")
+        try? await Task.sleep(for: .milliseconds(120))  // the second token is intentionally batched
         #expect(await eventually { s.items.last?.text == "Hello there" })
         let dm = IncomingMessage(id: 2, source: "Discord", place: "a direct message", author: "Sam", text: "lunch?", kind: "dm")
         s.receive([dm])  // mid-reply: held back

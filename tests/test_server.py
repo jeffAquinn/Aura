@@ -82,6 +82,18 @@ def test_a_turn_streams_thinking_text_done(settings):
     assert said(evs) == "Hello.\nSecond line."  # newlines travel inside the one JSON data line
 
 
+def test_an_automatic_chat_turn_has_one_model_call_and_one_matching_model_event(settings):
+    aura, model = make_aura(settings, AIMessage("Hello."))
+    client = TestClient(create_app(aura, TOKEN, FakeKeeper()), base_url="http://127.0.0.1")
+
+    evs = events(post(client, "/v1/chat", {"text": "Hi"}))
+
+    assert len(model.agent_calls()) == 1
+    assert [data for kind, data in evs if kind == "model"] == [
+        {"provider": "ollama", "model": settings.model},
+    ]
+
+
 def test_a_cold_model_announces_waking(settings):
     client, _, _ = server(settings, AIMessage("Morning."), loaded=False)
     assert kinds(events(post(client, "/v1/chat", {"text": "Hi"}))) == ["model", "thinking", "waking", "text", "done"]

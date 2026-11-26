@@ -84,6 +84,10 @@ public final class ChatStore {
     /// The running (or last) turn; tests and the smoke tool await it.
     @ObservationIgnored public private(set) var turnTask: Task<Void, Never>?
     @ObservationIgnored private var healthPolling: Task<Void, Never>?
+    /// Local-model servers often stream a word or token at a time. Rendering Markdown for every
+    /// token makes a long response repeatedly reparse its entire bubble on the main actor.
+    @ObservationIgnored private var pendingText = ""
+    @ObservationIgnored private var textFlushTask: Task<Void, Never>?
 
     public init() {}
 
@@ -197,6 +201,7 @@ public final class ChatStore {
 
     /// Close the stream at once (the server is gone, or the conversation is being replaced).
     private func cancelTurn() {
+        flushPendingText()
         turnTask?.cancel()
         speech?.stop()
     }
@@ -404,6 +409,9 @@ public final class ChatStore {
     }
 
     func apply(_ event: AuraEvent) {
+        // Preserve event ordering: a status, approval, error, or completion must appear after
+        // all text that preceded it on the stream.
+        if case .text = event {} else { flushPendingText() }
         switch event {
         case let .model(choice):
             if developer == nil && chatModel == nil { automaticModel = choice }
@@ -426,19 +434,7 @@ public final class ChatStore {
             phase = .streaming
         case let .text(text):
             guard !isStopping else { return }
-            if let last = items.indices.last, items[last].role == .aura {
-                items[last].text += text
-            } else {
-                finishSpokenSegment()  // Aura speaks again after a tool: a new segment
-                items.append(Item(role: .aura, text: text))
-                speakingItem = items[items.count - 1].id
-            }
-            // A sentence can only end at one of these: re-planning on every chunk would re-parse
-            // the whole reply each time (quadratic on a long reply).
-            if text.contains(where: { ".!?:;\n".contains($0) }) {
-                speech?.reply(items[items.count - 1].text, final: false)
-            }
-            phase = .streaming
+            queueText(text)
         case let .approval(actions):
             guard !isStopping else { return }
             finishSpokenSegment()
@@ -475,7 +471,48 @@ public final class ChatStore {
         speech?.beginReply()
     }
 
+    /// Coalesce a token-level model stream into at most ten visible Markdown updates per second.
+    /// The final buffer is synchronously flushed for every semantic stream boundary.
+    private func queueText(_ text: String) {
+        let startsSegment = speakingItem == nil
+        pendingText += text
+        // Keep the first word responsive: it moves the UI out of “Waking” immediately. Later
+        // chunks for that same bubble are the expensive Markdown updates that can be batched.
+        if startsSegment {
+            flushPendingText()
+            return
+        }
+        guard textFlushTask == nil else { return }
+        textFlushTask = Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(100))
+            guard !Task.isCancelled else { return }
+            self?.flushPendingText(cancelScheduledTask: false)
+        }
+    }
+
+    private func flushPendingText(cancelScheduledTask: Bool = true) {
+        if cancelScheduledTask { textFlushTask?.cancel() }
+        textFlushTask = nil
+        let text = pendingText
+        pendingText = ""
+        guard !text.isEmpty else { return }
+        if let last = items.indices.last, items[last].role == .aura {
+            items[last].text += text
+        } else {
+            finishSpokenSegment()  // Aura speaks again after a tool: a new segment
+            items.append(Item(role: .aura, text: text))
+            speakingItem = items[items.count - 1].id
+        }
+        // A sentence can only end at one of these: re-planning on every chunk would re-parse
+        // the whole reply each time (quadratic on a long reply).
+        if text.contains(where: { ".!?:;\n".contains($0) }) {
+            speech?.reply(items[items.count - 1].text, final: false)
+        }
+        phase = .streaming
+    }
+
     private func endTurn() {
+        flushPendingText()
         if phase != .awaitingApproval {
             finishSpokenSegment()
             phase = .idle
