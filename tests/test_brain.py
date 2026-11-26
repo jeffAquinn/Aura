@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import shutil
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -11,10 +12,12 @@ import pytest
 from conftest import ScriptedModel, call, make_aura, tool_turn
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.messages.utils import count_tokens_approximately
+from langchain_core.outputs import ChatGeneration, LLMResult
 
 from aura.audit import AuditLog
 from aura.tools import Toolbox
-from aura.brain import ApprovalNeeded, Aura, Event, Status, Text
+from aura import brain
+from aura.brain import ApprovalNeeded, Aura, Event, Status, Text, _LocalPerformanceRecorder
 from aura.config import Settings
 from aura.middleware import DENIAL, RETRY_LIMIT, ProviderThinkingSanitizer, without_provider_thinking
 from aura.skills import content_hash
@@ -35,6 +38,23 @@ def texts(messages: list[BaseMessage]) -> list[str]:
 
 def history(aura: Aura) -> list[BaseMessage]:
     return aura._agent.get_state(aura._config).values.get("messages", [])
+
+
+def test_local_performance_uses_reported_tokens_and_the_observed_model_stream(monkeypatch):
+    ticks = iter([10.0, 11.0, 13.0])
+    monkeypatch.setattr(brain.time, "perf_counter", lambda: next(ticks))
+    recorder, run_id = _LocalPerformanceRecorder(), uuid.uuid4()
+    recorder.on_chat_model_start({}, [[]], run_id=run_id)
+    recorder.on_llm_new_token("answer", run_id=run_id)
+    reply = AIMessage(content="answer", usage_metadata={"input_tokens": 34, "output_tokens": 8, "total_tokens": 42})
+    recorder.on_llm_end(LLMResult(generations=[[ChatGeneration(message=reply)]]), run_id=run_id)
+
+    assert recorder.drain() == [{
+        "total_duration": 3.0,
+        "prompt_tokens": 34,
+        "output_tokens": 8,
+        "output_tokens_per_second": 4.0,
+    }]
 
 
 # ── Sprint 1 · Integrity: persona initialization prevents model identity leakage ──────────

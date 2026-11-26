@@ -1,4 +1,5 @@
 import AuraKit
+import Foundation
 import SwiftUI
 
 /// The panel's content. It draws no background of its own: the panel provides native glass
@@ -149,7 +150,8 @@ struct HeaderView: View {
                     if let subtitle {
                         Text(subtitle).font(.caption.weight(.medium)).lineLimit(1)
                     }
-                    StatusChips(activityColor: dotColor, activityDetail: activityDetail, health: store.health)
+                    StatusChips(activityColor: dotColor, activityDetail: activityDetail, health: store.health,
+                                localPerformance: store.localPerformance)
                 }
                 .padding(.leading, 40)
             }
@@ -251,12 +253,14 @@ private struct StatusChips: View {
     let activityColor: Color
     let activityDetail: String
     let health: Health?
+    let localPerformance: LocalModelPerformance?
 
     var body: some View {
         HStack(spacing: 4) {
             StatusChip(label: activityLabel, color: activityColor, detail: activityDetail)
             StatusChip(label: runtimeLabel, color: runtimeColor, detail: runtimeDetail)
             StatusChip(label: governanceLabel, color: governanceColor, detail: governanceDetail)
+            if let localPerformance { LocalPerformanceChip(performance: localPerformance) }
         }
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Session: \(activityDetail). Runtime: \(runtimeDetail). Safeguards: \(governanceDetail)")
@@ -295,6 +299,32 @@ private struct StatusChips: View {
         guard let governance = health?.governanceHealth else { return "Governance state has not been checked yet." }
         let connections = governance.optionalConnectionAttention
         return connections.isEmpty ? governance.agent.detail : "Optional connection attention: \(connections.joined(separator: ", ")). \(governance.agent.detail)"
+    }
+}
+
+/// The local model's last completed generation, shown alongside the status it belongs to.
+private struct LocalPerformanceChip: View {
+    let performance: LocalModelPerformance
+    @Environment(\.bubbles) private var bubbles
+
+    private var label: String {
+        "\(performance.totalDuration.formatted(.number.precision(.fractionLength(1))))s · \(performance.outputTokensPerSecond.formatted(.number.precision(.fractionLength(1)))) tok/s"
+    }
+
+    private var detail: String {
+        "Local model performance: \(performance.totalDuration.formatted(.number.precision(.fractionLength(2)))) seconds total; \(performance.outputTokens) generated tokens at \(performance.outputTokensPerSecond.formatted(.number.precision(.fractionLength(2)))) tokens per second; \(performance.promptTokens) prompt tokens."
+    }
+
+    var body: some View {
+        Label(label, systemImage: "speedometer")
+            .font(.caption2.weight(.medium))
+            .monospacedDigit()
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 3)
+            .overlay(Capsule().strokeBorder(bubbles.auraBorder, lineWidth: 1))
+            .help(detail)
+            .accessibilityLabel(detail)
     }
 }
 

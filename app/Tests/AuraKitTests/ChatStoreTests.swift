@@ -135,6 +135,17 @@ struct ChatStoreTests {
         #expect(s.automaticModel == nil)
     }
 
+    @Test func aCompletedLocalInferencePublishesItsMeasuredPerformance() async {
+        let measured = LocalModelPerformance(totalDuration: 57.81, promptTokens: 34,
+                                              outputTokens: 1657, outputTokensPerSecond: 28.73)
+        let s = store(FakeTransport(chat: [[.thinking, .performance(measured), .done]]))
+
+        s.send("Hello")
+        await s.turnTask?.value
+
+        #expect(s.localPerformance == measured)
+    }
+
     @Test func aDevelopersProgressIsOneLineThatKeepsUpdating() async {
         let s = store(FakeTransport(chat: [[.thinking,
             .status("[Tool: Developer] Handing the task to Claude Code..."),

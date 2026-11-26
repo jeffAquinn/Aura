@@ -11,6 +11,7 @@ import hashlib
 import json
 import re
 import threading
+import time
 import uuid
 from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass
@@ -29,6 +30,7 @@ from langchain.agents.middleware import (
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage, RemoveMessage, ToolMessage
+from langchain_core.outputs import LLMResult
 from langchain_core.runnables import RunnableConfig
 from langchain_anthropic import ChatAnthropic
 from langchain_openai import ChatOpenAI
@@ -221,6 +223,72 @@ class Changed:
 
 
 Event = Text | Status | ApprovalNeeded | Changed
+
+
+class _LocalPerformanceRecorder(BaseCallbackHandler):
+    """Capture one local LLM call's real wall time and reported token counts.
+
+    Aura uses Ollama's OpenAI-compatible endpoint for tool-calling. That endpoint reports exact
+    token usage but, unlike Ollama's native ``--verbose`` endpoint, does not include its internal
+    nanosecond duration fields. Measuring the request and its token stream here keeps the app
+    honest about what it can observe without issuing a second inference request.
+    """
+
+    run_inline = True
+
+    def __init__(self) -> None:
+        self._starts: dict[uuid.UUID, float] = {}
+        self._first_tokens: dict[uuid.UUID, float] = {}
+        self._finished: list[dict[str, int | float]] = []
+        self._lock = threading.Lock()
+
+    def on_chat_model_start(self, serialized: dict, messages: list, *, run_id: uuid.UUID, **kwargs: Any) -> None:
+        self._start(run_id)
+
+    def on_llm_start(self, serialized: dict, prompts: list[str], *, run_id: uuid.UUID, **kwargs: Any) -> None:
+        self._start(run_id)
+
+    def _start(self, run_id: uuid.UUID) -> None:
+        with self._lock:
+            self._starts.setdefault(run_id, time.perf_counter())
+
+    def on_llm_new_token(self, token: str, *, run_id: uuid.UUID, **kwargs: Any) -> None:
+        with self._lock:
+            if run_id in self._starts:
+                self._first_tokens.setdefault(run_id, time.perf_counter())
+
+    def on_llm_error(self, error: BaseException, *, run_id: uuid.UUID, **kwargs: Any) -> None:
+        with self._lock:
+            self._starts.pop(run_id, None)
+            self._first_tokens.pop(run_id, None)
+
+    def on_llm_end(self, response: LLMResult, *, run_id: uuid.UUID, **kwargs: Any) -> None:
+        with self._lock:
+            started = self._starts.pop(run_id, None)
+            first_token = self._first_tokens.pop(run_id, None)
+        if started is None or not response.generations or not response.generations[0]:
+            return
+        message = response.generations[0][0].message
+        usage = getattr(message, "usage_metadata", None) or {}
+        prompt_tokens, output_tokens = usage.get("input_tokens"), usage.get("output_tokens")
+        if not isinstance(prompt_tokens, int) or not isinstance(output_tokens, int) or output_tokens <= 0:
+            return
+        finished = time.perf_counter()
+        # The first generated token arrives after prompt evaluation. This is the closest
+        # observable equivalent of Ollama's native eval rate on the OpenAI-compatible route.
+        generation_seconds = max(0.001, finished - (first_token or started))
+        with self._lock:
+            self._finished.append({
+                "total_duration": max(0.0, finished - started),
+                "prompt_tokens": prompt_tokens,
+                "output_tokens": output_tokens,
+                "output_tokens_per_second": output_tokens / generation_seconds,
+            })
+
+    def drain(self) -> list[dict[str, int | float]]:
+        with self._lock:
+            finished, self._finished = self._finished, []
+        return finished
 
 
 def build_model(settings: Settings, choice: ModelChoice | None = None, api_key: str | None = None) -> BaseChatModel:
@@ -660,13 +728,22 @@ class Aura:
         """`cancel`: the turn's token. Checked at every chunk (a model writing a long tool call
         streams no text), so a stop ends the run at the next chunk; the step's open tool calls are
         settled before the next message (_settle), and no approval is raised by a stopped run."""
-        config = {**self._config, "callbacks": [_StopOnCancel(cancel)]} if cancel is not None else self._config
+        performance = _LocalPerformanceRecorder() if self.active_model.provider == "ollama" else None
+        callbacks: list[BaseCallbackHandler] = []
+        if cancel is not None:
+            callbacks.append(_StopOnCancel(cancel))
+        if performance is not None:
+            callbacks.append(performance)
+        config = {**self._config, "callbacks": callbacks} if callbacks else self._config
         run = self._agent.stream(payload, config, stream_mode=["messages", "custom"])
         try:
             for mode, data in run:
                 if cancel is not None and cancel.is_set():
                     return
                 yield from self._event(mode, data)
+                if performance is not None:
+                    for measured in performance.drain():
+                        yield Changed("performance", measured)
         except TurnCancelled:
             return
         finally:
@@ -674,6 +751,9 @@ class Aura:
                 run.close()
             except TurnCancelled:
                 pass
+        if performance is not None:
+            for measured in performance.drain():
+                yield Changed("performance", measured)
         if cancel is not None and cancel.is_set():
             return
         if answering:  # the approved continuation ran to the end

@@ -151,6 +151,8 @@ public enum ApprovalDecision: Sendable, Equatable, Encodable {
 public enum AuraEvent: Sendable, Equatable {
     /// The local or cloud model Aura selected for an automatic turn.
     case model(ModelChoice)
+    /// Measured local Ollama model performance for one completed inference call.
+    case performance(LocalModelPerformance)
     case thinking
     case waking
     case status(String)
@@ -168,6 +170,22 @@ public enum AuraEvent: Sendable, Equatable {
     /// The turn was stopped (POST /v1/stop) after its cleanup; `partial`: something already ran.
     case stopped(partial: Bool)
     case done
+}
+
+/// Evidence from Aura's local-model stream. Durations are measured around the actual request;
+/// Ollama's OpenAI-compatible API supplies the token counts but not its native verbose timings.
+public struct LocalModelPerformance: Codable, Equatable, Sendable {
+    public let totalDuration: Double
+    public let promptTokens: Int
+    public let outputTokens: Int
+    public let outputTokensPerSecond: Double
+
+    enum CodingKeys: String, CodingKey {
+        case totalDuration = "total_duration"
+        case promptTokens = "prompt_tokens"
+        case outputTokens = "output_tokens"
+        case outputTokensPerSecond = "output_tokens_per_second"
+    }
 }
 
 /// The conversation as the server keeps it: it survives a restart of the server.
@@ -393,6 +411,7 @@ public struct SSEParser: Sendable {
         let json = JSONDecoder()
         switch kind {
         case "model": return (try? json.decode(ModelChoice.self, from: data)).map { .model($0) }
+        case "performance": return (try? json.decode(LocalModelPerformance.self, from: data)).map { .performance($0) }
         case "thinking": return .thinking
         case "waking": return .waking
         case "done": return .done

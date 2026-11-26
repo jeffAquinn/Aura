@@ -16,7 +16,8 @@ from fastapi.testclient import TestClient
 from langchain_core.messages import AIMessage
 
 from aura.middleware import DENIAL
-from aura.server import ModelKeeper, create_app
+from aura.brain import Changed
+from aura.server import ModelKeeper, create_app, encode
 
 TOKEN = "t0ken-" + "x" * 40
 AUTH = {"Authorization": f"Bearer {TOKEN}"}
@@ -92,6 +93,22 @@ def test_an_automatic_chat_turn_has_one_model_call_and_one_matching_model_event(
     assert [data for kind, data in evs if kind == "model"] == [
         {"provider": "ollama", "model": settings.model},
     ]
+
+
+def test_a_local_performance_event_preserves_measured_counts_and_duration():
+    data = json.loads(encode(Changed("performance", {
+        "total_duration": 57.810607375,
+        "prompt_tokens": 34,
+        "output_tokens": 1657,
+        "output_tokens_per_second": 28.73,
+    })).split("\n")[1][6:])
+
+    assert data == {
+        "total_duration": 57.810607375,
+        "prompt_tokens": 34,
+        "output_tokens": 1657,
+        "output_tokens_per_second": 28.73,
+    }
 
 
 def test_a_cold_model_announces_waking(settings):

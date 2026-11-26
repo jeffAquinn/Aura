@@ -54,6 +54,8 @@ public final class ChatStore {
     public var chatModel: ModelChoice?
     /// The concrete model the server selected for the most recent automatic Aura turn.
     public private(set) var automaticModel: ModelChoice?
+    /// The last completed local inference, measured by the server around the actual model stream.
+    public private(set) var localPerformance: LocalModelPerformance?
     /// Bumped when the panel opens so the input field can take focus.
     public var focusRequests = 0
 
@@ -150,6 +152,7 @@ public final class ChatStore {
     public func send(_ raw: String) {
         let text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty, canSend, let transport else { return }
+        localPerformance = nil
         if developer == nil && chatModel == nil { automaticModel = nil }
         items.append(Item(role: .user, text: text, developer: developer))
         speech?.stop()  // a new message interrupts whatever Aura was saying
@@ -415,6 +418,8 @@ public final class ChatStore {
         switch event {
         case let .model(choice):
             if developer == nil && chatModel == nil { automaticModel = choice }
+        case let .performance(measured):
+            localPerformance = measured
         case .thinking:
             if phase != .waking && !isStopping { phase = .thinking }
         case .waking:
