@@ -249,14 +249,14 @@ public enum ChatAppearance {
                       style: ChatFontStyle(rawValue: style) ?? .system)
     }
 
-    /// Shared message insets. One preference keeps both sides of a conversation aligned while
-    /// preserving the slightly tighter vertical rhythm of a chat bubble.
+    /// Shared message insets. The setting remains a fine-grained adjustment, while a small
+    /// built-in comfort gutter keeps text away from a bubble's border at every setting.
     public static func textPadding(_ value: Double) -> CGFloat {
-        CGFloat(min(max(value, textPaddings.lowerBound), textPaddings.upperBound))
+        CGFloat(min(max(value, textPaddings.lowerBound), textPaddings.upperBound)) + 4
     }
 
     public static func verticalTextPadding(_ value: Double) -> CGFloat {
-        max(6, textPadding(value) - 3)
+        max(10, textPadding(value) - 1)
     }
 
     public static func bubbles(user: String, aura: String, userText: String = "", auraText: String = "",

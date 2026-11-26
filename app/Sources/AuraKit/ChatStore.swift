@@ -476,8 +476,10 @@ public final class ChatStore {
         speech?.beginReply()
     }
 
-    /// Coalesce a token-level model stream into at most ten visible Markdown updates per second.
-    /// The final buffer is synchronously flushed for every semantic stream boundary.
+    /// Coalesce a token-level model stream into at most twenty visible Markdown updates per
+    /// second. That reads as continuous at local-model speeds without returning to a costly
+    /// full Markdown reparse for every token. The final buffer is synchronously flushed for
+    /// every semantic stream boundary.
     private func queueText(_ text: String) {
         let startsSegment = speakingItem == nil
         pendingText += text
@@ -489,7 +491,7 @@ public final class ChatStore {
         }
         guard textFlushTask == nil else { return }
         textFlushTask = Task { [weak self] in
-            try? await Task.sleep(for: .milliseconds(100))
+            try? await Task.sleep(for: .milliseconds(50))
             guard !Task.isCancelled else { return }
             self?.flushPendingText(cancelScheduledTask: false)
         }

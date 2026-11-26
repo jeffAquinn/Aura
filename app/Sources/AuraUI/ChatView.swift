@@ -467,7 +467,7 @@ struct ItemView: View {
         switch item.role {
         case .user:
             VStack(alignment: .trailing, spacing: 3) {
-                HStack {
+                HStack(alignment: .center) {
                     Spacer(minLength: 56)
                     UserAvatarView(size: ChatAppearance.avatarSize(avatarSize))
                     Text(item.text)
@@ -596,7 +596,7 @@ struct AuraMessage: View {
 
     var body: some View {
         HStack(alignment: .bottom, spacing: 6) {
-            HStack(alignment: .top, spacing: 10) {
+            HStack(alignment: .center, spacing: 10) {
                 AvatarView(image: avatar, size: ChatAppearance.avatarSize(avatarSize))
                 MarkdownView(item.text, vaultRoot: store.health?.vault)
                     .foregroundStyle(bubbles.auraText)
