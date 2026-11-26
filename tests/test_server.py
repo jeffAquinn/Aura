@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import threading
 import time
 
 import httpx
@@ -276,6 +277,50 @@ def test_keeper_talks_to_ollamas_native_api():
     k = ModelKeeper("http://localhost:11434/v1/", "gemma4:26b")
     assert (k.url, k.keep_alive) == ("http://localhost:11434", "5m")
     assert ModelKeeper("http://127.0.0.1:9/v1", "m").loaded() is None  # unreachable: unknown
+
+
+def test_keeper_coalesces_overlapping_native_warmups(monkeypatch):
+    keeper = ModelKeeper("http://localhost:11434/v1", "gemma4:26b")
+    started, release = threading.Event(), threading.Event()
+    calls = []
+
+    def warm() -> bool:
+        calls.append(True)
+        started.set()
+        assert release.wait(1)
+        return True
+
+    monkeypatch.setattr(keeper, "warm", warm)
+    keeper.warm_soon()
+    assert started.wait(1)
+    keeper.warm_soon()
+    assert calls == [True]
+
+    release.set()
+    deadline = time.monotonic() + 1
+    key = (keeper.url, keeper.model, keeper.keep_alive)
+    while key in ModelKeeper._warming and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert key not in ModelKeeper._warming
+
+
+def test_keeper_does_not_coalesce_different_residency_policies(monkeypatch):
+    normal = ModelKeeper("http://localhost:11434/v1", "gemma4:26b", "5m")
+    resident = ModelKeeper("http://localhost:11434/v1", "gemma4:26b", -1)
+    normal_started, resident_started, release = threading.Event(), threading.Event(), threading.Event()
+
+    def warm(started: threading.Event) -> bool:
+        started.set()
+        assert release.wait(1)
+        return True
+
+    monkeypatch.setattr(normal, "warm", lambda: warm(normal_started))
+    monkeypatch.setattr(resident, "warm", lambda: warm(resident_started))
+    normal.warm_soon()
+    assert normal_started.wait(1)
+    resident.warm_soon()
+    assert resident_started.wait(1)
+    release.set()
 
 
 def _ollama_up() -> bool:

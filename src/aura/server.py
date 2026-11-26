@@ -76,6 +76,13 @@ class ModelKeeper:
     Every call after a completed turn restarts the configurable idle timer. With a non-Ollama
     backend, every call is a harmless no-op."""
 
+    # Native warm-ups use a real (albeit empty) Ollama generation. Multiple callers can request
+    # one at once when a turn ends while a manual warm-up or model transition is still in flight.
+    # Only identical residency requests may merge: Sleep Mode's ``-1`` policy must never be
+    # collapsed into the ordinary finite keep-alive for the same model.
+    _warming: set[tuple[str, str, str | int]] = set()
+    _warming_lock = threading.Lock()
+
     def __init__(self, base_url: str, model: str, keep_alive: str | int = KEEP_ALIVE):
         root = base_url.rstrip("/")
         self.url = root.removesuffix("/v1")
@@ -106,7 +113,20 @@ class ModelKeeper:
             return False
 
     def warm_soon(self) -> None:
-        threading.Thread(target=self.warm, daemon=True).start()
+        key = (self.url, self.model, self.keep_alive)
+        with self._warming_lock:
+            if key in self._warming:
+                return
+            self._warming.add(key)
+
+        def warm_once() -> None:
+            try:
+                self.warm()
+            finally:
+                with self._warming_lock:
+                    self._warming.discard(key)
+
+        threading.Thread(target=warm_once, daemon=True).start()
 
 
 class ActiveModelKeeper:
