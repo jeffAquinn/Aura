@@ -141,6 +141,9 @@ struct HeaderView: View {
                 HStack(spacing: 10) {
                     AvatarView(image: avatar, size: 30, pulsing: store.phase == .waking || store.connection == .starting || speaking)
                     Text(store.persona.name).font(.headline)
+                    Divider().frame(height: 14)
+                    AuraUsageView(usage: usage)
+                        .task { usage.start() }
                 }
                 VStack(alignment: .leading, spacing: 1) {
                     if let subtitle {
@@ -154,8 +157,6 @@ struct HeaderView: View {
             .contentShape(.rect)
             .overlay { if !offscreen { WindowDragArea() } }  // the panel moves by its header; elsewhere, drags select text
             .help("Drag to move")
-            AuraUsageView(usage: usage)
-                .task { usage.start() }
             Button {
                 if speaking { store.speech?.stop() }
                 Task { await store.updateVoice(VoicePatch(speak: !store.voice.speak)) }
@@ -870,8 +871,7 @@ struct DeveloperChip: View {
     }
 }
 
-/// Live, scoped resource use for Aura's macOS app process. GPU use cannot be measured per app
-/// through a supported public macOS API, so it is intentionally shown as unavailable.
+/// Live, scoped resource use for Aura's macOS app process.
 private struct AuraUsageView: View {
     @ObservedObject var usage: AuraRuntimeUsage
 
@@ -879,8 +879,6 @@ private struct AuraUsageView: View {
         HStack(spacing: 7) {
             Label("CPU \(usage.cpuText)", systemImage: "gauge.with.dots.needle.50percent")
                 .help("CPU currently used by Aura's macOS app process.")
-            Label("GPU —", systemImage: "cpu")
-                .help("macOS does not expose supported per-app GPU utilisation to Aura.")
             Label("Disk \(usage.storageText)", systemImage: "internaldrive")
                 .help("Aura app bundle, application data and logs. Local model downloads and disposable developer workspaces are excluded.")
         }
@@ -888,7 +886,7 @@ private struct AuraUsageView: View {
         .foregroundStyle(.secondary)
         .fixedSize()
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Aura resource use: CPU \(usage.cpuText), GPU unavailable, storage \(usage.storageText)")
+        .accessibilityLabel("Aura resource use: CPU \(usage.cpuText), storage \(usage.storageText)")
     }
 }
 

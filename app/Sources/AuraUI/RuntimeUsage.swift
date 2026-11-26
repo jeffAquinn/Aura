@@ -2,9 +2,8 @@ import Combine
 import Darwin
 import Foundation
 
-/// Small, local-only process telemetry for the Chat header. macOS exposes CPU time for this
-/// process, but has no supported public API for per-process GPU utilisation, so the UI keeps that
-/// distinction explicit rather than presenting a made-up GPU number.
+/// Small, local-only process telemetry for the Chat header. It reports only measurements macOS
+/// exposes reliably for Aura itself: CPU time and Aura's own on-disk footprint.
 @MainActor
 final class AuraRuntimeUsage: ObservableObject {
     @Published private(set) var cpuPercent = 0.0
