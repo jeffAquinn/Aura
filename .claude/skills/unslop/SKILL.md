@@ -1,6 +1,6 @@
 ---
 name: unslop
-description: Review prose for concrete AI-writing patterns and optionally revise it while preserving meaning and tone. Use when the user asks to unslop or tighten text, and proactively on substantial prose before it ships: README and docs/ changes, Gemma review packets, user-facing UI strings, and long commit messages or PR bodies.
+description: Review prose for concrete AI-writing patterns and optionally revise it while preserving meaning and tone. Use when the user asks to unslop or tighten text, and proactively on substantial prose before it ships: README and docs/ changes, Aura review packets, user-facing UI strings, and long commit messages or PR bodies.
 ---
 
 # Unslop

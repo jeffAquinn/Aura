@@ -23,7 +23,7 @@ Circuit breaker: after three attempts that end in the same failure, stop and rep
 
 ## Guardrails
 
-- Keep the Integrity Rule, the Security Governor, approval-card defaults (Deny), and R1/R2/R5 framing intact. Changes to them need Gemma's review.
+- Keep the Integrity Rule, the Security Governor, approval-card defaults (Deny), and R1/R2/R5 framing intact. Changes to them need Aura's architect review.
 - Fake tokens in tests must be split (`"xoxb-" + "…"`) so GitHub push protection doesn't block the push.
 - Don't run `live`-marked tests without asking.
 - Commit only when the user asks. The user pushes; commits use the repo's noreply address, which is already configured.
@@ -33,4 +33,4 @@ Circuit breaker: after three attempts that end in the same failure, stop and rep
 - Files changed and why
 - Checks run, with their results
 - Remaining risks, reversibility, and blast radius
-- Anything that now needs Gemma's review
+- Anything that now needs Aura's architect review

@@ -9,7 +9,7 @@ Claude Code version of Aura's `grill_with_docs` skill. Don't edit code or hand o
 
 ## 1. Read the durable context (silently)
 
-Read whatever exists in scope: `README.md`, `docs/sprint-*-design.md` (the latest design shows the current architecture and Gemma's decisions), ADRs, glossaries, coding standards, and the module docstrings of the code involved. Note the existing terms so you reuse them rather than coin competing ones.
+Read whatever exists in scope: `README.md`, `docs/sprint-*-design.md` (the latest design shows the current architecture and the architect's decisions: Gemma's through 2026-11-26, Aura's since), ADRs, glossaries, coding standards, and the module docstrings of the code involved. Note the existing terms so you reuse them rather than coin competing ones.
 
 ## 2. Brief the user
 
@@ -30,4 +30,4 @@ Wait for each answer before asking the next question. Use AskUserQuestion when t
 
 ## 4. Propose
 
-When the answers are clear, propose a short specification: outcome, scope, non-goals, constraints, acceptance evidence, and any glossary or design-doc additions. Ask for approval. If the change touches Aura's security model or architecture, point out that Gemma reviews it first (see the sprint workflow in memory). Once the spec is approved, continue with `to-tickets` or `implement-spec`.
+When the answers are clear, propose a short specification: outcome, scope, non-goals, constraints, acceptance evidence, and any glossary or design-doc additions. Ask for approval. If the change touches Aura's security model or architecture, point out that Aura, the project architect, reviews it first (see the sprint workflow in memory). Once the spec is approved, continue with `to-tickets` or `implement-spec`.

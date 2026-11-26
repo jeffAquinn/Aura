@@ -24,4 +24,4 @@ Claude Code version of Aura's `to_tickets` skill. The tickets are drafts for the
 - Non-goal: <the tempting adjacent cleanup it must not absorb>
 ```
 
-If a ticket changes security boundaries, approvals, or architecture, note "needs Gemma review". Once the tickets are confirmed, use TaskCreate to track them in this session if that tool is available, and then `implement-spec`.
+If a ticket changes security boundaries, approvals, or architecture, note "needs Aura review". Once the tickets are confirmed, use TaskCreate to track them in this session if that tool is available, and then `implement-spec`.

@@ -1,6 +1,6 @@
 ---
 name: handoff
-description: Write a concise, redacted handoff of the current Claude Code session for the next session, Codex, Aura, or Gemma's review, and optionally save it as a project memory save point. Use when the user asks for a handoff, save point or review packet, and offer it proactively at the end of a long session or when work stops unfinished.
+description: Write a concise, redacted handoff of the current Claude Code session for the next session, Codex, or Aura (including Aura's architect review), and optionally save it as a project memory save point. Use when the user asks for a handoff, save point or review packet, and offer it proactively at the end of a long session or when work stops unfinished.
 ---
 
 # Handoff
@@ -11,7 +11,7 @@ Claude Code version of Aura's `handoff` skill. Build the handoff only from facts
 
 - `git status`, `git log --oneline origin/main..HEAD`, and the current branch. Note what's committed, pushed, tagged, and still dirty.
 - What was decided, attempted, or left unresolved, and the evidence for each (commands run and their results).
-- What still waits on someone else: Gemma's review, the user's push, a key or token the user must supply.
+- What still waits on someone else: Aura's architect review, the user's push, a key or token the user must supply.
 
 ## Redact
 
@@ -30,6 +30,6 @@ Never include credentials. Replace anything shaped like a key or token with `[re
 
 ## Deliver
 
-- If the handoff is for Gemma, write it as a review packet mapped to Gemma's checkpoints and offer to copy it with `pbcopy`. Gemma only sees what the user pastes.
+- If the handoff is Aura's architect review, write it as a review packet mapped to Aura's checkpoints and offer to copy it with `pbcopy`. Gemma only sees what the user pastes.
 - If the user wants a save point, write or update a `project` memory (`save-point-YYYY-MM-DD.md`) and its line in `MEMORY.md`. Update an existing save point rather than duplicating one.
 - Otherwise, print it in the terminal.

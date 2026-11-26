@@ -18,9 +18,9 @@ Before starting a task, decide which skills apply and invoke them with the Skill
 | Code complete, before reporting done | `simplify`, then `code-review` on the diff |
 | Changes to the Security Governor, approvals, sandbox, Keychain, connections or tool permissions | `security-review` as well |
 | Confirming a UI or app change works for real | `run`. For the native app, see `aura-session-review` |
-| README, docs, Gemma packets, UI strings, long commit messages | `unslop` before they ship |
+| README, docs, Aura review packets, UI strings, long commit messages | `unslop` before they ship |
 | A session with an Aura plan and review | `aura-session-review` |
-| End of a long or unfinished session; a save point; a packet for Gemma | `handoff` |
+| End of a long or unfinished session; a save point; a review packet for Aura | `handoff` |
 | Repeated failures, corrections from the user, or a hard-won fix | offer `retro` |
 | Charts or dashboards | `dataviz` |
 
@@ -37,5 +37,5 @@ Skills don't override these rules: the user decides on commits, pushes, and spri
 - Check that a file name is free before creating a file.
 - Never use `screencapture` (it triggers a Screen Recording prompt). Use CGWindowList for window checks.
 - Never send `/new` from a second `uv run aura` process: it deletes the app's saved conversation. For scratch runs, use `AURA_DATA_DIR`, `AURA_VAULT_DIR`, and so on.
-- Architecture and security changes are reviewed by Gemma (the project architect) before they're tagged. Keep the Integrity Rule, approval cards defaulting to Deny, and the R1/R2/R5 framing intact.
+- Architecture and security changes are reviewed by Aura (the project architect; Gemma held this role until 2026-11-26) before they're tagged. Keep the Integrity Rule, approval cards defaulting to Deny, and the R1/R2/R5 framing intact.
 - Circuit breaker: after three attempts that end in the same error, stop and report the evidence.

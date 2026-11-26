@@ -16,7 +16,7 @@ Claude Code version of Aura's `domain_modeling` skill. This is a read-only revie
    1. Does this term name one stable concept, rather than several related ones?
    2. What boundary case would make it ambiguous?
    3. Which existing term should be reused instead of coining a new one?
-   4. Does a durable decision here need a design doc or ADR (and Gemma's review) before code changes?
+   4. Does a durable decision here need a design doc or ADR (and Aura's architect review) before code changes?
 
 ## Output
 
