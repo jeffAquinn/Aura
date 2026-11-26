@@ -78,6 +78,8 @@ public protocol AuraTransport: Sendable {
     func restoreHOLOriginal() async throws
     func holTerminal(_ id: String, after: Int) async throws -> HOLTerminalState
     func sendHOLCommand(_ id: String, command: String) async throws -> HOLTerminalState
+    func sendHOLMessage(_ id: String, message: String) async throws -> HOLMessageResult
+    func decideHOLChanges(_ id: String, allowed: [Bool]) async throws -> HOLMessageResult
     func stopHOLTerminal(_ id: String) async throws -> HOLTerminalState
 }
 
@@ -150,6 +152,8 @@ extension AuraTransport {
     public func restoreHOLOriginal() async throws {}
     public func holTerminal(_ id: String, after: Int) async throws -> HOLTerminalState { throw AuraClientError.badResponse }
     public func sendHOLCommand(_ id: String, command: String) async throws -> HOLTerminalState { throw AuraClientError.badResponse }
+    public func sendHOLMessage(_ id: String, message: String) async throws -> HOLMessageResult { throw AuraClientError.badResponse }
+    public func decideHOLChanges(_ id: String, allowed: [Bool]) async throws -> HOLMessageResult { throw AuraClientError.badResponse }
     public func stopHOLTerminal(_ id: String) async throws -> HOLTerminalState { throw AuraClientError.badResponse }
 }
 
@@ -274,6 +278,14 @@ public final class AuraClient: AuraTransport {
 
     public func sendHOLCommand(_ id: String, command: String) async throws -> HOLTerminalState {
         try Self.decoder.decode(HOLTerminalState.self, from: await send(request("/v1/hol/terminals/\(id)/command", body: ["command": command])))
+    }
+
+    public func sendHOLMessage(_ id: String, message: String) async throws -> HOLMessageResult {
+        try Self.decoder.decode(HOLMessageResult.self, from: await send(request("/v1/hol/terminals/\(id)/message", body: ["message": message])))
+    }
+
+    public func decideHOLChanges(_ id: String, allowed: [Bool]) async throws -> HOLMessageResult {
+        try Self.decoder.decode(HOLMessageResult.self, from: await send(request("/v1/hol/terminals/\(id)/decide", body: ["allowed": allowed])))
     }
 
     public func stopHOLTerminal(_ id: String) async throws -> HOLTerminalState {

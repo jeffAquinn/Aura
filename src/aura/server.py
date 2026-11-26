@@ -45,6 +45,7 @@ from aura.governor.continuous import DEEP
 from aura.developer.workflow import DeveloperError
 from aura.governor.workshop import WorkshopError
 from aura.hol import HolError, HolManager
+from aura.hol_agent import HolAgent, HolAgentError
 from aura.hol_terminal import HolTerminal, HolTerminalError
 from aura.connections import ConnectionsError
 from aura.secrets import KEYS, SecretError
@@ -715,6 +716,7 @@ class BuildIn(BaseModel):
 class HolStartIn(BaseModel):
     model: ModelChoiceIn | None = None
     effort: Literal["none", "low", "medium", "high"] | None = None
+    engine: Literal["claude", "codex"] | None = None
 
 
 class HolSavepointIn(BaseModel):
@@ -727,6 +729,14 @@ class HolRestoreIn(BaseModel):
 
 class HolCommandIn(BaseModel):
     command: str = Field(min_length=1, max_length=12_000)
+
+
+class HolMessageIn(BaseModel):
+    message: str = Field(min_length=1, max_length=8_000)
+
+
+class HolDecisionIn(BaseModel):
+    allowed: list[bool] = Field(max_length=40)
 
 
 def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kokoro | None = None) -> FastAPI:
@@ -1098,6 +1108,8 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
     hol = HolManager(aura.settings, skills, aura.toolbox.audit)
     hol_terminal = HolTerminal(aura.settings.vault_dir, aura.toolbox.sandbox, aura.toolbox.audit,
                                masker=aura.toolbox.masker)
+    hol_agent = HolAgent(aura.toolbox.developer, aura.toolbox.vault, aura.toolbox.audit,
+                         masker=aura.toolbox.masker)
 
     def hol_choice(body: HolStartIn) -> tuple[dict[str, str], str | None]:
         default = routing.choice("chat")
@@ -1111,7 +1123,9 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
             # Opening HOL offers its standard session to the Vault Inbox. It remains non-runnable
             # until the user has reviewed and deployed it through Workshop.
             hol.ensure_builtin_candidate()
-            return JSONResponse(hol.public(model=routing.choice("chat").public(), effort=aura.settings.reasoning_effort))
+            overview = hol.public(model=routing.choice("chat").public(), effort=aura.settings.reasoning_effort)
+            overview["developers"] = hol_agent.engines()
+            return JSONResponse(overview)
         except HolError as e:
             return _error(409, str(e))
 
@@ -1120,8 +1134,16 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
         try:
             model, effort = hol_choice(body)
             prepared = hol.start(name, model=model, effort=effort)
-            return JSONResponse({**prepared, "terminal": hol_terminal.start(name)})
-        except (HolError, HolTerminalError, ValueError) as e:
+            terminal = hol_terminal.start(name)
+            try:
+                if body.engine is not None:
+                    prepared["output"] += hol_agent.start(terminal["id"], name, prepared["prompt"], body.engine,
+                                                            Path(prepared["working_directory"]))
+            except Exception:
+                hol_terminal.stop(terminal["id"])
+                raise
+            return JSONResponse({**prepared, "engine": body.engine, "terminal": terminal})
+        except (HolError, HolTerminalError, HolAgentError, ValueError) as e:
             return _error(409, str(e))
 
     @app.get("/v1/hol/terminals/{terminal_id}")
@@ -1138,9 +1160,30 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
         except HolTerminalError as e:
             return _error(409, str(e))
 
+    @app.post("/v1/hol/terminals/{terminal_id}/message")
+    def hol_terminal_message(terminal_id: str, body: HolMessageIn) -> Response:
+        try:
+            if not hol_terminal.status(terminal_id, 0)["running"]:
+                hol_agent.stop(terminal_id)
+                return _error(409, "This HOL terminal has stopped.")
+            return JSONResponse(hol_agent.send(terminal_id, body.message))
+        except (HolAgentError, HolTerminalError) as e:
+            return _error(409, str(e))
+
+    @app.post("/v1/hol/terminals/{terminal_id}/decide")
+    def hol_terminal_decide(terminal_id: str, body: HolDecisionIn) -> Response:
+        try:
+            if not hol_terminal.status(terminal_id, 0)["running"]:
+                hol_agent.stop(terminal_id)
+                return _error(409, "This HOL terminal has stopped.")
+            return JSONResponse(hol_agent.decide(terminal_id, body.allowed))
+        except (HolAgentError, HolTerminalError) as e:
+            return _error(409, str(e))
+
     @app.post("/v1/hol/terminals/{terminal_id}/stop")
     def stop_hol_terminal(terminal_id: str) -> Response:
         try:
+            hol_agent.stop(terminal_id)
             return JSONResponse(hol_terminal.stop(terminal_id))
         except HolTerminalError as e:
             return _error(404, str(e))
@@ -1156,6 +1199,7 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
     def restore_hol_savepoint(savepoint_id: str) -> Response:
         try:
             hol_terminal.stop_all()  # no container may write while its mount is atomically replaced
+            hol_agent.stop_all()
             return JSONResponse(hol.restore_savepoint(savepoint_id))
         except HolError as e:
             return _error(409, str(e))
@@ -1166,6 +1210,7 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
             return _error(422, "Type RESTORE to replace the Vault Aura copy with clean Git HEAD.")
         try:
             hol_terminal.stop_all()
+            hol_agent.stop_all()
             hol.restore_original()
         except HolError as e:
             return _error(409, str(e))

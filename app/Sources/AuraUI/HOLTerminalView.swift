@@ -7,6 +7,7 @@ public struct HOLTerminalView: View {
     let openWorkshop: () -> Void
     @State private var selectedSession = ""
     @State private var command = ""
+    @State private var changeDecisions: [String: Bool] = [:]
     @State private var restoreOriginal = false
     @State private var restoreSavepoint: HOLSavepoint?
 
@@ -82,7 +83,7 @@ public struct HOLTerminalView: View {
                     if let session = session {
                         Text(session.purpose).font(.caption).foregroundStyle(.secondary)
                         Button("Prepare Session") { Task { await store.start(session) } }
-                            .disabled(store.busy)
+                            .disabled(store.busy || selectedEngineProblem != nil)
                     }
                     Button("Create a session in Workshop…", action: openWorkshop)
                         .font(.caption)
@@ -91,6 +92,20 @@ public struct HOLTerminalView: View {
                 }
             }
             Section("Model") {
+                Picker("Connected coding model", selection: selectedEngine) {
+                    Text("Offline HOL shell only").tag(Optional<String>.none)
+                    ForEach(store.overview?.developers ?? []) { engine in
+                        Text(engine.problem == nil ? engine.label : "\(engine.label) — unavailable")
+                            .tag(Optional(engine.name))
+                            .disabled(engine.problem != nil)
+                    }
+                }
+                if let problem = selectedEngineProblem {
+                    Text(problem).font(.caption).foregroundStyle(.orange)
+                } else if store.selectedEngine != nil {
+                    Text("Uses Aura's isolated connected Developer container. Credentials never enter the HOL shell.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
                 Picker("Provider", selection: provider) {
                     Text("Local (Ollama)").tag("ollama")
                     Text("Cloud (Anthropic)").tag("anthropic")
@@ -136,6 +151,7 @@ public struct HOLTerminalView: View {
                         Text(line).frame(maxWidth: .infinity, alignment: .leading)
                     }
                 }
+                if !store.pendingChanges.isEmpty { changes }
             }
             .font(.system(.body, design: .monospaced))
             .foregroundStyle(.white.opacity(0.92))
@@ -147,14 +163,14 @@ public struct HOLTerminalView: View {
 
     private var commandBar: some View {
         HStack(spacing: 10) {
-            Text("$ ").font(.system(.body, design: .monospaced)).foregroundStyle(.green)
-            TextField("Enter a command for the Vault container", text: $command)
+            Text(store.activeEngine == nil ? "$ " : "› ").font(.system(.body, design: .monospaced)).foregroundStyle(.green)
+            TextField(store.activeEngine == nil ? "Enter a command for the Vault container" : "Message the selected assistant", text: $command)
                 .textFieldStyle(.plain)
                 .font(.system(.body, design: .monospaced))
                 .onSubmit { send() }
-                .disabled(store.terminal?.running != true)
+                .disabled(store.terminal?.running != true || !store.pendingChanges.isEmpty || store.busy)
             Button("Send", action: send)
-                .disabled(command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.terminal?.running != true)
+                .disabled(command.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || store.terminal?.running != true || !store.pendingChanges.isEmpty || store.busy)
         }
         .padding(12)
         .background(.bar)
@@ -200,7 +216,36 @@ public struct HOLTerminalView: View {
     private func send() {
         let sent = command
         command = ""
-        Task { await store.send(sent) }
+        Task {
+            if store.activeEngine == nil { await store.send(sent) }
+            else { await store.sendMessage(sent) }
+        }
+    }
+
+    private var changes: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Divider().overlay(.white.opacity(0.2))
+            Text("Review pending file changes").font(.headline).foregroundStyle(.orange)
+            Text("Nothing is written to Aura_Vault until you choose each file below.")
+                .font(.caption).foregroundStyle(.white.opacity(0.75))
+            ForEach(store.pendingChanges) { change in
+                Toggle(isOn: Binding(get: { changeDecisions[change.id] ?? false }, set: { changeDecisions[change.id] = $0 })) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(change.description).fixedSize(horizontal: false, vertical: true)
+                        Text("Default: deny").font(.caption2).foregroundStyle(.white.opacity(0.6))
+                    }
+                }
+                .toggleStyle(.switch)
+            }
+            Button("Apply selected changes") {
+                let allowed = store.pendingChanges.map { changeDecisions[$0.id] ?? false }
+                changeDecisions = [:]
+                Task { await store.decideChanges(allowed) }
+            }
+            .disabled(store.busy)
+        }
+        .padding(12)
+        .background(.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 10))
     }
 
     private var session: HOLSession? {
@@ -226,6 +271,15 @@ public struct HOLTerminalView: View {
 
     private var effort: Binding<String> {
         Binding(get: { store.effort }, set: { store.effort = $0 })
+    }
+
+    private var selectedEngine: Binding<String?> {
+        Binding(get: { store.selectedEngine }, set: { store.selectedEngine = $0 })
+    }
+
+    private var selectedEngineProblem: String? {
+        guard let selected = store.selectedEngine else { return nil }
+        return store.overview?.developers.first { $0.name == selected }?.problem ?? "This connected coding model is unavailable."
     }
 
     private var readiness: HOLTerminalReadiness {
