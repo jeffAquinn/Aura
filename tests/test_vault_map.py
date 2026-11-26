@@ -13,6 +13,7 @@ from aura.tools.vault import Vault
 
 DAY = date(2026, 11, 23)
 PARTS = ["The_Absolute_R", "The_Interface_Many", "The_Witness_Relational"]
+LIBRARIES = ["Knowledge", "Wisdom"]
 
 
 @pytest.fixture
@@ -24,12 +25,13 @@ def vault(tmp_path):
 
 def test_an_empty_vault_gets_the_three_parts_the_map_and_the_manifesto(vault):
     created = vault_map.seed(vault, DAY)
-    assert created == [*(p + "/" for p in PARTS), "Conversations/", "Manifesto_of_the_Lens.md", "Map_of_the_Ascent.md"]
+    assert created == [*(p + "/" for p in PARTS), "Conversations/", *(p + "/" for p in LIBRARIES),
+                       "Manifesto_of_the_Lens.md", "Map_of_the_Ascent.md"]
     assert all((vault.root / p).is_dir() for p in PARTS)
     manifesto = (vault.root / "Manifesto_of_the_Lens.md").read_text()
     assert vault_map.REALIZATION in manifesto and "Monday, November 23, 2026" in manifesto
     the_map = (vault.root / "Map_of_the_Ascent.md").read_text()
-    assert all(f"[{p}](<{p}/>)" in the_map for p in PARTS) and "(no notes yet)" in the_map
+    assert all(f"[{p}](<{p}/>)" in the_map for p in [*PARTS, *LIBRARIES]) and "(no notes yet)" in the_map
     assert "vault_map_laid_out" in vault.audit.path.read_text()
 
 
@@ -54,10 +56,17 @@ def test_it_is_laid_out_once_a_removed_part_stays_removed(vault):
     assert not (vault.root / PARTS[1]).exists() and not (vault.root / "Map_of_the_Ascent.md").exists()
 
 
+def test_an_existing_vault_gets_libraries_once_without_recreating_removed_folders(vault):
+    (vault.root / PARTS[0]).mkdir()
+    assert vault_map.seed(vault) == ["Knowledge/", "Wisdom/"]
+    (vault.root / "Knowledge").rmdir()
+    assert vault_map.seed(vault) == []
+
+
 def test_aura_knows_where_each_kind_of_note_belongs(tmp_path):
     prompt = system_prompt(DAY, "gemma4:26b", tmp_path)
     assert "Codex of Emergence" in prompt and "not the Codex developer" in prompt
-    for folder in [*PARTS, "Conversations", "Map_of_the_Ascent.md", "Manifesto_of_the_Lens.md"]:
+    for folder in [*PARTS, *LIBRARIES, "Conversations", "Map_of_the_Ascent.md", "Manifesto_of_the_Lens.md"]:
         assert folder in prompt
 
 

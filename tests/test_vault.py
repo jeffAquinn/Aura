@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import os
+import threading
+
 import pytest
 
 from aura.audit import AuditLog
@@ -125,6 +128,77 @@ def test_overwrite_requires_the_flag(env):
     assert (root / "a.txt").read_text() == "new"
 
 
+def test_approved_overwrite_rejects_a_file_changed_after_its_card(env):
+    vault, tools, root, _, _ = env
+    target = root / "a.txt"
+    target.write_text("approved version")
+    args = {"path": "a.txt", "content": "Aura's replacement", "overwrite": True}
+
+    vault.describe_change("write_file", args)
+    target.write_text("external edit")
+
+    result = use(tools, "write_file", **args)
+    assert result.startswith("Blocked: The file changed after approval")
+    assert target.read_text() == "external edit"
+
+
+def test_two_approved_overwrites_allow_only_the_first_version(env):
+    vault, tools, root, _, _ = env
+    target = root / "a.txt"
+    target.write_text("original")
+    first = {"path": "a.txt", "content": "first", "overwrite": True}
+    second = {"path": "a.txt", "content": "second", "overwrite": True}
+    vault.describe_change("write_file", first)
+    vault.describe_change("write_file", second)
+
+    assert use(tools, "write_file", **first).startswith("Replaced")
+    assert use(tools, "write_file", **second).startswith("Blocked: The file changed after approval")
+    assert target.read_text() == "first"
+
+
+def test_concurrent_approved_overwrites_allow_only_one_writer(env):
+    vault, tools, root, _, _ = env
+    target = root / "a.txt"
+    target.write_text("original")
+    first = {"path": "a.txt", "content": "first", "overwrite": True}
+    second = {"path": "a.txt", "content": "second", "overwrite": True}
+    vault.describe_change("write_file", first)
+    vault.describe_change("write_file", second)
+    barrier = threading.Barrier(3)
+    results: list[str] = []
+
+    def attempt(args):
+        barrier.wait()
+        results.append(use(tools, "write_file", **args))
+
+    writers = [threading.Thread(target=attempt, args=(args,)) for args in (first, second)]
+    for writer in writers:
+        writer.start()
+    barrier.wait()
+    for writer in writers:
+        writer.join()
+
+    assert sum(result.startswith("Replaced") for result in results) == 1
+    assert sum(result.startswith("Blocked: The file changed after approval") for result in results) == 1
+    assert target.read_text() in {"first", "second"}
+
+
+def test_failed_atomic_overwrite_keeps_original_and_cleans_temporary_file(env, monkeypatch):
+    _, tools, root, _, _ = env
+    target = root / "a.txt"
+    target.write_text("original")
+
+    def fail_replace(source, destination):
+        raise OSError("simulated replace failure")
+
+    monkeypatch.setattr(os, "replace", fail_replace)
+    result = use(tools, "write_file", path="a.txt", content="replacement", overwrite=True)
+
+    assert result.startswith("Error: simulated replace failure")
+    assert target.read_text() == "original"
+    assert list(root.glob(".a.txt.*.tmp")) == []
+
+
 def test_read_truncates_long_files_and_refuses_binary(env):
     vault, tools, root, _, _ = env
     (root / "long.txt").write_text("x" * (READ_LIMIT + 50))
@@ -133,6 +207,28 @@ def test_read_truncates_long_files_and_refuses_binary(env):
     long = use(tools, "read_file", path="long.txt")
     assert long.startswith("x" * READ_LIMIT) and "[truncated" in long
     assert "binary file" in use(tools, "read_file", path="img.bin")
+
+
+def test_search_knowledge_returns_bounded_local_text_sources_only(env):
+    vault, tools, root, outside, _ = env
+    library = root / "Knowledge"
+    library.mkdir()
+    (library / "release.md").write_text("# Release\nAura uses an atomic write guard for safe overwrites.")
+    (library / "ignore.csv").write_text("atomic,write,guard")
+    (library / "outside.md").symlink_to(outside)
+
+    result = use(tools, "search_knowledge", query="atomic write")
+
+    assert "Knowledge/release.md" in result
+    assert "safe overwrites" in result
+    assert "TOP SECRET" not in result and "ignore.csv" not in result
+
+
+def test_search_knowledge_reports_no_match_or_library(env):
+    _, tools, root, _, _ = env
+    assert "has not been created" in use(tools, "search_knowledge", query="anything")
+    (root / "Knowledge").mkdir()
+    assert "No Knowledge sources matched" in use(tools, "search_knowledge", query="anything")
 
 
 def test_writes_and_deletes_are_audited(env):

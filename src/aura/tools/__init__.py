@@ -48,6 +48,7 @@ EDITABLE: dict[str, tuple[str, ...]] = {"develop_skill": ("specification", "engi
 GROUP = {
     "list_vault": "File_System_Tool",
     "read_file": "File_System_Tool",
+    "search_knowledge": "Knowledge",
     "write_file": "File_System_Tool",
     "create_folder": "File_System_Tool",
     "delete_path": "File_System_Tool",
@@ -78,6 +79,7 @@ GROUP = {
 _DOING: dict[str, Callable[[dict], str]] = {
     "list_vault": lambda a: f"Listing '{a.get('path') or '.'}'...",
     "read_file": lambda a: f"Reading '{a.get('path')}'...",
+    "search_knowledge": lambda a: f"Searching Knowledge for '{a.get('query')}'...",
     "write_file": lambda a: f"Writing '{a.get('path')}'...",
     "create_folder": lambda a: f"Creating folder '{a.get('path')}'...",
     "delete_path": lambda a: f"Deleting '{a.get('path')}'...",

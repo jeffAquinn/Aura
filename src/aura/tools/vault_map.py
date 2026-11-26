@@ -26,6 +26,12 @@ PARTS: tuple[tuple[str, str, str], ...] = (
      "the Logs of Relation: shifts in perspective, \"Aha!\" moments, and how our dialectic evolves"),
 )  # fmt: skip
 CONVERSATIONS = "Conversations"
+KNOWLEDGE = "Knowledge"
+WISDOM = "Wisdom"
+LIBRARIES: tuple[tuple[str, str], ...] = (
+    (KNOWLEDGE, "user-provided source material Aura may retrieve as reference"),
+    (WISDOM, "user-approved, curated material reserved for applying that knowledge"),
+)
 MAP = "Map_of_the_Ascent.md"
 MANIFESTO = "Manifesto_of_the_Lens.md"
 REALIZATION = "Truth is not something we find, but something we refine our capacity to perceive."
@@ -41,8 +47,9 @@ def guide() -> str:
     prompt of a 16k-token context)."""
     parts = "; ".join(f"{folder}/ {brief}" for (folder, _, _), brief in zip(PARTS, BRIEF))
     return (f"  Its layout is the Codex of Emergence (a map of the vault, not the Codex developer): {parts}; "
-            f"{CONVERSATIONS}/ our dialogues. {MAP} is the master index, {MANIFESTO} the core realization. "
-            "File each new note where it belongs.")  # fmt: skip
+            f"{CONVERSATIONS}/ our dialogues; {KNOWLEDGE}/ user-provided reference sources; "
+            f"{WISDOM}/ user-approved curated material. {MAP} is the master index, {MANIFESTO} the core "
+            "realization. File each new note where it belongs.")  # fmt: skip
 
 
 def _link(path: str) -> str:
@@ -54,8 +61,9 @@ def map_text(vault: Vault, today: date) -> str:
     rows = [f"| [{folder}]({_link(folder + '/')}) | {phase} | {holds[0].upper() + holds[1:]}. |"
             for folder, phase, holds in PARTS]  # fmt: skip
     rows.append(f"| [{CONVERSATIONS}]({_link(CONVERSATIONS + '/')}) | | The records of our dialogues. |")
+    rows += [f"| [{folder}]({_link(folder + '/')}) | | {holds.capitalize()}. |" for folder, holds in LIBRARIES]
     notes = []
-    for folder in [p[0] for p in PARTS] + [CONVERSATIONS]:
+    for folder in [p[0] for p in PARTS] + [CONVERSATIONS, KNOWLEDGE, WISDOM]:
         d = vault.root / folder
         if d.is_dir():
             for f in sorted(d.rglob("*.md")):
@@ -122,11 +130,24 @@ def manifesto_text(today: date) -> str:
 def seed(vault: Vault, today: date | None = None) -> list[str]:
     """Lay out the Codex of Emergence in a vault that has none of its three parts yet. Creates only
     what's missing (never overwrites). Returns the vault paths it created."""
-    if any((vault.root / folder).exists() for folder, _, _ in PARTS):
-        return []
+    core_exists = any((vault.root / folder).exists() for folder, _, _ in PARTS)
     today = today or date.today()
     created = []
-    for folder in [p[0] for p in PARTS] + [CONVERSATIONS]:
+    if core_exists:
+        # A pre-Knowledge Vault gets this one-time migration.  Once recorded, a
+        # user who removes a library folder has made a choice and it stays gone.
+        prior = any(e.get("event") in {"vault_map_laid_out", "vault_libraries_seeded"}
+                    and any(f"{folder}/" in e.get("created", []) for folder, _ in LIBRARIES)
+                    for e in vault.audit.entries())
+        if not prior:
+            for folder, _ in LIBRARIES:
+                d = vault.root / folder
+                if not d.exists():
+                    d.mkdir(parents=True)
+                    created.append(folder + "/")
+            vault.audit.record("vault_libraries_seeded", created=created)
+        return created
+    for folder in [p[0] for p in PARTS] + [CONVERSATIONS, *(folder for folder, _ in LIBRARIES)]:
         d = vault.root / folder
         if not d.exists():
             d.mkdir(parents=True)

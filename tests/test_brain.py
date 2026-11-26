@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import hashlib
 import shutil
 import uuid
 from pathlib import Path
@@ -62,11 +63,14 @@ def test_local_performance_uses_reported_tokens_and_the_observed_model_stream(mo
 
 def test_only_plainly_requested_tool_schemas_are_visible_to_a_local_turn():
     tools = [type("Tool", (), {"name": name})() for name in [
-        "read_file", "write_file", "web_search", "run_python", "set_voice", "ask_developer", "gmail_read",
+        "read_file", "search_knowledge", "write_file", "web_search", "run_python", "set_voice", "ask_developer", "gmail_read",
     ]]
 
     assert relevant_turn_tools(tools, "Explain recursion in two sentences.") == []
-    assert [tool.name for tool in relevant_turn_tools(tools, "Read notes.txt from my vault.")] == ["read_file", "write_file"]
+    assert [tool.name for tool in relevant_turn_tools(tools, "Read notes.txt from my vault.")] == ["read_file", "search_knowledge", "write_file"]
+    assert [tool.name for tool in relevant_turn_tools(tools, "Use the Knowledge source document.")] == [
+        "read_file", "search_knowledge", "write_file",
+    ]
     assert [tool.name for tool in relevant_turn_tools(tools, "Search the latest weather online.")] == ["web_search"]
     assert [tool.name for tool in relevant_turn_tools(tools, "Use Claude Code to fix the repository test suite.")] == ["ask_developer"]
 
@@ -439,6 +443,18 @@ def test_vault_change_pauses_for_approval_and_runs_once_approved(settings):
     assert [event for event in log if event[0] != "project_sandbox_seeded"] == [
         ("approval", "approved"), ("folder_created", None)
     ]
+
+
+def test_overwrite_approval_binds_the_file_version_shown_on_its_card(settings):
+    settings.vault_dir.mkdir()
+    target = settings.vault_dir / "notes.txt"
+    target.write_text("before")
+    aura, _ = make_aura(settings, tool_turn(call("write_file", path="notes.txt", content="after", overwrite=True)))
+
+    events = list(aura.stream("Replace notes.txt."))
+
+    action = events[-1].actions[0]
+    assert action.args["expected_sha256"] == hashlib.sha256(b"before").hexdigest()
 
 
 @pytest.mark.parametrize(

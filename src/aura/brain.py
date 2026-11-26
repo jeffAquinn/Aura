@@ -230,8 +230,8 @@ Event = Text | Status | ApprovalNeeded | Changed
 # relevant family; an unrecognised request gets no tools rather than a guessed capability. The
 # Governor, approval middleware and the tool implementations stay attached to every agent build.
 _TOOL_FAMILIES: tuple[tuple[frozenset[str], re.Pattern[str]], ...] = (
-    (frozenset({"list_vault", "read_file", "write_file", "create_folder", "delete_path"}),
-     re.compile(r"\b(vault|file|folder|directory|path|read|save|delete|rename|notes?\.txt|\.csv|\.pdf)\b", re.I)),
+    (frozenset({"list_vault", "read_file", "search_knowledge", "write_file", "create_folder", "delete_path"}),
+     re.compile(r"\b(vault|knowledge|wisdom|source|reference|document|docs?|file|folder|directory|path|read|save|delete|rename|notes?\.txt|\.csv|\.pdf)\b", re.I)),
     (frozenset({"web_search"}),
      re.compile(r"\b(search|web|internet|online|news|weather|latest|current|price|today|forecast)\b", re.I)),
     (frozenset({"run_python"}),
