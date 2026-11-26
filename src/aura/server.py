@@ -305,6 +305,45 @@ def usable_ollama_models(settings: Settings) -> set[str]:
     return installed
 
 
+def usable_ollama_model_sizes(settings: Settings) -> dict[str, int]:
+    """Usable local models and their on-disk sizes, for a short Developer follow-up.
+
+    Ollama's tag listing is the only trustworthy source of a model's actual downloaded size.  A
+    readiness probe still follows it: a model on disk is not useful when the local runtime cannot
+    take a request.  Unknown sizes intentionally sort after known ones rather than guessing from
+    a model's marketing name.
+    """
+    try:
+        listed = httpx.get(f"{ollama_root(settings)}/api/tags", timeout=2).json().get("models", [])
+        sizes: dict[str, int] = {}
+        for item in listed:
+            if not isinstance(item, dict) or not item.get("name"):
+                continue
+            name = str(item["name"])
+            try:
+                ModelChoice("ollama", name).validate()
+            except ValueError:
+                continue
+            size = item.get("size")
+            sizes[name] = size if isinstance(size, int) and not isinstance(size, bool) and size >= 0 else 2**63 - 1
+        if not sizes:
+            return {}
+        response = httpx.get(f"{ollama_root(settings)}/api/ps", timeout=2)
+        response.raise_for_status()
+        if not isinstance(response.json(), dict):
+            return {}
+        return sizes
+    except (OllamaModelError, httpx.HTTPError, ValueError, TypeError):
+        return {}
+
+
+def smallest_usable_ollama_model(sizes: dict[str, int]) -> ModelChoice | None:
+    """The smallest installed local model, breaking equal sizes by its stable name."""
+    if not sizes:
+        return None
+    return ModelChoice("ollama", min(sizes, key=lambda name: (sizes[name], name)))
+
+
 def pull_ollama_model(settings: Settings, model: str) -> None:
     """Ask the local daemon to fetch a named model. No URL, host path, or shell is accepted."""
     try:
@@ -805,18 +844,37 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
             else:
                 role = infer_role(body.text, body.developer)
                 # A code request is delegated through the user's preferred Developer harness.
-                # Aura still uses the chat model only to formulate the approval-gated task; it
-                # never substitutes an Anthropic chat model for Claude Code or Codex.
-                model_role = "chat" if role == "coding" else role
+                # For a Claude Code/Codex job, Aura's model only supplies the brief final
+                # handoff after the Developer finishes.  Use the smallest ready local model for
+                # that short response, and start loading it before the user has answered the
+                # send card.  The Developer itself remains the coding agent; a cloud chat model
+                # is never substituted for it.
                 if role == "coding" and developer is None:
                     developer = routing.coding_engine()
-                chosen, route_notice = automatic_model_choice(
-                    routing,
-                    model_role,
-                    installed_for_automatic_routing(),
-                    aura.toolbox.secrets.get("anthropic_api_key") is not None,
-                    cloud_availability.unavailable_models(),
-                )
+                if developer is not None:
+                    if aura._injected_model:
+                        # Offline embeddings do not have an Ollama catalog.  Their configured
+                        # local choices stand in for it so tests never contact a real daemon.
+                        sizes = {name: 0 for name in installed_for_automatic_routing()}
+                    else:
+                        sizes = usable_ollama_model_sizes(aura.settings)
+                    chosen = smallest_usable_ollama_model(sizes)
+                    if chosen is None:
+                        raise ValueError(
+                            "Claude Code and Codex need a usable local Ollama model for Aura's final handoff. "
+                            "Start Ollama and download a local model, then try again."
+                        )
+                    developer_label = "Claude Code" if developer == "claude" else "Codex"
+                    route_notice = (f"Aura will preload the smallest available local model '{chosen.model}' "
+                                    f"while {developer_label} works.")
+                else:
+                    chosen, route_notice = automatic_model_choice(
+                        routing,
+                        role,
+                        installed_for_automatic_routing(),
+                        aura.toolbox.secrets.get("anthropic_api_key") is not None,
+                        cloud_availability.unavailable_models(),
+                    )
                 aura.select_model(chosen)
                 if chosen.provider == "ollama" and not aura._injected_model:
                     # Preload only a model proven to exist locally.  It happens off the request

@@ -159,6 +159,56 @@ def test_usable_ollama_models_requires_the_runtime_readiness_probe(settings, mon
     assert server_module.usable_ollama_models(settings) == set()
 
 
+def test_smallest_usable_ollama_model_uses_downloaded_size_and_requires_a_ready_runtime(settings, monkeypatch):
+    def ready(url, **kwargs):
+        if url.endswith("/api/tags"):
+            return httpx.Response(200, json={"models": [
+                {"name": "large:latest", "size": 9_000},
+                {"name": "small:latest", "size": 1_000},
+                {"name": "unknown:latest"},
+            ]}, request=httpx.Request("GET", url))
+        assert url.endswith("/api/ps") and kwargs["timeout"] == 2
+        return httpx.Response(200, json={"models": []}, request=httpx.Request("GET", url))
+
+    monkeypatch.setattr(server_module.httpx, "get", ready)
+    sizes = server_module.usable_ollama_model_sizes(settings)
+
+    assert sizes == {"large:latest": 9_000, "small:latest": 1_000, "unknown:latest": 2**63 - 1}
+    assert server_module.smallest_usable_ollama_model(sizes) == ModelChoice("ollama", "small:latest")
+
+
+def test_developer_handoff_preloads_the_smallest_ready_local_model(settings, monkeypatch):
+    aura, _ = make_aura(settings)
+    # The direct handoff cannot need an LLM before its send approval card.  Treat this test's
+    # server as production routing so it exercises the real Ollama-size selection branch.
+    warm = []
+    monkeypatch.setattr(server_module, "usable_ollama_model_sizes", lambda _settings: {
+        "small:latest": 1_000, "large:latest": 9_000,
+    })
+    monkeypatch.setattr(server_module.ModelKeeper, "warm_soon", lambda self: warm.append((self.model, self.keep_alive)))
+    client = TestClient(create_app(aura, TOKEN, NoopKeeper()), base_url="http://127.0.0.1")
+    aura._injected_model = False
+
+    reply = client.post("/v1/chat", json={"text": "Inspect this code without editing it.", "developer": "claude"}, headers=AUTH)
+
+    assert reply.status_code == 200
+    assert aura.active_model == ModelChoice("ollama", "small:latest")
+    assert warm == [("small:latest", settings.model_keep_alive)]
+    assert "preload the smallest available local model 'small:latest' while Claude Code works" in reply.text
+
+
+def test_developer_handoff_refuses_before_sending_when_no_local_model_is_usable(settings, monkeypatch):
+    aura, _ = make_aura(settings)
+    monkeypatch.setattr(server_module, "usable_ollama_model_sizes", lambda _settings: {})
+    client = TestClient(create_app(aura, TOKEN, NoopKeeper()), base_url="http://127.0.0.1")
+    aura._injected_model = False
+
+    reply = client.post("/v1/chat", json={"text": "Inspect this code without editing it.", "developer": "codex"}, headers=AUTH)
+
+    assert reply.status_code == 409
+    assert "need a usable local Ollama model" in reply.json()["error"]
+
+
 def test_automatic_model_refuses_an_unusable_role_before_opening_a_turn(settings, monkeypatch):
     routing = ModelRouting(settings)
     routing.replace(choices("missing:latest"))
