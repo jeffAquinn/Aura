@@ -143,6 +143,87 @@ class CloudModelError(RuntimeError):
     """A cloud provider did not return a model catalog Aura can safely use."""
 
 
+class CloudModelAvailability:
+    """Remember a cloud model's temporary account-capacity failure without storing credentials.
+
+    Provider model catalogs say which IDs an account can see; they do not expose account credit,
+    subscription token windows, or per-model rate limits.  A real capacity refusal is therefore
+    the only trustworthy signal.  Remembering it avoids repeatedly selecting a model that just
+    refused a turn, while the short expiry lets Auto recover after the provider's reset window.
+    """
+
+    _DEFAULT_RETRY_SECONDS = 60 * 60
+    _MAX_RETRY_SECONDS = 12 * 60 * 60
+
+    def __init__(self, settings: Settings):
+        self.path = settings.data_dir / "cloud_model_availability.json"
+        self._lock = threading.RLock()
+
+    def unavailable_models(self) -> set[str]:
+        with self._lock:
+            entries = self._load()
+            now = time.time()
+            active = {model for model, until in entries.items() if until > now}
+            if len(active) != len(entries):
+                self._save({model: until for model, until in entries.items() if until > now})
+            return active
+
+    def record_capacity_refusal(self, choice: ModelChoice, error: Exception) -> int:
+        """Mark a model unavailable through the provider's retry window and return its TTL."""
+        retry = self._retry_after(error)
+        with self._lock:
+            entries = self._load()
+            entries[choice.model] = time.time() + retry
+            self._save(entries)
+        return retry
+
+    def _load(self) -> dict[str, float]:
+        try:
+            raw = json.loads(self.path.read_text())
+            models = raw.get("anthropic", {}) if isinstance(raw, dict) else {}
+            if not isinstance(models, dict):
+                return {}
+            return {
+                ModelChoice("anthropic", str(model)).validate().model: float(until)
+                for model, until in models.items()
+                if isinstance(until, (int, float)) and float(until) > 0
+            }
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return {}
+
+    def _save(self, entries: dict[str, float]) -> None:
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = self.path.with_suffix(".tmp")
+            temporary.write_text(json.dumps({"anthropic": entries}, sort_keys=True) + "\n")
+            temporary.replace(self.path)
+        except OSError:
+            # The cache is an availability improvement, never a reason to block a chat turn.
+            log.warning("could not save cloud model availability", exc_info=True)
+
+    def _retry_after(self, error: Exception) -> int:
+        response = getattr(error, "response", None)
+        headers = getattr(response, "headers", {}) if response is not None else {}
+        try:
+            value = float(headers.get("retry-after", self._DEFAULT_RETRY_SECONDS))
+        except (AttributeError, TypeError, ValueError):
+            value = self._DEFAULT_RETRY_SECONDS
+        return max(60, min(round(value), self._MAX_RETRY_SECONDS))
+
+
+def is_cloud_capacity_refusal(error: Exception) -> bool:
+    """True only for provider responses that mean the account cannot use a cloud model now."""
+    response = getattr(error, "response", None)
+    status = getattr(error, "status_code", None) or getattr(response, "status_code", None)
+    if status in (402, 429):
+        return True
+    detail = str(error).lower()
+    return any(phrase in detail for phrase in (
+        "credit balance", "insufficient credit", "billing", "quota", "rate limit",
+        "rate_limit", "usage limit", "spend limit", "reached your limit",
+    ))
+
+
 def available_anthropic_models(api_key: str) -> list[str]:
     """Read the account-visible Claude catalog from Anthropic's documented Models API.
 
@@ -239,6 +320,7 @@ def pull_ollama_model(settings: Settings, model: str) -> None:
 
 def automatic_model_choice(
     routing: ModelRouting, role: str, installed: set[str], anthropic_key_set: bool,
+    unavailable_cloud_models: set[str] | None = None,
 ) -> tuple[ModelChoice, str | None]:
     """Choose an installed, user-configured model for Aura's automatic picker.
 
@@ -248,7 +330,8 @@ def automatic_model_choice(
     answer immediately instead of deferring a missing-model failure to a long streaming request.
     """
     requested = routing.choice(role)
-    if requested.provider == "anthropic" and anthropic_key_set:
+    unavailable_cloud_models = unavailable_cloud_models or set()
+    if requested.provider == "anthropic" and anthropic_key_set and requested.model not in unavailable_cloud_models:
         return requested, None
     if requested.provider == "ollama" and requested.model in installed:
         return requested, None
@@ -263,11 +346,18 @@ def automatic_model_choice(
         if fallback.provider == "ollama" and fallback.model in installed:
             if requested.provider == "ollama":
                 reason = f"the {role.replace('_', ' ')} model '{requested.model}' is not installed"
-            else:
+            elif not anthropic_key_set:
                 reason = f"the {role.replace('_', ' ')} cloud model has no API key"
+            else:
+                reason = f"the {role.replace('_', ' ')} cloud model recently reached its account limit"
             return fallback, f"Auto selected local model '{fallback.model}' because {reason}."
 
     if requested.provider == "anthropic":
+        if requested.model in unavailable_cloud_models:
+            raise ValueError(
+                f"Auto mode cannot use the {role.replace('_', ' ')} cloud model '{requested.model}' because it "
+                "recently reached its account limit. Choose an installed local model or try again later."
+            )
         raise ValueError(
             f"Auto mode cannot use the {role.replace('_', ' ')} cloud model without an Anthropic API key. "
             "Add a key in Settings or choose an installed local model."
@@ -340,6 +430,7 @@ KEEPALIVE = 20.0  # seconds: a comment line while a long tool works (the app giv
 def stream_turn(
     events: Iterator[Event], lifecycle: Lifecycle, turn: Turn, keeper: Keeper, check_cold: bool,
     masker: Masker = PATTERNS_ONLY, selected_model: ModelChoice | None = None,
+    cloud_availability: CloudModelAvailability | None = None,
 ) -> StreamingResponse:
     """Stream a turn's events as SSE. The turn ends (and its lock is released) exactly once: when
     the run ends, when it is stopped (POST /v1/stop: a `stopped` event, then `done`), or when the
@@ -391,7 +482,16 @@ def stream_turn(
             except Exception as e:
                 log.exception("turn failed: %s", e)  # the detail stays in server.log
                 state, error = "failed", f"{type(e).__name__}: {masker.mask(str(e))}"
-                yield sse("error", {"message": "Something went wrong while Aura was working. Please try again."})
+                if (selected_model is not None and selected_model.provider == "anthropic"
+                        and cloud_availability is not None and is_cloud_capacity_refusal(e)):
+                    retry = cloud_availability.record_capacity_refusal(selected_model, e)
+                    minutes = max(1, round(retry / 60))
+                    yield sse("error", {"message": (
+                        f"{selected_model.model} has no account capacity right now. Aura will skip it in Auto "
+                        f"for about {minutes} minutes and use an available local model instead."
+                    )})
+                else:
+                    yield sse("error", {"message": "Something went wrong while Aura was working. Please try again."})
             await _close(events, pending)
             lifecycle.end(turn, state, error)
             yield sse("done")
@@ -570,6 +670,7 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
     if len(token) < MIN_TOKEN_CHARS:
         raise ValueError(f"token must be at least {MIN_TOKEN_CHARS} characters")
     routing = ModelRouting(aura.settings)
+    cloud_availability = CloudModelAvailability(aura.settings)
     startup_problem: str | None = None
     startup_choice: ModelChoice | None = None
 
@@ -587,6 +688,7 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
             "startup",
             installed_for_automatic_routing(),
             aura.toolbox.secrets.get("anthropic_api_key") is not None,
+            cloud_availability.unavailable_models(),
         )
         aura.select_model(startup_choice)
     except ValueError as e:
@@ -702,6 +804,7 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
                     role,
                     installed_for_automatic_routing(),
                     aura.toolbox.secrets.get("anthropic_api_key") is not None,
+                    cloud_availability.unavailable_models(),
                 )
                 aura.select_model(chosen)
                 if chosen.provider == "ollama" and not aura._injected_model:
@@ -715,7 +818,8 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
             lifecycle.end(t, "refused", str(e))
             return _error(409, str(e))
         return stream_turn(events, lifecycle, t, keeper, check_cold=True, masker=masker,
-                           selected_model=chosen if body.model is None else None)
+                           selected_model=chosen if body.model is None else None,
+                           cloud_availability=cloud_availability)
 
     @app.post("/v1/approvals")
     def approvals(body: ApprovalsIn) -> Response:

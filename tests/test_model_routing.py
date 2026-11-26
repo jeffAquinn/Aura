@@ -10,7 +10,7 @@ from aura.brain import build_model
 from aura.model_routing import ROLES, ModelChoice, ModelRouting, SleepMode, infer_role
 from aura import server as server_module
 from aura.server import create_app
-from conftest import make_aura
+from conftest import ScriptedModel, make_aura
 
 
 TOKEN = "t0ken-" + "x" * 40
@@ -74,6 +74,65 @@ def test_automatic_model_never_escalates_a_missing_local_role_to_cloud(settings)
 
     with pytest.raises(ValueError, match="not installed"):
         server_module.automatic_model_choice(routing, "coding", set(), True)
+
+
+def test_automatic_model_skips_a_cloud_model_with_a_recent_capacity_refusal(settings):
+    class ExhaustedCloudModel(RuntimeError):
+        status_code = 429
+
+    routing = ModelRouting(settings)
+    saved = choices("qwen3:8b")
+    saved["chat"] = ModelChoice("anthropic", "claude-fable-5-2")
+    routing.replace(saved)
+    availability = server_module.CloudModelAvailability(settings)
+    availability.record_capacity_refusal(saved["chat"], ExhaustedCloudModel("quota exhausted"))
+
+    choice, notice = server_module.automatic_model_choice(
+        routing, "chat", {"qwen3:8b"}, True, availability.unavailable_models(),
+    )
+
+    assert choice == ModelChoice("ollama", "qwen3:8b")
+    assert notice == "Auto selected local model 'qwen3:8b' because the chat cloud model recently reached its account limit."
+    # The cache survives a server restart but is deliberately temporary (it has an expiry).
+    assert "claude-fable-5-2" in server_module.CloudModelAvailability(settings).unavailable_models()
+
+
+def test_cloud_capacity_detection_only_marks_account_limit_responses(settings):
+    class StatusError(RuntimeError):
+        def __init__(self, status_code, message):
+            super().__init__(message)
+            self.status_code = status_code
+
+    assert server_module.is_cloud_capacity_refusal(StatusError(429, "too many requests"))
+    assert server_module.is_cloud_capacity_refusal(StatusError(402, "payment required"))
+    assert server_module.is_cloud_capacity_refusal(RuntimeError("Your credit balance is too low."))
+    assert not server_module.is_cloud_capacity_refusal(StatusError(400, "max_tokens must be positive"))
+
+
+def test_auto_learns_a_cloud_capacity_refusal_before_the_next_turn(settings):
+    class QuotaError(RuntimeError):
+        status_code = 429
+
+    class QuotaLimitedModel(ScriptedModel):
+        def _generate(self, *args, **kwargs):
+            raise QuotaError("You have reached your limit for this model.")
+
+    aura, _ = make_aura(settings)
+    aura.toolbox.secrets.set("anthropic_api_key", "sk-ant-api03-" + "a" * 40)
+    broken = type(aura)(settings=aura.settings, model=QuotaLimitedModel(), toolbox=aura.toolbox)
+    client = TestClient(create_app(broken, TOKEN, NoopKeeper()), base_url="http://127.0.0.1")
+    saved = choices("qwen3:8b")
+    saved["chat"] = ModelChoice("anthropic", "claude-fable-5-2")
+    assert client.put("/v1/models", json={"roles": {role: choice.public() for role, choice in saved.items()}}, headers=AUTH).status_code == 200
+
+    first = client.post("/v1/chat", json={"text": "Hello"}, headers=AUTH)
+    assert first.status_code == 200 and "no account capacity right now" in first.text
+
+    # No second provider probe or failed cloud turn: the selected model is the local fallback.
+    second = client.post("/v1/chat", json={"text": "Hello again"}, headers=AUTH)
+    assert second.status_code == 200
+    assert '"provider": "ollama"' in second.text
+    assert "recently reached its account limit" in second.text
 
 
 def test_usable_ollama_models_requires_the_runtime_readiness_probe(settings, monkeypatch):
