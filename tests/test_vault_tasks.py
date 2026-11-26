@@ -256,12 +256,26 @@ def test_a_task_that_changes_nothing_or_is_stopped_asks_nothing_more(settings, v
 
 
 def test_the_chat_box_can_hand_a_message_to_a_developer(settings, vault_files):
-    aura, model = aura_with(settings, FakeVaultContainer(), AIMessage("On it."))
-    run(aura.stream("Tidy my notes.", developer="codex"))
-    asked = [m for m in model.agent_calls()[0] if isinstance(m, HumanMessage)][-1].text
-    assert asked.startswith("Tidy my notes.") and 'Call ask_developer now (engine "codex")' in asked
+    aura, model = aura_with(settings, FakeVaultContainer(), AIMessage("This model must not be called."))
     with pytest.raises(ValueError):
         aura.stream("x", developer="gpt")
+    _, hand_off = run(aura.stream("Tidy my notes.", developer="codex"))
+    [card] = hand_off.actions
+    assert card.tool == "ask_developer"
+    assert card.args["engine"] == "codex" and card.args["task"] == "Tidy my notes."
+    assert model.agent_calls() == []  # direct handoff never waits for the Aura planning model
+
+
+def test_direct_developer_handoff_accepts_a_bounded_folder_line(settings, vault_files):
+    (vault_files / "small").mkdir()
+    (vault_files / "small" / "readme.md").write_text("safe\n")
+    aura, _ = aura_with(settings, FakeVaultContainer(), AIMessage("This model must not be called."))
+
+    _, hand_off = run(aura.stream("Folder: small\nRead the readme and report it.", developer="claude"))
+
+    [card] = hand_off.actions
+    assert card.args == {"task": "Read the readme and report it.", "engine": "claude", "folder": "small"}
+    assert "copy of 'small/' in your vault (1 file" in card.description
 
 
 def test_one_job_at_a_time(settings, vault_files):

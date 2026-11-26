@@ -844,7 +844,7 @@ struct DeveloperPicker: View {
         .menuIndicator(.hidden)
         .fixedSize()
         .help(store.developer == nil ? "Send to \(store.persona.name), or hand it to Claude Code or Codex"
-              : "Messages go to \(EngineInfo.named(store.developer ?? "")?.label ?? "a Developer"), through \(store.persona.name)")
+              : "Messages go to \(EngineInfo.named(store.developer ?? "")?.label ?? "a Developer"). Add 'Folder: path' on its own line to use a smaller vault folder.")
     }
 }
 

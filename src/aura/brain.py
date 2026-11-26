@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import threading
 import uuid
 from collections.abc import Callable, Iterator, Sequence
@@ -58,6 +59,7 @@ TRANSCRIPT_CHARS = 20_000  # of one message, when the app restores the conversat
 CUT_SHORT = ("This was cut short (the user stopped the turn, or Aura restarted) before it finished, so it may "
              "have partly run. Don't assume either way; check before relying on it, and don't repeat it unless "
              "the user asks.")  # fmt: skip
+DIRECT_FOLDER = re.compile(r"(?im)^\s*folder:\s*(\.|[A-Za-z0-9][A-Za-z0-9._/-]{0,199})\s*$")
 
 
 class UsageAwareSummarizationMiddleware(SummarizationMiddleware):
@@ -564,9 +566,33 @@ class Aura:
             engine = self.toolbox.developer.engines.get(developer)
             if engine is None:
                 raise ValueError(f"unknown developer '{developer}'")
-            text += (f"\n\n[I chose {engine.label} for this message in the chat box. Call ask_developer now "
-                     f'(engine "{engine.name}"), with a complete task that includes whatever it needs from our '
-                     "conversation. Its approval card is where I confirm: don't describe the plan or ask me first.]")  # fmt: skip
+            # A person who explicitly chooses Claude Code or Codex expects the Developer handoff,
+            # not another model turn that might stall before presenting the approval card. Seed a
+            # normal ``ask_developer`` tool call as the model node so the existing approval,
+            # checkpoint, restart recovery and per-file review machinery remains authoritative.
+            # An explicit "Aura project sandbox" request is the one safe case where the folder is
+            # selected without a planning turn; every other direct handoff retains the vault-wide
+            # default and its measured approval card.
+            folder = "."
+            task = text
+            if match := DIRECT_FOLDER.search(text):
+                folder = match.group(1)
+                task = DIRECT_FOLDER.sub("", text, count=1).strip()
+                if not task:
+                    raise ValueError("Describe the work after the 'Folder:' line.")
+            sandbox = self.settings.project_sandbox_dir
+            if folder == "." and "aura project sandbox" in text.lower() and sandbox is not None:
+                try:
+                    folder = sandbox.resolve().relative_to(self.toolbox.vault.root.resolve()).as_posix()
+                except ValueError:
+                    pass
+            call_id = "direct-developer-" + uuid.uuid4().hex
+            direct = AIMessage(content="", tool_calls=[{
+                "name": "ask_developer", "args": {"task": task, "engine": engine.name, "folder": folder},
+                "id": call_id,
+            }])
+            self._agent.update_state(self._config, {"messages": [HumanMessage(content=task), direct]}, as_node="model")
+            return self._run(None, cancel=cancel)
         messages: list[Any] = [{"role": "user", "content": text}]
         fresh = self.toolbox.live.inbox.unseen_by_model() if self.primary else []
         if fresh:  # live messages since the last turn: a private read (R2), framed as untrusted (R5)
