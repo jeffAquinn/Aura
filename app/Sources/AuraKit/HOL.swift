@@ -106,6 +106,8 @@ public final class HOLStore {
 
     @ObservationIgnored private let transport: () -> (any AuraTransport)?
     @ObservationIgnored private var terminalPoll: Task<Void, Never>?
+    /// Only the newest overview request may publish results; refreshes can overlap after a deployment.
+    @ObservationIgnored private var refreshGeneration = 0
     /// The desktop host may mirror this safe terminal output elsewhere.  It is deliberately
     /// one-way: ChatView input is never forwarded to a HOL container.
     @ObservationIgnored public var onOutput: ([String]) -> Void = { _ in }
@@ -114,16 +116,30 @@ public final class HOLStore {
 
     public func refresh() async {
         guard let transport = transport() else { return }
+        refreshGeneration &+= 1
+        let generation = refreshGeneration
+        async let nextOverview = transport.hol()
+        async let nextCatalog = transport.models()
+        var failure: Error?
+
         do {
-            async let nextOverview = transport.hol()
-            async let nextCatalog = transport.models()
-            let (overview, catalog) = try await (nextOverview, nextCatalog)
+            let overview = try await nextOverview
+            guard generation == refreshGeneration else { return }
             self.overview = overview
-            self.catalog = catalog
             if selectedModel.model.isEmpty { selectedModel = overview.defaults.model }
             if let saved = overview.defaults.effort { effort = saved }
-            lastError = nil
-        } catch { lastError = FriendlyMessage.describe(error) }
+        } catch { failure = error }
+
+        do {
+            let catalog = try await nextCatalog
+            guard generation == refreshGeneration else { return }
+            self.catalog = catalog
+        } catch {
+            if failure == nil { failure = error }
+        }
+
+        guard generation == refreshGeneration else { return }
+        lastError = failure.map(FriendlyMessage.describe)
     }
 
     public func start(_ session: HOLSession) async {
