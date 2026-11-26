@@ -56,6 +56,7 @@ public struct HOLTerminalView: View {
     private var header: some View {
         HStack {
             Label("HOL Terminal", systemImage: "terminal.fill").font(.title3.weight(.semibold))
+            coherenceBadge
             Spacer()
             Text("Vault-only container").font(.caption.weight(.medium)).padding(.horizontal, 8).padding(.vertical, 4)
                 .background(.green.opacity(0.15), in: Capsule()).foregroundStyle(.green)
@@ -67,6 +68,27 @@ public struct HOLTerminalView: View {
                 .disabled(store.busy)
         }
         .padding()
+    }
+
+    @ViewBuilder
+    private var coherenceBadge: some View {
+        switch store.coherence {
+        case .complete:
+            Text("Synchronized").font(.caption.weight(.medium)).foregroundStyle(.green)
+        case .connecting:
+            Text("Connecting").font(.caption.weight(.medium)).foregroundStyle(.secondary)
+        case .refreshing:
+            Label("Refreshing", systemImage: "arrow.triangle.2.circlepath")
+                .font(.caption.weight(.medium)).foregroundStyle(.secondary)
+        case .degraded:
+            Label("Partial refresh", systemImage: "exclamationmark.triangle.fill")
+                .font(.caption.weight(.medium)).foregroundStyle(.orange)
+                .help("Session data or the model catalog could not be refreshed. Model choices from an earlier refresh are withheld.")
+        case .unavailable:
+            Label("Refresh unavailable", systemImage: "exclamationmark.octagon.fill")
+                .font(.caption.weight(.medium)).foregroundStyle(.red)
+                .help("Aura could not refresh HOL session data or the model catalog.")
+        }
     }
 
     private var controls: some View {

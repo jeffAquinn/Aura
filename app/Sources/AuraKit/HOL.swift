@@ -87,6 +87,16 @@ public struct HOLTerminalState: Codable, Sendable, Equatable {
     public let next: Int
 }
 
+/// The honesty level of the current HOL refresh. A complete state means both independent endpoints
+/// responded for the same client refresh generation; it does not claim a server snapshot.
+public enum HOLCoherence: String, Sendable, Equatable {
+    case connecting
+    case refreshing
+    case complete
+    case degraded
+    case unavailable
+}
+
 @MainActor
 @Observable
 public final class HOLStore {
@@ -100,13 +110,14 @@ public final class HOLStore {
     public private(set) var output: [String] = []
     public private(set) var terminal: HOLTerminalState?
     public private(set) var lastError: String?
+    public private(set) var coherence: HOLCoherence = .connecting
     public private(set) var busy = false
     public private(set) var activeEngine: String?
     public private(set) var pendingChanges: [HOLChange] = []
 
     @ObservationIgnored private let transport: () -> (any AuraTransport)?
     @ObservationIgnored private var terminalPoll: Task<Void, Never>?
-    /// Only the newest overview request may publish results; refreshes can overlap after a deployment.
+    /// Only the newest refresh may publish state; refreshes can overlap after a deployment.
     @ObservationIgnored private var refreshGeneration = 0
     /// The desktop host may mirror this safe terminal output elsewhere.  It is deliberately
     /// one-way: ChatView input is never forwarded to a HOL container.
@@ -118,27 +129,36 @@ public final class HOLStore {
         guard let transport = transport() else { return }
         refreshGeneration &+= 1
         let generation = refreshGeneration
+        coherence = .refreshing
         async let nextOverview = transport.hol()
         async let nextCatalog = transport.models()
+        var overview: HOLOverview?
+        var catalog: ModelCatalog?
         var failure: Error?
 
         do {
-            let overview = try await nextOverview
-            guard generation == refreshGeneration else { return }
-            self.overview = overview
-            if selectedModel.model.isEmpty { selectedModel = overview.defaults.model }
-            if let saved = overview.defaults.effort { effort = saved }
+            overview = try await nextOverview
         } catch { failure = error }
 
         do {
-            let catalog = try await nextCatalog
-            guard generation == refreshGeneration else { return }
-            self.catalog = catalog
+            catalog = try await nextCatalog
         } catch {
             if failure == nil { failure = error }
         }
 
         guard generation == refreshGeneration else { return }
+        if let overview {
+            self.overview = overview
+            if selectedModel.model.isEmpty { selectedModel = overview.defaults.model }
+            if let saved = overview.defaults.effort { effort = saved }
+        }
+        // Do not present model options from a previous generation as if they supported this one.
+        self.catalog = catalog
+        switch (overview, catalog) {
+        case (.some, .some): coherence = .complete
+        case (.none, .none): coherence = .unavailable
+        default: coherence = .degraded
+        }
         lastError = failure.map(FriendlyMessage.describe)
     }
 
