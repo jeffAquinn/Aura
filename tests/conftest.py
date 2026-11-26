@@ -114,14 +114,35 @@ def fake_ddg(query: str, n: int) -> list[Hit]:
     return [Hit("London weather", "https://example.com/london", "12°C and light rain.")]
 
 
+class Recorder:
+    """A search backend that records every query it would have sent."""
+
+    def __init__(self):
+        self.queries: list[str] = []
+
+    def __call__(self, query: str, n: int) -> list[Hit]:
+        self.queries.append(query)
+        return [Hit("Result", "https://example.com/r", "text")]
+
+
+def approving(aura: Aura, events) -> list:
+    """A turn whose cards the user approves (every web search has one: tools/egress.py)."""
+    from aura.brain import ApprovalNeeded
+
+    seen = list(events)
+    while seen and isinstance(seen[-1], ApprovalNeeded):
+        seen += list(aura.resume([True] * len(seen[-1].actions)))
+    return seen
+
+
 def make_aura(
-    settings: Settings, *script: AIMessage, report_usage: bool = False, tavily=None, fresh: bool = True,
-    **overrides: Any,
+    settings: Settings, *script: AIMessage, report_usage: bool = False, tavily=None, duckduckgo=fake_ddg,
+    fresh: bool = True, **overrides: Any,
 ) -> tuple[Aura, ScriptedModel]:
     """`fresh`: start a new conversation even if the data folder has one saved (a test that builds
     several Auras in one folder wants each to start clean; a restart test passes False)."""
     s = dataclasses.replace(settings, **overrides)
-    search = WebSearch(s.tavily_api_key, AuditLog(s.audit_log), tavily=tavily, duckduckgo=fake_ddg)
+    search = WebSearch(s.tavily_api_key, AuditLog(s.audit_log), tavily=tavily, duckduckgo=duckduckgo)
     model = ScriptedModel(script=list(script), report_usage=report_usage)
     aura = Aura(settings=s, model=model, toolbox=Toolbox.from_settings(s, search=search))
     if fresh:

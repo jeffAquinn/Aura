@@ -12,7 +12,7 @@ import httpx
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from conftest import real_key
+from conftest import approving, real_key
 
 from aura.brain import Aura, Status, Text
 from aura.config import Settings
@@ -162,7 +162,7 @@ def test_denied_delete_gets_the_exact_denial_and_keeps_the_file(aura):
 def test_fallback_search_is_announced(aura):
     if aura.toolbox.search.mode.startswith("Tavily"):
         pytest.skip("Tavily key set: no fallback")
-    events = list(aura.stream("What's the weather in London right now?"))
+    events = approving(aura, aura.stream("What's the weather in London right now?"))
     reply = "".join(e.text for e in events if isinstance(e, Text))
     print(f"\n{reply}")
     assert reply.startswith(FALLBACK_NOTICE)
@@ -172,7 +172,7 @@ def test_fallback_search_is_announced(aura):
 def test_primary_search_bypasses_the_fallback(aura):
     if not aura.toolbox.search.mode.startswith("Tavily"):
         pytest.skip("no Tavily key (add it in Aura's Settings → Keys)")
-    events = list(aura.stream("What's the weather in London right now?"))
+    events = approving(aura, aura.stream("What's the weather in London right now?"))
     reply = "".join(e.text for e in events if isinstance(e, Text))
     msgs = aura._agent.get_state(aura._config).values["messages"]
     searches = [m for m in msgs if isinstance(m, ToolMessage) and m.name == "web_search"]

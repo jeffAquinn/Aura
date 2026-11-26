@@ -3,8 +3,9 @@
 Gemma's rules, enforced here and in brain.py:
 - R1 floors: anything that sends, posts or writes (a Slack or Discord message, a Gmail draft, a
   calendar event) is in NEEDS_APPROVAL: the user sees the exact content and destination first.
-- R2 taint: the reads below are PRIVATE_READS. Once a turn has read private data, a web search
-  in that turn needs approval too (brain.py), so injected text can't send data out quietly.
+- R2 taint (superseded by the Egress Gatekeeper, tools/egress.py): every web search now needs its
+  own approval card. The reads below are PRIVATE_READS: a card for a search in a turn that read
+  private data also says so, so the user checks the query for it.
 - R5 framing: everything read is labelled as untrusted information.
 Tools exist only for connected services. Tokens never reach a tool's arguments or results: the
 connection objects hold them.
@@ -496,9 +497,6 @@ def describe_outward(name: str, args: dict[str, Any]) -> str:
         if a.get("location"):
             lines.append(f"    Where: {a['location']}")
         return "\n".join(lines + (_block(a["description"]) if a.get("description") else []))
-    if name == "web_search":
-        return "\n".join([f"search the web for '{a.get('query')}' (after reading your private data this turn):",
-                          "    These search words leave this Mac. Check they contain nothing private."])  # fmt: skip
     return name
 
 

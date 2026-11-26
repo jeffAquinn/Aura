@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from conftest import ScriptedModel, call, make_aura, tool_turn
+from conftest import ScriptedModel, approving, call, make_aura, tool_turn
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.messages.utils import count_tokens_approximately
 from langchain_core.outputs import ChatGeneration, LLMResult
@@ -544,7 +544,7 @@ def test_fallback_search_tells_the_user(settings):
         settings, tool_turn(call("web_search", query="weather London")), AIMessage("12°C, rain.")
     )
 
-    events = list(aura.stream("Weather in London?"))
+    events = approving(aura, aura.stream("Weather in London?"))
     assert statuses(events) == ["[Tool: Web_Search_Tool] Searching for 'weather London'..."]
     assert said(events) == FALLBACK_NOTICE + "\n\n" + "12°C, rain."
 
@@ -556,7 +556,7 @@ def test_fallback_notice_is_said_once_per_turn_even_after_several_searches(setti
         tool_turn(call("web_search", query="London temperature now")),
         AIMessage("12°C."),
     )
-    events = list(aura.stream("Weather in London?"))
+    events = approving(aura, aura.stream("Weather in London?"))
     assert len(statuses(events)) == 2
     assert said(events) == FALLBACK_NOTICE + "\n\n" + "12°C."
 
@@ -571,7 +571,7 @@ def test_primary_search_has_no_fallback_notice(settings):
         tavily_api_key="tvly-test",
     )
 
-    assert said(list(aura.stream("Weather in London?"))) == "11°C."
+    assert said(approving(aura, aura.stream("Weather in London?"))) == "11°C."
 
 
 # ── Gemma's Sprint 4 mandate: code execution needs a formal approval card ──────────────────

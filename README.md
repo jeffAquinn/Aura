@@ -43,7 +43,7 @@ starting Ollama; `ollama ps` shows the active context allocation.
 |---|---|---|
 | `list_vault`, `read_file` | File_System_Tool | — |
 | `write_file`, `create_folder`, `delete_path` | File_System_Tool | asked first (`Allow? [y/N]`) |
-| `web_search` (Tavily, DuckDuckGo fallback) | Web_Search_Tool | — |
+| `web_search` (Tavily, DuckDuckGo fallback) | Web_Search_Tool | asked first, every query, with the exact words |
 | `run_python` (fresh offline Docker container per run) | Code_Interpreter_Tool | asked first, with the code |
 | `list_voices`, `set_voice` | Voice_Tool | — (instant, reversible) |
 | `view_persona`, `update_persona` (one field at a time) | Persona_Tool | asked first, with a diff |
@@ -223,9 +223,9 @@ before saving it, refuses a personal account's token, and builds an invite link 
 permissions it needs (View Channels, Send Messages, Read Message History).
 
 **Using them:** Aura reads Gmail, Calendar, Drive, Slack and Discord when you ask. Anything that
-sends, posts, drafts or adds an event shows you the exact content on an approval card first. After
-Aura has read private data in a turn, a web search in that turn asks first too, and everything Aura
-reads is labelled as information, never instructions.
+sends, posts, drafts or adds an event shows you the exact content on an approval card first. Every
+web search asks first too, showing the exact query (and saying so if the turn read private data),
+and everything Aura reads, search results included, is labelled as information, never instructions.
 
 **Live messages:** Aura hears new Slack and Discord messages as they arrive and shows each as a
 card in its chat. Discord's bot listens over the Gateway with no extra setup. Slack's uses Socket

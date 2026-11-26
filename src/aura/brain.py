@@ -51,6 +51,7 @@ from aura.persona import MEMORY_PROMPT, system_prompt
 from aura.developer.workflow import describe_build, describe_task
 from aura.connections.actions import OUTWARD, describe_outward, inbox_exchange, turn_is_tainted
 from aura.tools import EDITABLE, NEEDS_APPROVAL, Toolbox
+from aura.tools.egress import GATED, describe_search, visible
 from aura.tools.sandbox import describe_run
 
 TOOL_CALLS_PER_TURN = 8
@@ -419,17 +420,21 @@ class Aura:
                 return describe_build(args, self.toolbox.developer)
             if tool_call["name"] == "ask_developer":
                 return describe_task(args, self.toolbox.developer, vault)
-            if tool_call["name"] in (*OUTWARD, "web_search"):
+            if tool_call["name"] == "web_search":
+                return describe_search(args.get("query"), self.toolbox.search.destinations,
+                                       private=turn_is_tainted(state["messages"]))  # fmt: skip
+            if tool_call["name"] in OUTWARD:
                 return describe_outward(tool_call["name"], args)
             return vault.describe_change(tool_call["name"], args)
 
         approval = InterruptOnConfig(allowed_decisions=["approve", "reject"], description=describe)
         # The Specification Approval card: the user may also edit the specification before approving.
         editable = InterruptOnConfig(allowed_decisions=["approve", "edit", "reject"], description=describe)
-        # R2 (Gemma's taint rule): a web search sends its words off this Mac, so once a turn has read
-        # private data (mail, calendar, Drive, Slack, Discord) the search waits for the user too.
-        tainted = InterruptOnConfig(allowed_decisions=["approve", "reject"], description=describe,
-                                    when=lambda request: turn_is_tainted(request.state["messages"]))  # fmt: skip
+        # The Egress Gatekeeper (supersedes R2's taint condition): every web search waits for its
+        # own card, in every turn. A query the card can't show exactly (hidden characters) gets no
+        # card: the tool refuses it and nothing is sent (tools/egress.py).
+        egress = InterruptOnConfig(allowed_decisions=["approve", "reject"], description=describe,
+                                   when=lambda request: visible(request.tool_call["args"].get("query")))  # fmt: skip
         # Conversation memory (and paused approvals): checkpointed per thread_id in SQLite, so it
         # survives agent rebuilds (deploying a skill) and restarts of the server.
         self._checkpointer = self.toolbox.checkpointer()
@@ -467,7 +472,7 @@ class Aura:
                     RecursionMiddleware(),
                     HumanInTheLoopMiddleware(interrupt_on={
                         **{name: editable if name in EDITABLE else approval for name in NEEDS_APPROVAL},
-                        "web_search": tainted}),
+                        "web_search": egress}),
                 ],
                 checkpointer=self._checkpointer,
             )
@@ -571,6 +576,20 @@ class Aura:
             return False
         return not any(tc["id"] in self.toolbox.developer.tasks for tc in self._dangling(state))
 
+    def _interrupted_calls(self, actions: list[dict[str, Any]]) -> list[str | None]:
+        """The tool_call_id of each gated action on the card (tools/egress.py GATED), matched in
+        order by tool and exact arguments to the calls still waiting; None otherwise (no grant)."""
+        if not any(action["name"] in GATED for action in actions):
+            return [None] * len(actions)
+        waiting = self._dangling(self._agent.get_state(self._config))
+        ids: list[str | None] = []
+        for action in actions:
+            match = next((tc for tc in waiting if tc["name"] == action["name"] and tc["args"] == action["args"]), None)
+            if match is not None:
+                waiting.remove(match)
+            ids.append(match["id"] if match else None)
+        return ids
+
     @staticmethod
     def _dangling(state: Any) -> list[dict[str, Any]]:
         msgs = state.values.get("messages", [])
@@ -592,6 +611,7 @@ class Aura:
             return False
         dangling = self._dangling(state)
         for tc in dangling:
+            self.toolbox.search.gate.revoke(tc["id"])  # an approved search that never ran: no grant left
             if tc["name"] == "ask_developer":  # its working copy: dropped, nothing written
                 self.toolbox.developer.finish_task(tc["id"], self.toolbox.vault)
         self._agent.update_state(self._config, {"messages": [*uncommitted, *(
@@ -751,6 +771,7 @@ class Aura:
             self._settle("The user's permissions changed before they answered, so this was not carried out. "
                          "Ask again if it's still wanted.")  # fmt: skip
             raise StaleApproval("Your permissions changed since Aura asked, so that request was cancelled. Ask again.")
+        calls = self._interrupted_calls(actions)  # before the claim: a failure here leaves the card answerable
         answering = self.approval_id
         if answering and not self.toolbox.state.claim_approval(answering):  # exactly one answer runs
             raise StaleApproval("That approval was already answered.")
@@ -761,8 +782,10 @@ class Aura:
         # this affects only the post-approval turn, never the fast first response.
         self.reload_tools()
         decisions = []
-        for action, answer, edit in zip(actions, approvals, edits):
+        for action, answer, edit, tool_call_id in zip(actions, approvals, edits, calls):
             ok = bool(answer.get("approve")) if isinstance(answer, dict) else bool(answer)
+            if ok:  # an approved egress (web search) gets its single-use grant (tools/egress.py)
+                self.toolbox.search.gate.grant_for(action["name"], action["args"], answering, tool_call_id)
             self.toolbox.audit.record(
                 "approval",
                 tool=action["name"],

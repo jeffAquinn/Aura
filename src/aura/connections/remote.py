@@ -24,6 +24,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from aura.tools.egress import QUERY_LINE
+
 log = logging.getLogger(__name__)
 
 SHOWN_LINES = 12  # of each approval's detail (a specification, a diff) in a Slack message
@@ -41,6 +43,31 @@ class Ask:
     thread_ts: str | None  # answer in this thread (None: in the channel itself)
     text: str
     place: str  # "a direct message", "#aura-chat"
+
+
+def slack_card(tool: str, args: dict[str, Any], description: str) -> str:
+    """One approval as a Slack message shows it: the first line, then its detail quoted."""
+    if tool == "web_search":
+        return _search_card(str(args.get("query", "")), description)
+    first, *rest = description.splitlines() or [tool]
+    if len(rest) > SHOWN_LINES:  # e.g. a long diff: the Mac panel shows all of it
+        rest = [*rest[:SHOWN_LINES], f"… {len(rest) - SHOWN_LINES} more lines (the Mac panel shows them all)"]
+    return f"• {first}" + "".join(f"\n> {line.strip().lstrip('│').strip()}" for line in rest)
+
+
+def unshowable_in_slack(tool: str, args: dict[str, Any]) -> bool:
+    """A search query Slack can't show exactly: ``` in it would end the code block early."""
+    return tool == "web_search" and "```" in str(args.get("query", ""))
+
+
+def _search_card(query: str, description: str) -> str:
+    """The Egress Gatekeeper's card in Slack: the same words, and the query in a code block taken
+    from the tool call itself (not the card text), so Markdown and trimming can't change it."""
+    shown = (f"```\n{query}\n```" if not unshowable_in_slack("web_search", {"query": query}) else
+             "> This query contains ``` so Slack can't show it exactly. It can't be approved from Slack: "
+             "reply **deny**, then ask again without backticks.")  # fmt: skip
+    first, *rest = description.split("\n")
+    return "\n".join([f"• {first}", *(shown if line.startswith(QUERY_LINE) else f"> {line}" for line in rest)])
 
 
 def answer_word(text: str) -> str | None:
@@ -126,6 +153,10 @@ class RemoteChat:
                 if word is None:
                     self._say(ask, "I'm still waiting for your answer on the request above. Reply **allow** or **deny**.")
                     return
+                if word == "allow" and any(self._unshowable(a) for a in self._pending.actions):
+                    self._say(ask, "This request includes a search Slack can't show exactly, so nothing in it "
+                                   "can be approved here. Reply **deny**, then ask again.")  # fmt: skip
+                    return
                 pending, self._pending = self._pending, None
                 try:
                     events = aura.resume([word == "allow"] * len(pending.actions), approval_id=pending.approval_id or None,
@@ -165,15 +196,17 @@ class RemoteChat:
                 break
         reply = "".join(said).strip()
         if self._pending is not None:
-            asks = []
-            for action in self._pending.actions:
-                first, *rest = action.description.splitlines() or [action.tool]
-                if len(rest) > SHOWN_LINES:  # e.g. a long diff: the Mac panel shows all of it
-                    rest = [*rest[:SHOWN_LINES], f"… {len(rest) - SHOWN_LINES} more lines (the Mac panel shows them all)"]
-                asks.append(f"• {first}" + "".join(f"\n> {line.strip().lstrip('│').strip()}" for line in rest))
+            asks = [slack_card(a.tool, a.args, a.description) for a in self._pending.actions]
             reply = (reply + "\n\n" if reply else "") + "**I need your OK to:**\n" + "\n".join(asks) + \
                 "\n\nReply **allow** or **deny**."  # fmt: skip
         self._say(ask, reply or "…")
+
+    def _unshowable(self, action: Any) -> bool:
+        """A search Slack can't show exactly: ``` in it, or text the masker would hide on the card
+        (a secret would then be sent while the card showed "[secret hidden]")."""
+        query = str(action.args.get("query", "")) if action.tool == "web_search" else ""
+        masked = self._masker is not None and self._masker.mask(query) != query
+        return unshowable_in_slack(action.tool, action.args) or masked
 
     def _say(self, ask: Ask, text: str) -> None:
         if self._masker is not None:

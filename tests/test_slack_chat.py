@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import threading
+from collections.abc import Callable
 
 import httpx
 import pytest
@@ -85,17 +86,22 @@ def test_elsewhere_only_an_at_mention_is_for_aura_and_it_answers_in_a_thread(lis
     assert len(socket.chat.asks) == 1 and inbox.recent(1)[0].kind == "dm"
 
 
+def remote_chat(aura: Aura, env, tmp_path, model=None) -> tuple[RemoteChat, list[tuple], Callable[[str], Ask]]:
+    """The Slack chat around `aura`'s toolbox: (remote, what it posted, a DM from the owner)."""
+    posted: list[tuple] = []
+    remote = RemoteChat(make_aura=lambda: Aura(settings=env[0], model=model or aura.llm, toolbox=aura.toolbox, primary=False),
+                        turn=threading.Lock(), post=lambda *a: posted.append(a), inbox=aura.toolbox.live.inbox,
+                        settings_path=tmp_path / "slack_chat.json")  # fmt: skip
+    return remote, posted, lambda text: Ask(channel="D1", ts="1.1", thread_ts=None, text=text, place="a direct message")
+
+
 def test_aura_answers_in_slack_with_the_same_rules(env, tmp_path):  # noqa: F811
     aura, fake, _ = connected_aura(env,
                                    AIMessage("Hi Jeff! What can I do?"),
                                    tool_turn(call("slack_send", channel="#general", text="Running late")),
                                    AIMessage("Sent."),
                                    tool_turn(call("slack_send", channel="#general", text="Second try")))  # fmt: skip
-    posted: list[tuple] = []
-    remote = RemoteChat(make_aura=lambda: Aura(settings=env[0], model=aura.llm, toolbox=aura.toolbox, primary=False),
-                        turn=threading.Lock(), post=lambda *a: posted.append(a), inbox=aura.toolbox.live.inbox,
-                        settings_path=tmp_path / "slack_chat.json")  # fmt: skip
-    dm = lambda text: Ask(channel="D1", ts="1.1", thread_ts=None, text=text, place="a direct message")  # noqa: E731
+    remote, posted, dm = remote_chat(aura, env, tmp_path)
     remote.handle(dm("hello"))
     assert posted[-1] == ("D1", "Hi Jeff! What can I do?", None)
     remote.handle(dm("tell #general I'm running late"))
@@ -205,11 +211,7 @@ def test_live_the_real_model_answers_from_the_phone_and_asks_there(env, tmp_path
         pytest.skip("no local model")
     aura, fake, _ = connected_aura(env)
     model = build_model(Settings.from_env())
-    posted: list[tuple] = []
-    remote = RemoteChat(make_aura=lambda: Aura(settings=env[0], model=model, toolbox=aura.toolbox, primary=False),
-                        turn=threading.Lock(), post=lambda *a: posted.append(a), inbox=aura.toolbox.live.inbox,
-                        settings_path=tmp_path / "slack_chat.json")  # fmt: skip
-    dm = lambda text: Ask(channel="D1", ts="1.1", thread_ts=None, text=text, place="a direct message")  # noqa: E731
+    remote, posted, dm = remote_chat(aura, env, tmp_path, model=model)
     remote.handle(dm("What's 12 times 12? Just the number."))
     assert "144" in posted[-1][1]
     remote.handle(dm("Post in #general on Slack that I'm running ten minutes late."))
