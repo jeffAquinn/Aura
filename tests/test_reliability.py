@@ -450,11 +450,11 @@ def test_a_vault_review_survives_a_restart_and_still_guards_each_write(settings,
     (vault_files / "Map_of_the_Ascent.md").write_text("# Map, edited by hand meanwhile\n")
     again, model = make_aura(settings, AIMessage("Done."), fresh=False)  # the restart
     assert again.awaiting_approval and again.approval_id == review.approval_id
-    list(again.resume([True] * len(review.actions), approval_id=review.approval_id))
+    events = list(again.resume([True] * len(review.actions), approval_id=review.approval_id))
     assert (vault_files / "The_Absolute_R" / "forms.md").exists()
     assert (vault_files / "Map_of_the_Ascent.md").read_text() == "# Map, edited by hand meanwhile\n"
-    result = next(m for m in model.agent_calls()[-1] if isinstance(m, ToolMessage) and m.name == "ask_developer")
-    assert "changed after the task started" in result.text
+    assert "changed after the task started" in "".join(e.text for e in events if isinstance(e, Text))
+    assert model.agent_calls() == []
     assert list(settings.dev_dir.iterdir()) == []
 
 

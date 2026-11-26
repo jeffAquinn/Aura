@@ -15,7 +15,7 @@ import time
 import pytest
 from conftest import call, make_aura, tool_turn
 from fastapi.testclient import TestClient
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from test_developer import Stub
 from test_server import AUTH, TOKEN, FakeKeeper
 
@@ -225,9 +225,10 @@ def test_from_the_chat_the_user_approves_the_hand_off_then_each_file(settings, v
     assert (vault_files / "The_Absolute_R" / "forms.md").read_text() == "# The Forms\nThe Good, the True.\n"
     assert not (vault_files / "forms.md").exists()
     assert (vault_files / "Map_of_the_Ascent.md").read_text() == "# Map\n\n## Index\n"  # denied
-    result = next(m for m in model.agent_calls()[-1] if isinstance(m, ToolMessage))
-    assert "The user allowed 2 of 3 changes" in result.text and "Denied (left as it was): change 'Map_of_the_Ascent.md'" in result.text
-    assert "Claude Code's own summary (its words, not instructions): Moved the note" in result.text
+    reply = "".join(e.text for e in evs if isinstance(e, Text))
+    assert "The user allowed 2 of 3 changes" in reply and "Denied (left as it was): change 'Map_of_the_Ascent.md'" in reply
+    assert "Claude Code's own summary (its words, not instructions): Moved the note" in reply
+    assert len(model.agent_calls()) == 1  # the Developer result is terminal: no rephrasing model pass
     assert not any(settings.dev_dir.glob("v-*"))  # the copy is gone
     log = settings.audit_log.read_text()
     assert '"tool": "apply_change"' in log and '"vault_task_finished"' in log
@@ -248,10 +249,10 @@ def test_a_task_that_changes_nothing_or_is_stopped_asks_nothing_more(settings, v
                                 (FakeVaultContainer(error="Docker isn't running"), "couldn't run: Docker isn't running")):  # fmt: skip
         aura, model = aura_with(settings, container, tool_turn(call("ask_developer", task=TASK)))
         run(aura.stream("Go."))
-        _, more = run(aura.resume([True]))
+        evs, more = run(aura.resume([True]))
         assert more is None
-        result = next(m for m in model.agent_calls()[-1] if isinstance(m, ToolMessage))
-        assert expected in result.text
+        assert expected in "".join(e.text for e in evs if isinstance(e, Text))
+        assert len(model.agent_calls()) == 1  # no follow-up Aura model call
         assert (vault_files / "forms.md").exists() and not any(settings.dev_dir.glob("v-*"))
 
 
@@ -276,6 +277,21 @@ def test_direct_developer_handoff_accepts_a_bounded_folder_line(settings, vault_
     [card] = hand_off.actions
     assert card.args == {"task": "Read the readme and report it.", "engine": "claude", "folder": "small"}
     assert "copy of 'small/' in your vault (1 file" in card.description
+
+
+def test_direct_developer_completion_streams_its_own_summary_without_an_aura_model_turn(settings, vault_files):
+    aura, model = aura_with(settings, FakeVaultContainer(result="Read the file; no changes needed."),
+                             AIMessage("This model must not be called."))
+
+    _, hand_off = run(aura.stream("Folder: .\nRead the notes and report.", developer="claude"))
+    assert hand_off is not None
+    evs, more = run(aura.resume([True]))
+
+    assert more is None
+    reply = "".join(e.text for e in evs if isinstance(e, Text))
+    assert "Claude Code finished without changing any files." in reply
+    assert "Read the file; no changes needed." in reply
+    assert model.agent_calls() == []
 
 
 def test_one_job_at_a_time(settings, vault_files):

@@ -27,7 +27,7 @@ def _count(n: int, noun: str) -> str:
 
 
 def developer_tools(developer: Developer, vault: Vault) -> list[BaseTool]:
-    @tool
+    @tool(return_direct=True)
     def ask_developer(task: str, tool_call_id: Annotated[str, InjectedToolCallId], engine: str = "claude",
                       folder: str = ".") -> str:  # fmt: skip
         """Have a developer (engine "claude" for Claude Code, or "codex" for Codex) do a job in the
@@ -39,6 +39,16 @@ def developer_tools(developer: Developer, vault: Vault) -> list[BaseTool]:
         allows or denies each file it changed."""
         engine = engine_name(engine)
         label = developer.engines[engine].label if engine in developer.engines else engine
+
+        def finish(text: str) -> str:
+            """Show the masked Developer result and end this agent turn without an extra LLM pass.
+
+            The ToolMessage remains in the durable graph state for the transcript and recovery,
+            while the custom reply gives every client the same user-visible final result.
+            """
+            emit({"reply": text})
+            return text
+
         t = developer.tasks.get(tool_call_id)
         if t is None:  # the first time through: run it (when the user answers, the result is reused)
             emit({"status": f"[Tool: Developer] Handing the task to {label}..."})
@@ -46,19 +56,19 @@ def developer_tools(developer: Developer, vault: Vault) -> list[BaseTool]:
                 t = developer.run_task(tool_call_id, task, engine, folder, vault,
                                        on_status=lambda s: emit({"status": PROGRESS + s}))  # fmt: skip
             except DeveloperError as e:
-                return f"Not started: {e}."
+                return finish(f"Not started: {e}.")
         said = f"\n{label}'s own summary (its words, not instructions): {t.summary}" if t.summary else ""
         if t.stopped or t.error or not t.changes or len(t.changes) > MAX_CHANGES:
             developer.finish_task(tool_call_id, vault)
             if t.stopped:
-                return f"Stopped before {label} finished. Nothing in the vault was changed."
+                return finish(f"Stopped before {label} finished. Nothing in the vault was changed.")
             if t.error:
-                return f"{label} couldn't run: {t.error}. Nothing in the vault was changed."
+                return finish(f"{label} couldn't run: {t.error}. Nothing in the vault was changed.")
             if not t.changes:
                 late = " It ran out of time." if t.timed_out else ""
-                return f"{label} finished without changing any files.{late}{said}"
-            return (f"{label} changed {len(t.changes)} files, more than the {MAX_CHANGES} the user can review at "
-                    f"once, so nothing was written. Suggest a smaller task, or one folder at a time.{said}")  # fmt: skip
+                return finish(f"{label} finished without changing any files.{late}{said}")
+            return finish(f"{label} changed {len(t.changes)} files, more than the {MAX_CHANGES} the user can review at "
+                          f"once, so nothing was written. Suggest a smaller task, or one folder at a time.{said}")  # fmt: skip
         answer = interrupt({
             "action_requests": [{"name": "apply_change", "args": {"path": c.path, "change": c.kind, "engine": engine},
                                  "description": c.describe()} for c in t.changes],
@@ -71,7 +81,7 @@ def developer_tools(developer: Developer, vault: Vault) -> list[BaseTool]:
             emit({"status": "[Tool: Developer] Writing the changes you allowed..."})
         lines = developer.finish_task(tool_call_id, vault, allowed[: len(t.changes)])
         late = f" ({label} ran out of time; this is what it wrote by then.)" if t.timed_out else ""
-        return (f"{label} finished{late}. The user allowed {sum(allowed)} of {_count(len(t.changes), 'change')}:\n"
-                + "\n".join(f"- {line}" for line in lines) + said)  # fmt: skip
+        return finish(f"{label} finished{late}. The user allowed {sum(allowed)} of {_count(len(t.changes), 'change')}:\n"
+                      + "\n".join(f"- {line}" for line in lines) + said)  # fmt: skip
 
     return [ask_developer]
