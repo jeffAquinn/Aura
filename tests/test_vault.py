@@ -220,6 +220,7 @@ def test_search_knowledge_returns_bounded_local_text_sources_only(env):
     result = use(tools, "search_knowledge", query="atomic write")
 
     assert "Knowledge/release.md" in result
+    assert "[Source: Knowledge/release.md]" in result
     assert "safe overwrites" in result
     assert "TOP SECRET" not in result and "ignore.csv" not in result
 
@@ -229,6 +230,7 @@ def test_search_knowledge_reports_no_match_or_library(env):
     assert "has not been created" in use(tools, "search_knowledge", query="anything")
     (root / "Knowledge").mkdir()
     assert "No Knowledge sources matched" in use(tools, "search_knowledge", query="anything")
+    assert "[Source:" not in use(tools, "search_knowledge", query="anything")
 
 
 def test_writes_and_deletes_are_audited(env):

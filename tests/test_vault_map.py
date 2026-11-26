@@ -66,6 +66,7 @@ def test_an_existing_vault_gets_libraries_once_without_recreating_removed_folder
 def test_aura_knows_where_each_kind_of_note_belongs(tmp_path):
     prompt = system_prompt(DAY, "gemma4:26b", tmp_path)
     assert "Codex of Emergence" in prompt and "not the Codex developer" in prompt
+    assert "[Source: Knowledge/path.md]" in prompt
     for folder in [*PARTS, *LIBRARIES, "Conversations", "Map_of_the_Ascent.md", "Manifesto_of_the_Lens.md"]:
         assert folder in prompt
 
