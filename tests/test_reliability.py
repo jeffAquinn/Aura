@@ -187,7 +187,7 @@ def test_the_terminal_entry_point_uses_its_own_role(settings, monkeypatch):
     monkeypatch.setattr(terminal_main, "Aura", fake_aura)
     monkeypatch.setattr(builtins, "input", lambda prompt="": (_ for _ in ()).throw(EOFError))
     terminal_main.main()
-    assert built == [{"role": terminal_main.TERMINAL_ROLE}]
+    assert built == [{"role": terminal_main.TERMINAL_ROLE, "publish_capabilities": True}]
 
 
 def test_the_conversation_store_is_bounded_and_a_reset_forgets_on_disk(settings):

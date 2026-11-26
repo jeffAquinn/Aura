@@ -22,6 +22,8 @@ import threading
 import unicodedata
 from dataclasses import dataclass
 
+from aura.capabilities import CAPABILITIES
+
 # Unicode general categories a reader can't see or can't trust on a card. Checked on the raw code
 # points: normalizing first (NFKC) would turn U+00A0 into a space and let it through.
 HIDDEN_CATEGORIES = frozenset({"Cc", "Cf", "Cn", "Co", "Cs", "Zl", "Zp"})
@@ -42,8 +44,9 @@ def _invisible(ch: str) -> bool:
     return any(low <= code <= high for low, high in INVISIBLE_RANGES)
 
 
-# Tool -> the argument that leaves the Mac. Only these get grants (Phase 1: web search).
-GATED = {"web_search": "query"}
+# Tool -> the argument that leaves the Mac. Only these get grants (from the Capability Registry:
+# the rows whose floor is "egress"; Phase 1: web search).
+GATED: dict[str, str] = {c.name: c.gated_arg for c in CAPABILITIES if c.floor == "egress" and c.gated_arg}
 
 EGRESS_WARNING = "Warning: This action will send a query to the internet. This request leaves your local Mac mini."
 QUERY_LINE = "    │ "  # the query follows exactly as it will be sent: not quoted, trimmed or wrapped

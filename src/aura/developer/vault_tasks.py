@@ -273,7 +273,7 @@ def apply(vault: Vault, copy: Copy, work: Path, changes: list[Change], allowed: 
 
 
 def _apply_one(vault: Vault, work: Path, c: Change) -> str:
-    target = vault.resolve(c.path)
+    target = vault.writable(c.path)  # generated files (Capabilities.md) are never changed
     if target == vault.root:
         raise VaultError("that is the vault itself")
     if c.kind in ("create", "modify"):

@@ -93,7 +93,7 @@ def test_a_direct_developer_handoff_keeps_its_required_schema_only():
 
 def test_an_approved_continuation_restores_every_visible_tool_schema(settings):
     aura, _ = make_aura(settings, tool_turn(call("create_folder", path="Receipts")), AIMessage("Created it."))
-    all_tools = frozenset(tool.name for tool in aura.toolbox.all_tools())
+    all_tools = frozenset(tool.name for tool in aura.toolbox.all_tools()) | {"find_capabilities"}
 
     events = list(aura.stream("Create a folder named Receipts."))
     assert isinstance(events[-1], ApprovalNeeded)

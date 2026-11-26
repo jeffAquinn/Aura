@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from langchain_core.tools import BaseTool
 
+from aura.capabilities import BY_NAME, CAPABILITIES, Capability, check_registered, skill_capability
 from aura.connections import Connections
-from aura.connections.actions import OUTWARD, PRIVATE_READS, connection_tools
+from aura.connections.actions import PRIVATE_READS, connection_tools
 from aura.connections.discord import DiscordConnection
 from aura.connections.google import GoogleConnection
 from aura.connections.live import DiscordGateway, Inbox, LiveMessages, SlackSocket
@@ -37,88 +37,25 @@ from aura.voice import VoiceStore
 
 __all__ = ["NEEDS_APPROVAL", "PRIVATE_READS", "Toolbox", "emit", "status_line"]
 
-# Tools that run code, change the vault, or change Aura's persona: each pauses for the user's
-# approval first (code execution was added by Gemma's Sprint 4 review).
-NEEDS_APPROVAL = ("write_file", "create_folder", "delete_path", "update_persona", "run_python", "develop_skill",
-                  "create_agent_candidate", "import_agent_candidate",
-                  "ask_developer", *OUTWARD)  # Sprint 7: Gemma's floors: sending, posting, drafting, adding events
+# Derived from the Capability Registry (src/aura/capabilities.py), where each tool's floor is
+# written once. NEEDS_APPROVAL: the tools whose every call shows an approval card (R1 floors: code
+# runs, vault changes, persona changes, Developer work, sending and posting).
+NEEDS_APPROVAL = tuple(c.name for c in CAPABILITIES if c.floor == "ask")
 # Approvals that may be edited on the card before approving: tool -> the fields the user may change.
-EDITABLE: dict[str, tuple[str, ...]] = {"develop_skill": ("specification", "engine")}
-
-GROUP = {
-    "list_vault": "File_System_Tool",
-    "read_file": "File_System_Tool",
-    "search_knowledge": "Knowledge",
-    "write_file": "File_System_Tool",
-    "create_folder": "File_System_Tool",
-    "delete_path": "File_System_Tool",
-    "web_search": "Web_Search_Tool",
-    "run_python": "Code_Interpreter_Tool",
-    "list_voices": "Voice_Tool",
-    "set_voice": "Voice_Tool",
-    "view_persona": "Persona_Tool",
-    "update_persona": "Persona_Tool",
-    "check_library": "Governor",
-    "list_skills": "Workshop",
-    "propose_skill": "Workshop",
-    "list_agents": "Workshop",
-    "create_agent_candidate": "Workshop",
-    "import_agent_candidate": "Workshop",
-    "propose_agent": "Workshop",
-    "develop_skill": "Developer",
-    "ask_developer": "Developer",
-    "list_connections": "Connections",
-    "gmail_read": "Gmail", "gmail_draft": "Gmail",
-    "calendar_read": "Calendar", "calendar_add": "Calendar",
-    "drive_read": "Drive",
-    "slack_read": "Slack", "slack_send": "Slack",
-    "discord_read": "Discord", "discord_send": "Discord",
-    "new_messages": "Connections",
-}
-
-_DOING: dict[str, Callable[[dict], str]] = {
-    "list_vault": lambda a: f"Listing '{a.get('path') or '.'}'...",
-    "read_file": lambda a: f"Reading '{a.get('path')}'...",
-    "search_knowledge": lambda a: f"Searching Knowledge for '{a.get('query')}'...",
-    "write_file": lambda a: f"Writing '{a.get('path')}'...",
-    "create_folder": lambda a: f"Creating folder '{a.get('path')}'...",
-    "delete_path": lambda a: f"Deleting '{a.get('path')}'...",
-    "web_search": lambda a: f"Searching for '{a.get('query')}'...",
-    "run_python": lambda a: "Running Python in the sandbox...",
-    "list_voices": lambda a: "Looking through my voices...",
-    "set_voice": lambda a: "Adjusting my voice...",
-    "view_persona": lambda a: "Reviewing my persona...",
-    "update_persona": lambda a: f"Updating my {a.get('field', 'persona')}...",
-    "check_library": lambda a: f"Checking '{a.get('name')}' on PyPI and OSV...",
-    "list_skills": lambda a: "Looking through my skills...",
-    "propose_skill": lambda a: f"Staging the '{a.get('name')}' skill for audit...",
-    "list_agents": lambda a: "Checking the Workstation agent registry...",
-    "create_agent_candidate": lambda a: f"Creating the '{a.get('name')}' agent candidate...",
-    "import_agent_candidate": lambda a: f"Quarantining the '{a.get('name')}' agent import...",
-    "propose_agent": lambda a: f"Staging the '{a.get('name')}' agent manifest for audit...",
-    "develop_skill": lambda a: f"Starting {'Codex' if a.get('engine') == 'codex' else 'Claude Code'} on the '{a.get('name')}' skill...",
-    "ask_developer": lambda a: "",  # announces itself, once (it runs again when the user decides on its changes)
-    "list_connections": lambda a: "Checking my connections...",
-    "gmail_read": lambda a: "Opening an email..." if a.get("message_id") else f"Searching Gmail for '{a.get('query') or 'your inbox'}'...",
-    "gmail_draft": lambda a: f"Saving a draft to {a.get('to')}...",
-    "calendar_read": lambda a: f"Looking at your calendar for the next {a.get('days', 7)} days...",
-    "calendar_add": lambda a: f"Adding '{a.get('title')}' to your calendar...",
-    "drive_read": lambda a: "Opening a Drive file..." if a.get("file_id") else f"Searching Drive for '{a.get('query') or 'recent files'}'...",
-    "slack_read": lambda a: (f"Searching Slack for '{a['query']}'..." if a.get("query")
-                             else f"Reading Slack {a['channel']}..." if a.get("channel") else "Listing your Slack channels..."),
-    "slack_send": lambda a: f"Posting in Slack {a.get('channel')}...",
-    "discord_read": lambda a: f"Reading Discord {a['channel']}..." if a.get("channel") else "Listing Discord channels...",
-    "discord_send": lambda a: f"Posting in Discord {a.get('channel')}...",
-    "new_messages": lambda a: "Checking new Slack and Discord messages...",
-}
+EDITABLE: dict[str, tuple[str, ...]] = {c.name: c.editable for c in CAPABILITIES if c.editable}
+GROUP = {c.name: c.label for c in CAPABILITIES}
 
 
 def status_line(tool_name: str, args: dict) -> str:
-    """e.g. "[Tool: File_System_Tool] Reading 'budget.csv'..." """
-    if tool_name.startswith("skill_"):  # installed skills: Gemma's spoken status line
-        return f"[Tool: Skill_Tool] Running the {tool_name[len('skill_'):]} skill..."
-    doing = _DOING.get(tool_name, lambda a: "Working...")(args)
-    return f"[Tool: {GROUP.get(tool_name, tool_name)}] {doing}" if doing else ""
+    """e.g. "[Tool: File_System_Tool] Reading 'budget.csv'..." (from the tool's Registry row; an
+    installed skill's row is the one its manifest gives, as in skill_capability)."""
+    row = BY_NAME.get(tool_name)
+    if row is None and tool_name.startswith("skill_"):
+        row = skill_capability(tool_name[len("skill_"):], {})
+    if row is None:
+        return f"[Tool: {tool_name}] Working..."
+    doing = row.doing(args)
+    return f"[Tool: {row.label}] {doing}" if doing else ""
 
 
 @dataclass
@@ -139,6 +76,8 @@ class Toolbox:
     live: LiveMessages = field(default_factory=LiveMessages)  # live messages: started by the server only
     state: StateStore = field(default_factory=lambda: StateStore(None))  # turns, approvals, builds, vault tasks
     masker: Masker = field(default_factory=Masker)  # secrets out of tool output, audit entries and replies
+    skill_rows: list[Capability] = field(default_factory=list)  # the loaded skills' rows, as of all_tools()
+    skill_state: tuple[tuple[str, str], ...] = ()  # the loaded skills' (name, digest), as of all_tools()
     _checkpointer: Any = field(default=None, repr=False)
 
     def checkpointer(self) -> Any:
@@ -161,7 +100,12 @@ class Toolbox:
     def all_tools(self) -> list[BaseTool]:
         """The built-in tools, every approved and enabled skill, and the tools of whatever is
         connected (all re-read on each rebuild)."""
-        return [*self.tools, *self.skills.tools(), *connection_tools(self.connections, self.live.inbox)]
+        loaded = self.skills.loaded()  # one scan of the skill folders for both
+        tools = [*self.tools, *self.skills.tools(loaded=loaded), *connection_tools(self.connections, self.live.inbox)]
+        self.skill_rows = self.skills.capabilities(loaded)
+        self.skill_state = tuple((s.name, s.digest) for s in loaded)  # a re-approved skill changes its digest
+        check_registered((t.name for t in tools), self.skill_rows)  # no row: no known floor
+        return tools
 
     @classmethod
     def from_settings(

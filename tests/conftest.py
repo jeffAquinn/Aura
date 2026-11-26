@@ -137,14 +137,15 @@ def approving(aura: Aura, events) -> list:
 
 def make_aura(
     settings: Settings, *script: AIMessage, report_usage: bool = False, tavily=None, duckduckgo=fake_ddg,
-    fresh: bool = True, **overrides: Any,
+    fresh: bool = True, publish_capabilities: bool = False, **overrides: Any,
 ) -> tuple[Aura, ScriptedModel]:
     """`fresh`: start a new conversation even if the data folder has one saved (a test that builds
     several Auras in one folder wants each to start clean; a restart test passes False)."""
     s = dataclasses.replace(settings, **overrides)
     search = WebSearch(s.tavily_api_key, AuditLog(s.audit_log), tavily=tavily, duckduckgo=duckduckgo)
     model = ScriptedModel(script=list(script), report_usage=report_usage)
-    aura = Aura(settings=s, model=model, toolbox=Toolbox.from_settings(s, search=search))
+    aura = Aura(settings=s, model=model, toolbox=Toolbox.from_settings(s, search=search),
+                publish_capabilities=publish_capabilities)
     if fresh:
         aura.new_conversation()
     return aura, model

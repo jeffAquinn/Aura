@@ -41,7 +41,7 @@ A prompt injection in one email could then try to send the user's data somewhere
 - **Allowed:** it runs, and the audit log records it.
 
 **Defaults match today's behaviour exactly,** so Sprint 7 changes nothing until the user changes something:
-- reading the vault and searching the web are Allowed;
+- reading the vault is Allowed (searching the web was Allowed here; since the Egress Gatekeeper, §12, it is Ask with a fresh card per query);
 - writing, creating and deleting in the vault, code runs, persona changes and Developer builds are Ask.
 
 **Floors** (Ask at least; the server refuses to set them to Allowed):

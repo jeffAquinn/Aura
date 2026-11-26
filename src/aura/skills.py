@@ -26,6 +26,7 @@ from langchain_core.tools import BaseTool, StructuredTool
 from pydantic import Field, create_model
 
 from aura.audit import AuditLog
+from aura.capabilities import Capability, skill_capability
 from aura.tools.sandbox import Sandbox, SandboxUnavailable, format_result
 
 NAME = re.compile(r"^[a-z][a-z0-9_]{1,39}$")
@@ -292,8 +293,16 @@ class SkillManager:
                                 flag=(approved or {}).get("flag")))  # fmt: skip
         return skills
 
-    def tools(self, emit_status: Callable[[str], None] = lambda s: None) -> list[BaseTool]:
-        return [self._tool(s, emit_status) for s in self.scan() if s.loaded]
+    def loaded(self) -> list[Skill]:
+        return [s for s in self.scan() if s.loaded]
+
+    def tools(self, emit_status: Callable[[str], None] = lambda s: None,
+              loaded: list[Skill] | None = None) -> list[BaseTool]:  # fmt: skip
+        return [self._tool(s, emit_status) for s in (self.loaded() if loaded is None else loaded)]
+
+    def capabilities(self, loaded: list[Skill] | None = None) -> list[Capability]:
+        """The Capability Registry rows of the skills `tools()` offers, from their manifests."""
+        return [skill_capability(s.name, s.manifest or {}) for s in (self.loaded() if loaded is None else loaded)]
 
     # ── running inside the sandbox ─────────────────────────────────────────────────────────
 

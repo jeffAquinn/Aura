@@ -23,11 +23,13 @@ from typing import Any
 import httpx
 from langchain_core.tools import BaseTool, tool
 
+from aura.capabilities import CAPABILITIES
 from aura.connections import Connections, ConnectionsError
 
 MAX_CHARS = 6000  # what one read returns: the model's window is 16k tokens
 PRIVATE_READS = ("gmail_read", "calendar_read", "drive_read", "slack_read", "discord_read", "new_messages")
-OUTWARD = ("gmail_draft", "calendar_add", "slack_send", "discord_send")
+# R1 floors of the connections: sending, posting, drafting, adding events (from the Capability Registry).
+OUTWARD = tuple(c.name for c in CAPABILITIES if c.owner == "connection" and c.floor == "ask")
 
 
 def untrusted(source: str, text: str) -> str:

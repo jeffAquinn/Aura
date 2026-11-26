@@ -63,7 +63,7 @@ def _ask(request: ApprovalNeeded) -> list[bool]:
 def main() -> None:
     try:
         # Its own conversation, not the Mac app's: /new here must never erase the app's chat.
-        aura = Aura(role=TERMINAL_ROLE)
+        aura = Aura(role=TERMINAL_ROLE, publish_capabilities=True)  # keeps the vault's Capabilities.md current
         vault_map.seed(aura.toolbox.vault)  # the Codex of Emergence, laid out once
     except OSError as e:
         sys.exit(f"Aura couldn't start: {e}")

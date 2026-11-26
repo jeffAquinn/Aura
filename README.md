@@ -47,11 +47,14 @@ starting Ollama; `ollama ps` shows the active context allocation.
 | `run_python` (fresh offline Docker container per run) | Code_Interpreter_Tool | asked first, with the code |
 | `list_voices`, `set_voice` | Voice_Tool | — (instant, reversible) |
 | `view_persona`, `update_persona` (one field at a time) | Persona_Tool | asked first, with a diff |
-| `check_library` (PyPI + OSV facts) | Governor | — |
+| `check_library` (PyPI + OSV facts; sends the package name) | Governor | — |
 | `list_skills`, `propose_skill` | Workshop | — (deploying is your decision in the Workshop) |
 | `develop_skill` (Claude Code or Codex builds or improves a skill) | Developer | asked first: the Specification Approval card |
 | `ask_developer` (Claude Code or Codex does a job in the vault) | Developer | asked first (what it gets), then each file it changed |
 | `skill_<name>` (each installed skill) | Skill_Tool | — (approved once, at install) |
+| `find_capabilities` (list Aura's tool families, or load one for this turn) | Capabilities | — (loads nothing new: every card still applies) |
+
+**The Capability Registry:** every tool above has one row in `src/aura/capabilities.py`: its family, approval floor, what it sends off this Mac, and the words that show it to the model. Approval cards, the egress gate and status lines all come from that table. Each turn the model sees only the tools its request needs, plus `find_capabilities` for anything else, which keeps a local model's prompt small. Aura writes a read-only copy of the table to the vault as `Capabilities.md`. No tool can change it.
 
 **Voice:** the app speaks replies sentence by sentence, offline: Kokoro-82M neural voices (Heart,
 Bella, Emma and eight more, synthesized locally by the server) or any macOS system voice. It reads
@@ -246,6 +249,7 @@ notification when Aura answers you.
 | Path | Role |
 |---|---|
 | `src/aura/brain.py` | Agent loop (LangChain `create_agent`), memory, compaction, event API for interfaces |
+| `src/aura/capabilities.py` | The Capability Registry: one row per tool (floor, egress, family, cues), `find_capabilities`, the `Capabilities.md` rendering |
 | `src/aura/middleware.py` | Tool status lines, fallback notice, exact denial reply |
 | `src/aura/persona.py` | Aura's identity and system prompt |
 | `src/aura/config.py` | Settings from env / `.env` |

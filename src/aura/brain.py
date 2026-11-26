@@ -41,6 +41,7 @@ from aura.config import Settings
 from aura.model_routing import ModelChoice
 from aura.middleware import (
     REJECTION_NOTE,
+    CapabilitySelection,
     DenialMiddleware,
     ProviderThinkingSanitizer,
     RecursionCircuitBreaker,
@@ -50,8 +51,18 @@ from aura.middleware import (
 from aura.persona import MEMORY_PROMPT, system_prompt
 from aura.developer.workflow import describe_build, describe_task
 from aura.connections.actions import OUTWARD, describe_outward, inbox_exchange, turn_is_tainted
+from aura.capabilities import (
+    FINDER,
+    RENDERED,
+    Capability,
+    finder_tool,
+    render as render_capabilities,
+    rows as capability_rows,
+    select as select_capabilities,
+)
 from aura.tools import EDITABLE, NEEDS_APPROVAL, Toolbox
 from aura.tools.egress import GATED, describe_search, visible
+from aura.tools.vault import VaultError
 from aura.tools.sandbox import describe_run
 
 TOOL_CALLS_PER_TURN = 8
@@ -226,48 +237,18 @@ class Changed:
 Event = Text | Status | ApprovalNeeded | Changed
 
 
-# A local model need not receive every capability schema to answer a plainly conversational
-# request. These are deliberately broad, additive cues: a matching request gets every tool in the
-# relevant family; an unrecognised request gets no tools rather than a guessed capability. The
-# Governor, approval middleware and the tool implementations stay attached to every agent build.
-_TOOL_FAMILIES: tuple[tuple[frozenset[str], re.Pattern[str]], ...] = (
-    (frozenset({"list_vault", "read_file", "search_knowledge", "write_file", "create_folder", "delete_path"}),
-     re.compile(r"\b(vault|knowledge|wisdom|source|reference|document|docs?|file|folder|directory|path|read|save|delete|rename|notes?\.txt|\.csv|\.pdf)\b", re.I)),
-    (frozenset({"web_search"}),
-     re.compile(r"\b(search|web|internet|online|news|weather|latest|current|price|today|forecast)\b", re.I)),
-    (frozenset({"run_python"}),
-     re.compile(r"\b(python|calculate|compute|dataframe|chart|plot|dataset|spreadsheet)\b", re.I)),
-    (frozenset({"list_voices", "set_voice"}),
-     re.compile(r"\b(voice|speak|speech|audio|read aloud)\b", re.I)),
-    (frozenset({"view_persona", "update_persona"}),
-     re.compile(r"\b(persona|tone|brevity|formality|backstory|call yourself)\b", re.I)),
-    (frozenset({"check_library", "list_skills", "propose_skill", "list_agents", "create_agent_candidate",
-                "import_agent_candidate", "propose_agent", "develop_skill"}),
-     re.compile(r"\b(skill|workshop|agent candidate|package|library|dependency|provenance)\b", re.I)),
-    (frozenset({"ask_developer", "develop_skill"}),
-     re.compile(r"\b(claude code|codex|codebase|repository|repo|git|implement|bug|test suite)\b", re.I)),
-    (frozenset({"list_connections", "gmail_read", "gmail_draft", "calendar_read", "calendar_add", "drive_read",
-                "slack_read", "slack_send", "discord_read", "discord_send", "new_messages"}),
-     re.compile(r"\b(gmail|email|mailbox|calendar|event|drive|slack|discord|channel|messages?)\b", re.I)),
-)
+def relevant_turn_tools(tools: Sequence[Any], text: str, developer: str | None = None,
+                        skills: Sequence[Capability] = ()) -> list[Any]:  # fmt: skip
+    """The schemas a plainly requested capability needs, from the Capability Registry's cues.
 
-
-def relevant_turn_tools(tools: Sequence[Any], text: str, developer: str | None = None) -> list[Any]:
-    """Return schemas relevant to a plainly requested capability, preserving every guardrail.
-
-    This selection changes only what the model is told it may call. The underlying tool
-    implementations, Governor middleware and approval gates remain in Aura; no omitted schema
-    grants or removes authority. A direct Developer handoff needs only its existing
-    ``ask_developer`` schema.
+    This changes only what the model is told it may call (CapabilitySelection). Every tool stays
+    registered with its Governor middleware and approval gates; no omitted schema grants or
+    removes authority. A direct Developer handoff needs only its existing ``ask_developer`` schema.
     """
-    names = {tool.name for tool in tools}
     if developer is not None:
         return [tool for tool in tools if tool.name == "ask_developer"]
-    selected = {name for family, pattern in _TOOL_FAMILIES if pattern.search(text) for name in family}
-    # An installed skill is explicitly requested by its public name, or by asking about skills.
-    lowered = text.lower()
-    selected.update(name for name in names if name.startswith("skill_") and (name[6:].replace("_", " ") in lowered or "skill" in lowered))
-    return [tool for tool in tools if tool.name in selected]
+    chosen = select_capabilities((tool.name for tool in tools), text, skills)
+    return [tool for tool in tools if tool.name in chosen]
 
 
 class _LocalPerformanceRecorder(BaseCallbackHandler):
@@ -373,6 +354,7 @@ class Aura:
         toolbox: Toolbox | None = None,
         primary: bool = True,
         role: str | None = None,
+        publish_capabilities: bool = False,
     ):
         """`primary`: the Mac panel's Aura. Another (Slack chat, remote.py) shares the toolbox and
         model but keeps its own conversation, and leaves the reload hooks and the live-message
@@ -434,7 +416,11 @@ class Aura:
         # own card, in every turn. A query the card can't show exactly (hidden characters) gets no
         # card: the tool refuses it and nothing is sent (tools/egress.py).
         egress = InterruptOnConfig(allowed_decisions=["approve", "reject"], description=describe,
-                                   when=lambda request: visible(request.tool_call["args"].get("query")))  # fmt: skip
+                                   when=lambda request: visible(request.tool_call["args"].get(GATED[request.tool_call["name"]])))  # fmt: skip
+        # Every gated tool's card, from the Capability Registry (src/aura/capabilities.py).
+        interrupt_on = {**{name: editable if name in EDITABLE else approval for name in NEEDS_APPROVAL},
+                        **dict.fromkeys(GATED, egress)}  # fmt: skip
+        self._interrupt_on = interrupt_on  # which tools wait for a card (tests check it against the Registry)
         # Conversation memory (and paused approvals): checkpointed per thread_id in SQLite, so it
         # survives agent rebuilds (deploying a skill) and restarts of the server.
         self._checkpointer = self.toolbox.checkpointer()
@@ -469,21 +455,21 @@ class Aura:
                     self._summarization,
                     ToolCallLimitMiddleware(run_limit=TOOL_CALLS_PER_TURN),
                     ToolStatusMiddleware(self.toolbox.masker, self._circuit_breaker, self.toolbox.audit),
+                    # Which schemas the model sees this turn. Inside the status line and circuit breaker,
+                    # so a refused call still counts towards the recursion halt, as before.
+                    self._selection,
                     RecursionMiddleware(),
-                    HumanInTheLoopMiddleware(interrupt_on={
-                        **{name: editable if name in EDITABLE else approval for name in NEEDS_APPROVAL},
-                        "web_search": egress}),
+                    HumanInTheLoopMiddleware(interrupt_on=interrupt_on),
                 ],
                 checkpointer=self._checkpointer,
             )
 
         self._build = build
-        self._connected = self.toolbox.connections.signature()
-        initial_tools = self.toolbox.all_tools()
-        self._agent = build(initial_tools)
-        # A narrow set is only a model-context optimization. Keeping this evidence lets tests
-        # prove that an approval continuation restores the complete capability menu.
-        self._visible_tool_names = frozenset(tool.name for tool in initial_tools)
+        # The server and the terminal publish the Registry to the vault; tests and embeddings don't.
+        self.publish_capabilities = publish_capabilities
+        self._selection = CapabilitySelection()  # shared by every rebuild of the agent
+        self._finder = finder_tool(self._families, self._load)
+        self.reload_tools()
         if primary:
             self.toolbox.workshop.on_deployed = self.reload_tools
             self.toolbox.continuous.on_change = self.reload_tools  # the server wraps this in its turn lock
@@ -497,17 +483,58 @@ class Aura:
             self.new_conversation()
 
     def reload_tools(self) -> None:
-        """Rebuild the agent with the current tools (e.g. a newly deployed skill). Memory is kept."""
-        self._connected = self.toolbox.connections.signature()
-        tools = self.toolbox.all_tools()
-        self._agent = self._build(tools)
-        self._visible_tool_names = frozenset(tool.name for tool in tools)
+        """Rebuild the agent with the current tools (e.g. a newly deployed skill), every schema
+        visible (as after an approval). Memory is kept."""
+        self._install_tools(self.toolbox.all_tools())
+        self._selection.visible = None
+
+    def _install_tools(self, tools: list) -> None:
+        """Build the agent around `tools` (plus find_capabilities) and publish the Registry."""
+        self._tools = [*tools, self._finder]
+        self._tool_signature = self._signature(tools)
+        self._agent = self._build(self._tools)
+        if self.publish_capabilities:  # the vault's read-only Capabilities.md (only if it changed)
+            try:
+                self.toolbox.vault.write_generated(RENDERED, render_capabilities((t.name for t in self._tools),
+                                                                                 self.toolbox.skill_rows))  # fmt: skip
+            except (OSError, VaultError) as e:  # a note for reading: it never blocks a turn or an approval
+                self.toolbox.audit.record("capabilities_not_published", error=f"{type(e).__name__}: {e}")
+
+    def _signature(self, tools: list) -> tuple:
+        """What the agent was built from: tool names, connections, and each loaded skill's digest."""
+        return (tuple(t.name for t in tools), self.toolbox.connections.signature(), self.toolbox.skill_state)
+
+    @property
+    def _visible_tool_names(self) -> frozenset[str]:
+        """What the model is shown now. A narrow set is only a model-context optimization; tests
+        use this to prove an approval continuation restores the complete menu."""
+        visible = self._selection.visible
+        return visible if visible is not None else frozenset(t.name for t in self._tools)
 
     def _select_turn_tools(self, text: str, developer: str | None = None) -> None:
-        """Rebuild only the model-visible schemas for this new turn; durable state is shared."""
-        tools = relevant_turn_tools(self.toolbox.all_tools(), text, developer)
-        self._agent = self._build(tools)
-        self._visible_tool_names = frozenset(tool.name for tool in tools)
+        """Refresh the registered tools (rebuilding the agent only if they changed: a skill
+        deployed, edited or flagged, an account connected), then show the model only those this
+        turn's request needs."""
+        tools = self.toolbox.all_tools()
+        if self._signature(tools) != self._tool_signature:
+            self._install_tools(tools)
+        shown = {tool.name for tool in relevant_turn_tools(self._tools, text, developer, self.toolbox.skill_rows)}
+        if developer is None:  # always within reach, so no request is left with no tools at all
+            shown.add(FINDER)
+        self._selection.visible = frozenset(shown)
+
+    def _families(self) -> dict[str, list[str]]:
+        """Each family's registered tool names right now (find_capabilities lists and loads these)."""
+        known = capability_rows(self.toolbox.skill_rows)
+        families: dict[str, list[str]] = {}
+        for tool in self._tools:
+            if (row := known.get(tool.name)) is not None:
+                families.setdefault(row.family, []).append(tool.name)
+        return families
+
+    def _load(self, names: list[str]) -> None:
+        if self._selection.visible is not None:  # the full menu needs nothing loaded
+            self._selection.visible = self._selection.visible | set(names)
 
     def select_model(self, choice: ModelChoice) -> None:
         """Switch model roles only between turns, preserving the durable conversation state."""
@@ -708,8 +735,6 @@ class Aura:
         self.turn_id = turn_id
         self._circuit_breaker.reset()
         self._settle()  # the last turn was stopped mid-way: give its open tool calls a result
-        if self.toolbox.connections.signature() != self._connected:  # an account was connected or removed
-            self.reload_tools()
         self._turn_notices: set[str] = set()  # each notice is said once per turn
         self._select_turn_tools(text, developer)
         if developer is not None:

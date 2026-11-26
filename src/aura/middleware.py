@@ -184,6 +184,36 @@ class RecursionMiddleware(AgentMiddleware):
         return None
 
 
+class CapabilitySelection(AgentMiddleware):
+    """Which tool schemas the model sees this turn (the Capability Registry's cues: capabilities.py).
+
+    Every permitted tool stays registered; this only narrows what each model call is shown, so a
+    local model's prompt stays small. A call to a tool not shown this turn is refused, as before.
+    It grants and removes no authority: floors, cards and egress grants apply inside each tool.
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.visible: frozenset[str] | None = None  # None: every registered tool
+
+    @staticmethod
+    def _name(tool: Any) -> str | None:
+        return tool.get("name") if isinstance(tool, dict) else getattr(tool, "name", None)
+
+    def wrap_model_call(self, request: Any, handler: Callable) -> Any:
+        if self.visible is not None:
+            request = request.override(tools=[t for t in request.tools if self._name(t) in self.visible])
+        return handler(request)
+
+    def wrap_tool_call(self, request: ToolCallRequest, handler: Callable) -> Any:
+        name = request.tool_call["name"]
+        if self.visible is not None and name not in self.visible:
+            shown = ", ".join(sorted(self.visible)) or "none"
+            return ToolMessage(f"Error: {name} isn't available in this turn. Tools available now: {shown}.",
+                               tool_call_id=request.tool_call["id"], name=name, status="error")  # fmt: skip
+        return handler(request)
+
+
 class ToolStatusMiddleware(AgentMiddleware):
     """Announce each tool as it actually runs (after any approval), and flag fallback search.
     Every result the model reads is masked (no credential reaches the model, the conversation

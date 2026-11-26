@@ -1699,7 +1699,7 @@ def main() -> None:
     settings = Settings.from_env()
     _log_to(settings.audit_log.parent / "server.log")
     try:
-        aura = Aura(settings)
+        aura = Aura(settings, publish_capabilities=True)  # keeps the vault's read-only Capabilities.md current
         vault_map.seed(aura.toolbox.vault)  # the Codex of Emergence, laid out once
     except OSError as e:
         sys.exit(f"aura-server: couldn't start: {e}")
