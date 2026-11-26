@@ -73,6 +73,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         menu = makeMenu()
         statusItem = StatusItemController(menu: menu) { [weak self] in self?.togglePanel() }
         workshop.onAlertsChanged = { [weak self] in self?.checkAlerts() }
+        workshop.onDeployed = { [weak self] in
+            // A deployed declarative HOL session has new approved metadata. Refresh only the
+            // existing overview; no polling, container action, or approval state is changed.
+            Task { await self?.hol.refresh() }
+        }
         store.onBuildStarted = { [weak self] _ in self?.checkAlerts() }
         feed.onMessages = { [weak self] in self?.messagesArrived($0) }
         notifier.onOpen = { [weak self] in self?.showPanel() }

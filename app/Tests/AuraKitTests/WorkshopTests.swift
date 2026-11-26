@@ -91,6 +91,23 @@ struct WorkshopStoreTests {
         #expect(store.tasks.first?.stage == "rejected")
     }
 
+    @Test func onlyASuccessfulApprovalSignalsOtherSurfacesToRefresh() async {
+        let fake = FakeWorkshop()
+        let store = WorkshopStore { fake }
+        var deployments = 0
+        store.onDeployed = { deployments += 1 }
+
+        await store.propose("pdf_text")
+        for _ in 0..<10_000 where store.selected == nil { await Task.yield() }
+        await store.decide(approve: false)
+        #expect(deployments == 0)
+
+        await store.propose("pdf_text")
+        for _ in 0..<10_000 where store.selected == nil { await Task.yield() }
+        await store.decide(approve: true)
+        #expect(deployments == 1)
+    }
+
     @Test func cancellingAnAuditCallsTheServer() async {
         let fake = FakeWorkshop()
         fake.running = true

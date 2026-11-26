@@ -356,6 +356,9 @@ public final class WorkshopStore {
     }
     /// Called after anything that can change alerts (so the menu bar updates at once).
     @ObservationIgnored public var onAlertsChanged: () -> Void = {}
+    /// A successful explicit deployment may make another open surface's approved-skill view stale.
+    /// The receiver chooses the narrow refresh; Workshop never owns or mutates that other state.
+    @ObservationIgnored public var onDeployed: () -> Void = {}
 
     public var alerts: [SkillAlert] { status?.alerts ?? [] }
 
@@ -548,8 +551,9 @@ public final class WorkshopStore {
     public func decide(approve: Bool) async {
         guard let t = transport(), let id = selected?.id else { return }
         do {
-            _ = try await t.decide(id, approve: approve)
+            let decided = try await t.decide(id, approve: approve)
             await refresh()
+            if approve && decided.stage == "deployed" { onDeployed() }
             // A completed deployment/rejection is deliberately removed from the action queue.
             selectedTaskID = nil
             selected = nil
