@@ -104,6 +104,24 @@ struct SnapshotTests {
         #expect(light.height > 900)  // heading, list, table and code all laid out as blocks
     }
 
+    @Test func richBubbleRendersChartAndExternalApprovalCard() throws {
+        let rich = """
+        ## Weekly activity
+
+        ```chart
+        Day,Messages
+        Mon,12
+        Tue,19
+        Wed,7
+        ```
+
+        Watch the [walkthrough](https://video.example.com/demo.mp4) when you choose to allow it.
+        Legacy documentation is at http://docs.example.com/archive.
+        """
+        let size = try render("36-rich-bubble", ChatStore(items: [item(.aura, rich)]), dark: true)
+        #expect(size.height > 500)  // chart plus HTTPS and HTTP approval cards render
+    }
+
     @Test func thinkingAndWaking() throws {
         try render("4-thinking", ChatStore(items: [item(.user, "Summarise my notes.txt")], phase: .thinking))
         try render("5-waking", ChatStore(items: [item(.user, "Good morning, Aura")], phase: .waking))

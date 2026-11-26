@@ -560,7 +560,7 @@ struct AuraMessage: View {
         HStack(alignment: .bottom, spacing: 6) {
             HStack(alignment: .top, spacing: 10) {
                 AvatarView(image: avatar, size: ChatAppearance.avatarSize(avatarSize))
-                MarkdownView(item.text)
+                MarkdownView(item.text, vaultRoot: store.health?.vault)
                     .foregroundStyle(bubbles.auraText)
                     .tint(bubbles.auraText)  // links: underlined, in the bubble's text color
                     .padding(.horizontal, ChatAppearance.textPadding(textPadding))
