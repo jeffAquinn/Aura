@@ -37,6 +37,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from aura.brain import Aura, Changed, Event, StaleApproval, Status, Text
+from aura.citations import verify_citations, warning as citation_warning
 from aura.agents import AgentError
 from aura.lifecycle import Lifecycle, Turn
 from aura.masking import PATTERNS_ONLY, Masker
@@ -491,7 +492,7 @@ KEEPALIVE = 20.0  # seconds: a comment line while a long tool works (the app giv
 def stream_turn(
     events: Iterator[Event], lifecycle: Lifecycle, turn: Turn, keeper: Keeper, check_cold: bool,
     masker: Masker = PATTERNS_ONLY, selected_model: ModelChoice | None = None,
-    cloud_availability: CloudModelAvailability | None = None,
+    cloud_availability: CloudModelAvailability | None = None, vault_root: Path | None = None,
 ) -> StreamingResponse:
     """Stream a turn's events as SSE. The turn ends (and its lock is released) exactly once: when
     the run ends, when it is stopped (POST /v1/stop: a `stopped` event, then `done`), or when the
@@ -501,6 +502,7 @@ def stream_turn(
     async def body() -> AsyncIterator[str]:
         pending: asyncio.Future | None = None
         state, error = None, None
+        reply: list[str] = []
         texts = masker.stream()  # a secret split across two chunks is still caught
         try:
             if selected_model is not None:
@@ -525,18 +527,23 @@ def stream_turn(
                     if isinstance(ev, Text):
                         turn.chars += len(ev.text)
                         if safe := texts.feed(ev.text):
+                            reply.append(safe)
                             yield sse("text", {"text": safe})
                         continue
                     if rest := texts.flush():
+                        reply.append(rest)
                         yield sse("text", {"text": rest})
                     if isinstance(ev, Status):
                         turn.tools += 1
                     yield encode(ev)
                 if rest := texts.flush():
+                    reply.append(rest)
                     yield sse("text", {"text": rest})
                 if turn.cancelled:
                     state = "stopped"
                     yield sse("stopped", {"turn_id": turn.id, "tools": turn.tools, "partial": bool(turn.tools or turn.chars)})
+                elif vault_root is not None and (findings := verify_citations("".join(reply), vault_root)):
+                    yield sse("text", {"text": citation_warning(findings)})
             except openai.APIConnectionError:
                 state, error = "failed", "the language model was unreachable"
                 yield sse("error", {"message": "Aura can't reach its language model. Make sure Ollama is running, then try again."})
@@ -921,7 +928,7 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
             return _error(409, str(e))
         return stream_turn(events, lifecycle, t, keeper, check_cold=True, masker=masker,
                            selected_model=chosen if body.model is None else None,
-                           cloud_availability=cloud_availability)
+                           cloud_availability=cloud_availability, vault_root=aura.settings.vault_dir)
 
     @app.post("/v1/approvals")
     def approvals(body: ApprovalsIn) -> Response:
@@ -941,7 +948,8 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
         except ValueError as e:  # wrong number of decisions; the approval stays pending
             lifecycle.end(t, "refused", str(e))
             return _error(422, str(e))
-        return stream_turn(events, lifecycle, t, keeper, check_cold=False, masker=masker)
+        return stream_turn(events, lifecycle, t, keeper, check_cold=False, masker=masker,
+                           vault_root=aura.settings.vault_dir)
 
     @app.post("/v1/stop")
     def stop(body: StopIn) -> dict:

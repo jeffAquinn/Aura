@@ -185,6 +185,14 @@ def test_a_cold_model_announces_waking(settings):
     assert kinds(events(post(client, "/v1/chat", {"text": "Hi"}))) == ["model", "thinking", "waking", "text", "done"]
 
 
+def test_stream_turn_appends_a_warning_for_an_unverified_knowledge_citation(settings):
+    client, _, _ = server(settings, AIMessage("Claim. [Source: Knowledge/missing.md]"))
+    reply = said(events(post(client, "/v1/chat", {"text": "Hi"})))
+
+    assert "Claim. [Source: Knowledge/missing.md]" in reply
+    assert "Local citation check: 1 citation could not be verified" in reply
+
+
 def test_tool_status_then_approval_then_continuation(settings):
     client, aura, _ = server(
         settings, tool_turn(call("create_folder", path="Project Aura")), AIMessage("Created it.")
