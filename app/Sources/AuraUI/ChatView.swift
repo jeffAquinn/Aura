@@ -778,12 +778,12 @@ struct InputBar: View {
             // Keep the controls visually centered in their own left-hand lane whether it holds
             // Aura's two selectors or one chosen Developer.
             .frame(width: store.developer == nil ? 146 : 86, alignment: .center)
-            .frame(maxHeight: .infinity)
 
             Rectangle()
                 .fill(bubbles.userBorder.opacity(0.5))
-                .frame(width: 1)
-                .padding(.vertical, 5)
+                // A bare Rectangle is vertically flexible; constraining it keeps the composer
+                // to the field's natural one-line height until the user adds more text.
+                .frame(width: 1, height: 26)
                 .padding(.horizontal, 5)
                 .accessibilityHidden(true)
 
@@ -795,7 +795,7 @@ struct InputBar: View {
                 // the person's own Writing Tools settings; draft text is never sent anywhere
                 // until they press Send.
                 .autocorrectionDisabled(false)
-                .lineLimit(1...8)
+                .lineLimit(1...15)
                 .focused($focused)
                 .onSubmit(send)
                 .disabled(store.transport == nil || store.phase == .awaitingApproval)
