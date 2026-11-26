@@ -31,27 +31,32 @@ public struct HOLEngine: Codable, Sendable, Equatable, Identifiable {
 }
 
 public struct HOLOverview: Codable, Sendable, Equatable {
+    /// Opaque server validator binding the sessions and allowed model catalog in this response.
+    public let snapshot: String
     public let vaultProject: String
     public let sessions: [HOLSession]
     public let savepoints: [HOLSavepoint]
     public let defaults: HOLDefaults
+    public let catalog: ModelCatalog
     public let notice: String
     public let developers: [HOLEngine]
 
-    public init(vaultProject: String, sessions: [HOLSession], savepoints: [HOLSavepoint], defaults: HOLDefaults,
-                notice: String, developers: [HOLEngine] = []) {
+    public init(snapshot: String, vaultProject: String, sessions: [HOLSession], savepoints: [HOLSavepoint], defaults: HOLDefaults,
+                catalog: ModelCatalog, notice: String, developers: [HOLEngine] = []) {
+        self.snapshot = snapshot
         self.vaultProject = vaultProject; self.sessions = sessions; self.savepoints = savepoints
-        self.defaults = defaults; self.notice = notice; self.developers = developers
+        self.defaults = defaults; self.catalog = catalog; self.notice = notice; self.developers = developers
     }
 }
 
 public struct HOLStart: Encodable, Sendable {
+    public let snapshot: String
     public let model: ModelChoice
     public let effort: String?
     public let engine: String?
 
-    public init(model: ModelChoice, effort: String?, engine: String? = nil) {
-        self.model = model; self.effort = effort; self.engine = engine
+    public init(snapshot: String, model: ModelChoice, effort: String?, engine: String? = nil) {
+        self.snapshot = snapshot; self.model = model; self.effort = effort; self.engine = engine
     }
 }
 
@@ -130,44 +135,33 @@ public final class HOLStore {
         refreshGeneration &+= 1
         let generation = refreshGeneration
         coherence = .refreshing
-        async let nextOverview = transport.hol()
-        async let nextCatalog = transport.models()
-        var overview: HOLOverview?
-        var catalog: ModelCatalog?
-        var failure: Error?
-
         do {
-            overview = try await nextOverview
-        } catch { failure = error }
-
-        do {
-            catalog = try await nextCatalog
-        } catch {
-            if failure == nil { failure = error }
-        }
-
-        guard generation == refreshGeneration else { return }
-        if let overview {
+            let overview = try await transport.hol()
+            guard generation == refreshGeneration else { return }
             self.overview = overview
+            self.catalog = overview.catalog
             if selectedModel.model.isEmpty { selectedModel = overview.defaults.model }
             if let saved = overview.defaults.effort { effort = saved }
+            coherence = .complete
+            lastError = nil
+        } catch {
+            guard generation == refreshGeneration else { return }
+            // Do not present model choices from an older snapshot as if they supported a new one.
+            catalog = nil
+            coherence = .unavailable
+            lastError = FriendlyMessage.describe(error)
         }
-        // Do not present model options from a previous generation as if they supported this one.
-        self.catalog = catalog
-        switch (overview, catalog) {
-        case (.some, .some): coherence = .complete
-        case (.none, .none): coherence = .unavailable
-        default: coherence = .degraded
-        }
-        lastError = failure.map(FriendlyMessage.describe)
     }
 
     public func start(_ session: HOLSession) async {
-        guard let transport = transport() else { return }
+        guard let transport = transport(), let overview, coherence == .complete else {
+            lastError = "Refresh HOL before preparing a session."
+            return
+        }
         busy = true
         defer { busy = false }
         do {
-            let run = try await transport.startHOL(session.name, request: HOLStart(model: selectedModel, effort: effort,
+            let run = try await transport.startHOL(session.name, request: HOLStart(snapshot: overview.snapshot, model: selectedModel, effort: effort,
                                                                                     engine: selectedEngine))
             terminal = run.terminal
             activeEngine = run.engine
@@ -175,7 +169,19 @@ public final class HOLStore {
             appendOutput(run.output + run.terminal.output)
             startPolling()
             lastError = nil
-        } catch { lastError = FriendlyMessage.describe(error) }
+        } catch {
+            // The server rejected an availability validator. Refresh once so the user can make a
+            // new explicit choice; never repeat the start request on their behalf.
+            if case let AuraClientError.http(status: 409, message) = error,
+               message.localizedCaseInsensitiveContains("HOL availability changed") {
+                await refresh()
+                if coherence == .complete {
+                    lastError = "HOL availability changed. Review the refreshed session and model choices, then prepare it again."
+                }
+            } else {
+                lastError = FriendlyMessage.describe(error)
+            }
+        }
     }
 
     public func savepoint() async {

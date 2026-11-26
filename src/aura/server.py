@@ -11,6 +11,7 @@ exits when stdin closes, i.e. when the app quits or crashes. Manual runs: set AU
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import hmac
 import json
 import logging
@@ -714,6 +715,9 @@ class BuildIn(BaseModel):
 
 
 class HolStartIn(BaseModel):
+    # Opaque validator issued by GET /v1/hol. Starting against an older availability view is
+    # rejected instead of silently combining an old model choice with a new approved session.
+    snapshot: str = Field(min_length=64, max_length=64)
     model: ModelChoiceIn | None = None
     effort: Literal["none", "low", "medium", "high"] | None = None
     engine: Literal["claude", "codex"] | None = None
@@ -1111,21 +1115,55 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
     hol_agent = HolAgent(aura.toolbox.developer, aura.toolbox.vault, aura.toolbox.audit,
                          masker=aura.toolbox.masker)
 
+    def hol_snapshot() -> dict[str, Any]:
+        """One server-issued HOL availability representation, including its allowed model choices."""
+        hol.ensure_builtin_candidate()
+        overview = hol.public(model=routing.choice("chat").public(), effort=aura.settings.reasoning_effort)
+        catalog = models()
+        # A saved role choice remains explicitly selectable in HOL even when discovery is
+        # temporarily unavailable. It is part of this snapshot and will be revalidated on start.
+        for choice in catalog["roles"].values():
+            names = catalog["anthropic_models"] if choice["provider"] == "anthropic" else catalog["ollama_models"]
+            if choice["model"] not in names:
+                names.append(choice["model"])
+        overview["catalog"] = catalog
+        overview["developers"] = hol_agent.engines()
+        # The validator protects only inputs that can change the validity of a session start.
+        # Savepoints, the Vault path, notices, and Developer display/check metadata are deliberately
+        # excluded so a harmless status change does not invalidate the user's explicit choice.
+        # A connected Developer engine is an executable choice, however, so bind its name and
+        # ready state without coupling the validator to its presentation or diagnostic detail.
+        engine_readiness = [
+            {"name": engine["name"], "ready": engine["problem"] is None}
+            for engine in overview["developers"]
+        ]
+        start_binding = {key: overview[key] for key in ("sessions", "defaults", "catalog")}
+        start_binding["engines"] = engine_readiness
+        encoded = json.dumps(start_binding, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        overview["snapshot"] = hashlib.sha256(encoded).hexdigest()
+        return overview
+
     def hol_choice(body: HolStartIn) -> tuple[dict[str, str], str | None]:
-        default = routing.choice("chat")
+        current = hol_snapshot()
+        if not hmac.compare_digest(body.snapshot, current["snapshot"]):
+            raise HolError("HOL availability changed. Refresh the HOL Terminal before starting this session.")
+        default = current["defaults"]["model"]
         chosen = (ModelChoice(body.model.provider, body.model.model).validate()
-                  if body.model is not None else default)
+                  if body.model is not None else ModelChoice(default["provider"], default["model"]))
+        allowed = (current["catalog"]["anthropic_models"] if chosen.provider == "anthropic"
+                   else current["catalog"]["ollama_models"])
+        if chosen.model not in allowed:
+            raise HolError("That model is not available in this HOL snapshot. Refresh the HOL Terminal to choose again.")
+        if body.engine is not None:
+            ready_engines = {engine["name"] for engine in current["developers"] if engine["problem"] is None}
+            if body.engine not in ready_engines:
+                raise HolError("That connected coding model is not ready in this HOL snapshot. Refresh the HOL Terminal to choose again.")
         return chosen.public(), body.effort if body.effort is not None else aura.settings.reasoning_effort
 
     @app.get("/v1/hol")
     def hol_overview() -> Response:
         try:
-            # Opening HOL offers its standard session to the Vault Inbox. It remains non-runnable
-            # until the user has reviewed and deployed it through Workshop.
-            hol.ensure_builtin_candidate()
-            overview = hol.public(model=routing.choice("chat").public(), effort=aura.settings.reasoning_effort)
-            overview["developers"] = hol_agent.engines()
-            return JSONResponse(overview)
+            return JSONResponse(hol_snapshot())
         except HolError as e:
             return _error(409, str(e))
 

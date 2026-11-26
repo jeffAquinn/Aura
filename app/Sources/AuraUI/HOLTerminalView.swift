@@ -112,7 +112,7 @@ public struct HOLTerminalView: View {
                     if let session = session {
                         Text(session.purpose).font(.caption).foregroundStyle(.secondary)
                         Button("Prepare Session") { Task { await store.start(session) } }
-                            .disabled(store.busy || selectedEngineProblem != nil)
+                            .disabled(store.busy || store.coherence != .complete || selectedEngineProblem != nil)
                     }
                     Button("Create a session in Workshop…", action: openWorkshop)
                         .font(.caption)

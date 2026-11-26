@@ -355,14 +355,15 @@ struct SnapshotTests {
 
     @Test func holPreflightMakesTheContainerBoundaryAndInputStateVisible() throws {
         let approved = HOLOverview(
+            snapshot: String(repeating: "a", count: 64),
             vaultProject: "/Users/example/Aura_Vault/Aura",
             sessions: [HOLSession(name: "aura_session_review", purpose: "Review Aura changes.", runner: "codex", prompt: "")],
             savepoints: [], defaults: HOLDefaults(model: ModelChoice(provider: "ollama", model: "qwen"), effort: "medium"),
-            notice: "Approved sessions only.")
+            catalog: ModelCatalog(roles: [:], roleLabels: [:], ollamaModels: ["qwen"], anthropicModels: [], anthropicKeySet: false, codingEngine: "claude", sleepMode: SleepMode(model: ""), startupModelProblem: nil), notice: "Approved sessions only.")
         let terminal = HOLTerminalState(id: "abc123", running: true, output: [], next: 0)
 
         #expect(HOLTerminalReadiness(overview: nil, terminal: nil, busy: false).badge == "CONNECTING")
-        #expect(HOLTerminalReadiness(overview: HOLOverview(vaultProject: "", sessions: [], savepoints: [], defaults: approved.defaults, notice: ""), terminal: nil, busy: false).badge == "BLOCKED")
+        #expect(HOLTerminalReadiness(overview: HOLOverview(snapshot: String(repeating: "b", count: 64), vaultProject: "", sessions: [], savepoints: [], defaults: approved.defaults, catalog: approved.catalog, notice: ""), terminal: nil, busy: false).badge == "BLOCKED")
         #expect(HOLTerminalReadiness(overview: approved, terminal: nil, busy: false).badge == "STANDBY")
         let active = HOLTerminalReadiness(overview: approved, terminal: terminal, busy: false)
         #expect(active.badge == "INPUT READY" && active.terminalID == "abc123")

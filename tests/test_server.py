@@ -41,6 +41,69 @@ def server(settings, *script, loaded: bool | None = True):
     return client, aura, keeper
 
 
+def test_hol_start_requires_a_current_snapshot_and_an_advertised_model(settings):
+    """The server, not the native client, binds a HOL start to one availability snapshot."""
+    settings.project_sandbox_dir.mkdir(parents=True)
+    client, _, _ = server(settings)
+    overview = client.get("/v1/hol", headers=AUTH)
+    assert overview.status_code == 200
+    current = overview.json()
+    assert len(current["snapshot"]) == 64 and "catalog" in current
+
+    changed_roles = dict(current["catalog"]["roles"])
+    changed_roles["chat"] = {"provider": "ollama", "model": "new-hol-choice:latest"}
+    assert client.put("/v1/models", json={"roles": changed_roles}, headers=AUTH).status_code == 200
+
+    stale = post(client, "/v1/hol/aura_session_review/start", {
+        "snapshot": current["snapshot"],
+        "model": current["defaults"]["model"],
+    })
+    assert stale.status_code == 409 and "Refresh the HOL Terminal" in stale.json()["error"]
+
+    current = client.get("/v1/hol", headers=AUTH).json()
+
+    unavailable = post(client, "/v1/hol/aura_session_review/start", {
+        "snapshot": current["snapshot"],
+        "model": {"provider": "ollama", "model": "not-in-this-snapshot:latest"},
+    })
+    assert unavailable.status_code == 409 and "not available in this HOL snapshot" in unavailable.json()["error"]
+
+    allowed = post(client, "/v1/hol/aura_session_review/start", {
+        "snapshot": current["snapshot"],
+        "model": current["defaults"]["model"],
+    })
+    assert allowed.status_code == 409 and "not approved" in allowed.json()["error"]
+
+
+def test_hol_snapshot_ignores_non_start_metadata(settings):
+    settings.project_sandbox_dir.mkdir(parents=True)
+    client, _, _ = server(settings)
+    before = client.get("/v1/hol", headers=AUTH).json()["snapshot"]
+
+    saved = post(client, "/v1/hol/savepoints", {"label": "Unrelated display metadata"})
+    assert saved.status_code == 201
+
+    assert client.get("/v1/hol", headers=AUTH).json()["snapshot"] == before
+
+
+def test_hol_snapshot_binds_connected_engine_readiness(settings, monkeypatch):
+    settings.project_sandbox_dir.mkdir(parents=True)
+    client, aura, _ = server(settings)
+    current = client.get("/v1/hol", headers=AUTH).json()
+    changed_engines = [dict(engine) for engine in current["developers"]]
+    assert changed_engines
+    changed_engines[0]["problem"] = ("Connection is unavailable."
+                                     if changed_engines[0]["problem"] is None else None)
+    monkeypatch.setattr(aura.toolbox.developer, "engines_status", lambda: changed_engines)
+
+    stale = post(client, "/v1/hol/aura_session_review/start", {
+        "snapshot": current["snapshot"],
+        "model": current["defaults"]["model"],
+        "engine": changed_engines[0]["name"],
+    })
+    assert stale.status_code == 409 and "HOL availability changed" in stale.json()["error"]
+
+
 def post(client: TestClient, path: str, body: dict | None = None, **headers: str) -> httpx.Response:
     return client.post(path, json=body if body is not None else {}, headers={**AUTH, **headers})
 
