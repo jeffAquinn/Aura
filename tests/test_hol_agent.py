@@ -21,10 +21,15 @@ class EngineStub(Engine):
 
 
 class ContainerStub:
+    def __init__(self):
+        self.calls = 0
+
     def problem(self): return None
 
     def run(self, engine, workspace, run_dir, prompt, budget, timeout, on_event, stop):
-        (workspace / "answer.txt").write_text("changed by the isolated assistant")
+        self.calls += 1
+        answer = "changed by the isolated assistant" if self.calls == 1 else "second isolated edit"
+        (workspace / "answer.txt").write_text(answer)
         return RunOutcome(exit_code=0, ok=True, result="Updated answer.txt")
 
 
@@ -57,4 +62,26 @@ def test_hol_agent_never_writes_until_each_change_is_allowed(settings):
     decided = agent.decide("terminal", [True])
     assert "Updated 'Aura/answer.txt'" in decided["output"]
     assert (project / "answer.txt").read_text() == "changed by the isolated assistant"
+    agent.stop("terminal")
+
+
+def test_hol_agent_rejects_a_change_when_the_vault_file_was_removed_between_turns(settings):
+    project = settings.vault_dir / "Aura"
+    project.mkdir(parents=True)
+    (project / "answer.txt").write_text("original")
+    audit = AuditLog(settings.audit_log)
+    agent = HolAgent(DeveloperStub(settings), Vault(settings.vault_dir, audit), audit)
+
+    agent.start("terminal", "review", "Make the requested scoped change.", "codex", project)
+    agent.send("terminal", "Change answer.txt.")
+    agent.decide("terminal", [True])
+    (project / "answer.txt").unlink()  # A user or another local process changes the Vault after re-sync.
+
+    result = agent.send("terminal", "Change answer.txt again.")
+    assert result["changes"]
+    decided = agent.decide("terminal", [True])
+
+    assert "Not applied: change 'Aura/answer.txt'" in decided["output"][0]
+    assert "the vault's copy changed after the task started" in decided["output"][0]
+    assert not (project / "answer.txt").exists()
     agent.stop("terminal")

@@ -530,6 +530,12 @@ struct ItemView: View {
 struct HOLTranscriptCard: View {
     let text: String
     @Environment(\.chatText) private var chat
+    @AppStorage(ChatAppearance.holBubbleKey) private var holBubble = ChatAppearance.defaultAura
+    @AppStorage(ChatAppearance.holTextKey) private var holText = ""
+    @AppStorage(ChatAppearance.holBubbleTransparencyKey) private var holBubbleTransparency = 0.0
+    @AppStorage(ChatAppearance.holTextTransparencyKey) private var holTextTransparency = 0.0
+    @AppStorage(ChatAppearance.holBubbleBorderKey) private var holBubbleBorder = ""
+    @AppStorage(ChatAppearance.holBubbleBorderTransparencyKey) private var holBubbleBorderTransparency = 1.0
 
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
@@ -538,16 +544,24 @@ struct HOLTranscriptCard: View {
                 .foregroundStyle(.secondary)
             Text(text)
                 .font(chat.code(0.84))
+                .foregroundStyle(colors.auraText)
                 .textSelection(.enabled)
                 .lineSpacing(3)
                 .fixedSize(horizontal: false, vertical: true)
         }
         .padding(12)
-        .background(Color.accentColor.opacity(0.09), in: .rect(cornerRadius: 12))
-        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Color.accentColor.opacity(0.28), lineWidth: 1))
+        .background(colors.auraBackground, in: .rect(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(colors.auraBorder, lineWidth: 1))
         .padding(.leading, 32)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Human Out of Loop session output: \(text)")
+    }
+
+    private var colors: BubbleColors {
+        ChatAppearance.bubbles(user: "", aura: holBubble, userText: "", auraText: holText,
+                               bubbleTransparency: holBubbleTransparency, textTransparency: holTextTransparency,
+                               userBorder: "", auraBorder: holBubbleBorder,
+                               auraBubbleBorderTransparency: holBubbleBorderTransparency)
     }
 }
 

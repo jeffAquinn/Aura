@@ -487,18 +487,24 @@ struct ChatAppearanceSettings: View {
     @AppStorage(ChatAppearance.styleKey) private var fontStyle = ChatFontStyle.system.rawValue
     @AppStorage(ChatAppearance.userBubbleKey) private var userBubble = ""
     @AppStorage(ChatAppearance.auraBubbleKey) private var auraBubble = ChatAppearance.defaultAura
+    @AppStorage(ChatAppearance.holBubbleKey) private var holBubble = ChatAppearance.defaultAura
     @AppStorage(ChatAppearance.userTextKey) private var userText = ""
     @AppStorage(ChatAppearance.auraTextKey) private var auraText = ""
+    @AppStorage(ChatAppearance.holTextKey) private var holText = ""
     @AppStorage(ChatAppearance.bubbleTransparencyKey) private var bubbleTransparency = 0.0
     @AppStorage(ChatAppearance.textTransparencyKey) private var textTransparency = 0.0
+    @AppStorage(ChatAppearance.holBubbleTransparencyKey) private var holBubbleTransparency = 0.0
+    @AppStorage(ChatAppearance.holTextTransparencyKey) private var holTextTransparency = 0.0
     @AppStorage(ChatAppearance.textPaddingKey) private var textPadding = ChatAppearance.defaultTextPadding
     @AppStorage(ChatAppearance.avatarSizeKey) private var avatarSize = "small"
     @AppStorage(ChatAppearance.userBubbleBorderKey) private var userBubbleBorder = ""
     @AppStorage(ChatAppearance.auraBubbleBorderKey) private var auraBubbleBorder = ""
+    @AppStorage(ChatAppearance.holBubbleBorderKey) private var holBubbleBorder = ""
     @AppStorage(ChatAppearance.userAvatarBorderKey) private var userAvatarBorder = ""
     @AppStorage(ChatAppearance.auraAvatarBorderKey) private var auraAvatarBorder = ""
     @AppStorage(ChatAppearance.userBubbleBorderTransparencyKey) private var userBubbleBorderTransparency = 1.0
     @AppStorage(ChatAppearance.auraBubbleBorderTransparencyKey) private var auraBubbleBorderTransparency = 1.0
+    @AppStorage(ChatAppearance.holBubbleBorderTransparencyKey) private var holBubbleBorderTransparency = 1.0
     @AppStorage(ChatAppearance.userAvatarBorderTransparencyKey) private var userAvatarBorderTransparency = 0.55
     @AppStorage(ChatAppearance.auraAvatarBorderTransparencyKey) private var auraAvatarBorderTransparency = 0.5
 
@@ -547,6 +553,14 @@ struct ChatAppearanceSettings: View {
         TransparencyRow(title: "Your bubble border transparency", value: $userBubbleBorderTransparency)
         BubbleColorRow(title: "Aura's bubble border", hex: $auraBubbleBorder)
         TransparencyRow(title: "Aura's bubble border transparency", value: $auraBubbleBorderTransparency)
+        Divider()
+        Text("HOL session bubble").font(.headline)
+        BubbleColorRow(title: "HOL session bubble", hex: $holBubble)
+        BubbleColorRow(title: "HOL session text color", hex: $holText)
+        TransparencyRow(title: "HOL session bubble transparency", value: $holBubbleTransparency)
+        TransparencyRow(title: "HOL session text transparency", value: $holTextTransparency)
+        BubbleColorRow(title: "HOL session bubble border", hex: $holBubbleBorder)
+        TransparencyRow(title: "HOL session bubble border transparency", value: $holBubbleBorderTransparency)
         BubbleColorRow(title: "Your avatar border", hex: $userAvatarBorder)
         TransparencyRow(title: "Your avatar border transparency", value: $userAvatarBorderTransparency)
         BubbleColorRow(title: "Aura's avatar border", hex: $auraAvatarBorder)
@@ -564,18 +578,24 @@ struct ChatAppearanceSettings: View {
                 fontStyle = ChatFontStyle.system.rawValue
                 userBubble = ""
                 auraBubble = ChatAppearance.defaultAura
+                holBubble = ChatAppearance.defaultAura
                 userText = ""
                 auraText = ""
+                holText = ""
                 bubbleTransparency = 0
                 textTransparency = 0
+                holBubbleTransparency = 0
+                holTextTransparency = 0
                 textPadding = ChatAppearance.defaultTextPadding
                 avatarSize = "small"
                 userBubbleBorder = ""
                 auraBubbleBorder = ""
+                holBubbleBorder = ""
                 userAvatarBorder = ""
                 auraAvatarBorder = ""
                 userBubbleBorderTransparency = 1
                 auraBubbleBorderTransparency = 1
+                holBubbleBorderTransparency = 1
                 userAvatarBorderTransparency = 0.55
                 auraAvatarBorderTransparency = 0.5
             }

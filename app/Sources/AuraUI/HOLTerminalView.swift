@@ -10,6 +10,13 @@ public struct HOLTerminalView: View {
     @State private var changeDecisions: [String: Bool] = [:]
     @State private var restoreOriginal = false
     @State private var restoreSavepoint: HOLSavepoint?
+    @AppStorage(ChatAppearance.holBubbleKey) private var holBubble = ChatAppearance.defaultAura
+    @AppStorage(ChatAppearance.holTextKey) private var holText = ""
+    @AppStorage(ChatAppearance.holBubbleTransparencyKey) private var holBubbleTransparency = 0.0
+    @AppStorage(ChatAppearance.holTextTransparencyKey) private var holTextTransparency = 0.0
+    @AppStorage(ChatAppearance.holBubbleBorderKey) private var holBubbleBorder = ""
+    @AppStorage(ChatAppearance.holBubbleBorderTransparencyKey) private var holBubbleBorderTransparency = 1.0
+    @AppStorage(ChatAppearance.textPaddingKey) private var textPadding = ChatAppearance.defaultTextPadding
 
     public init(store: HOLStore, openWorkshop: @escaping () -> Void) {
         self.store = store
@@ -148,13 +155,20 @@ public struct HOLTerminalView: View {
                     Text(readiness.emptyOutputMessage).foregroundStyle(.secondary)
                 } else {
                     ForEach(Array(store.output.enumerated()), id: \.offset) { _, line in
-                        Text(line).frame(maxWidth: .infinity, alignment: .leading)
+                        Text(line)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .textSelection(.enabled)
+                            .lineSpacing(3)
+                            .padding(.horizontal, ChatAppearance.textPadding(textPadding))
+                            .padding(.vertical, ChatAppearance.verticalTextPadding(textPadding))
+                            .foregroundStyle(holColors.auraText)
+                            .background(holColors.auraBackground, in: .rect(cornerRadius: 12))
+                            .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(holColors.auraBorder, lineWidth: 1))
                     }
                 }
                 if !store.pendingChanges.isEmpty { changes }
             }
             .font(.system(.body, design: .monospaced))
-            .foregroundStyle(.white.opacity(0.92))
             .padding()
         }
         .background(Color.black.opacity(0.88))
@@ -279,11 +293,21 @@ public struct HOLTerminalView: View {
 
     private var selectedEngineProblem: String? {
         guard let selected = store.selectedEngine else { return nil }
-        return store.overview?.developers.first { $0.name == selected }?.problem ?? "This connected coding model is unavailable."
+        guard let engine = store.overview?.developers.first(where: { $0.name == selected }) else {
+            return "This connected coding model is unavailable."
+        }
+        return engine.problem
     }
 
     private var readiness: HOLTerminalReadiness {
         HOLTerminalReadiness(overview: store.overview, terminal: store.terminal, busy: store.busy)
+    }
+
+    private var holColors: BubbleColors {
+        ChatAppearance.bubbles(user: "", aura: holBubble, userText: "", auraText: holText,
+                               bubbleTransparency: holBubbleTransparency, textTransparency: holTextTransparency,
+                               userBorder: "", auraBorder: holBubbleBorder,
+                               auraBubbleBorderTransparency: holBubbleBorderTransparency)
     }
 }
 
