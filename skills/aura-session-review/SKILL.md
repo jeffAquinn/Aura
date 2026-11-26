@@ -9,8 +9,8 @@ Use Aura as the product architect and adversarial reviewer. Claude Code remains 
 
 ## Start
 
-1. Launch the built app at `app/build/Aura.app` with computer use. If no current build exists, build it with `scripts/build-app.sh` first. If the computer-use tools are not available in this session, stop and tell the user; do not reach Aura another way (in particular, never send `/new` from a second `uv run aura` process: it deletes the app's saved conversation).
-2. Ask Aura for one bounded, high-value improvement. Require a dossier with intent, constraints, acceptance evidence, risks, and long-term implications. Aura must not modify the root project.
+1. Load the `anthropic-skills:computer-use` skill, then launch the built app at `app/build/Aura.app` with computer use (or `scripts/start-aura-session-review.sh`). If no current build exists, build it with `scripts/build-app.sh` first. If the computer-use tools are not available in this session (they come from the Claude desktop app), stop and tell the user; do not reach Aura another way (in particular, never send `/new` from a second `uv run aura` process: it deletes the app's saved conversation). Never use `screencapture`.
+2. Ask Aura for one bounded, high-value improvement. Require a dossier with intent, constraints, acceptance evidence, risks, and long-term implications. Aura must not modify the root project. Aura's file tools see `~/Documents/Aura_Vault/Aura`, which can be a stale copy of this repo, so paste the relevant current facts (file excerpts, recent commits) into the request instead of assuming Aura can read them.
 3. Read Aura's entire response. Reject or narrow suggestions that add authority, bypass the Security Governor, require ungranted external access, or are too broad for one review loop.
 
 ## Implement

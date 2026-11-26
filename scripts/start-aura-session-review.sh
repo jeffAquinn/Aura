@@ -14,5 +14,5 @@ if [ "${AURA_SESSION_REVIEW_DRY_RUN:-}" = "1" ]; then
     echo "Would launch: $app_path"
 else
     open "$app_path"
-    echo "Aura is launching. In your new Claude session, invoke: \$aura-session-review"
+    echo "Aura is launching. In your new Claude Code session, invoke: /aura-session-review"
 fi
