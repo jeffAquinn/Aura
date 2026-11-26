@@ -540,6 +540,10 @@ class ModelRoutingIn(BaseModel):
     roles: dict[str, ModelChoiceIn]
 
 
+class CodingEngineIn(BaseModel):
+    engine: Literal["claude", "codex"]
+
+
 class LocalModelPullIn(BaseModel):
     """A user-confirmed request to Ollama's local model manager."""
     model: str = Field(min_length=1, max_length=200)
@@ -790,6 +794,7 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
         app.state.last_active = time.monotonic()
         try:
             route_notice: str | None = None
+            developer = body.developer
             if body.model is not None:
                 if body.developer is not None:
                     raise ValueError("Choose either an Aura chat model or a Developer, not both.")
@@ -799,9 +804,15 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
                 aura.select_model(chosen)
             else:
                 role = infer_role(body.text, body.developer)
+                # A code request is delegated through the user's preferred Developer harness.
+                # Aura still uses the chat model only to formulate the approval-gated task; it
+                # never substitutes an Anthropic chat model for Claude Code or Codex.
+                model_role = "chat" if role == "coding" else role
+                if role == "coding" and developer is None:
+                    developer = routing.coding_engine()
                 chosen, route_notice = automatic_model_choice(
                     routing,
-                    role,
+                    model_role,
                     installed_for_automatic_routing(),
                     aura.toolbox.secrets.get("anthropic_api_key") is not None,
                     cloud_availability.unavailable_models(),
@@ -811,7 +822,7 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
                     # Preload only a model proven to exist locally.  It happens off the request
                     # thread so the app can still render the turn and offer Stop immediately.
                     ModelKeeper(aura.settings.base_url, chosen.model, aura.settings.model_keep_alive).warm_soon()
-            events = aura.stream(body.text, developer=body.developer, turn_id=t.id, cancel=t.cancel)
+            events = aura.stream(body.text, developer=developer, turn_id=t.id, cancel=t.cancel)
             if route_notice:
                 events = chain((Status(route_notice),), events)
         except (RuntimeError, ValueError) as e:  # an approval is pending, or a selected model is not ready
@@ -892,6 +903,7 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
         if aura.settings.model not in local:
             local.insert(0, aura.settings.model)
         return {"roles": routing.public(), "role_labels": {role: role.replace("_", " ") for role in ROLES},
+                "coding_engine": routing.coding_engine(),
                 "ollama_models": local, "anthropic_models": list(routing.anthropic_models()),
                 "anthropic_key_set": aura.toolbox.secrets.get("anthropic_api_key") is not None,
                 "sleep_mode": routing.sleep_mode().public(),
@@ -942,6 +954,14 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
         except ValueError as e:
             return _error(422, str(e))
         return models()
+
+    @app.put("/v1/models/coding-engine")
+    def update_coding_engine(body: CodingEngineIn) -> Response:
+        try:
+            routing.replace_coding_engine(body.engine)
+        except ValueError as e:
+            return _error(422, str(e))
+        return JSONResponse(models())
 
     @app.put("/v1/models/sleep")
     def update_sleep_mode(body: SleepModeIn) -> Response:
@@ -1003,7 +1023,7 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
                                masker=aura.toolbox.masker)
 
     def hol_choice(body: HolStartIn) -> tuple[dict[str, str], str | None]:
-        default = routing.choice("coding")
+        default = routing.choice("chat")
         chosen = (ModelChoice(body.model.provider, body.model.model).validate()
                   if body.model is not None else default)
         return chosen.public(), body.effort if body.effort is not None else aura.settings.reasoning_effort
@@ -1014,7 +1034,7 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
             # Opening HOL offers its standard session to the Vault Inbox. It remains non-runnable
             # until the user has reviewed and deployed it through Workshop.
             hol.ensure_builtin_candidate()
-            return JSONResponse(hol.public(model=routing.choice("coding").public(), effort=aura.settings.reasoning_effort))
+            return JSONResponse(hol.public(model=routing.choice("chat").public(), effort=aura.settings.reasoning_effort))
         except HolError as e:
             return _error(409, str(e))
 
@@ -1334,6 +1354,14 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
         return {"engines": developer.engines_status(), "builds": [b.public(workshop) for b in builds],
                 "budget_usd": developer.budget_usd, "repair_rounds": developer.repair_rounds,
                 "timeout_minutes": int(developer.timeout // 60), "recovery": developer.recovery()}  # fmt: skip
+
+    @app.post("/v1/developer/{engine}/check")
+    def check_developer(engine: str) -> Response:
+        """Explicit, no-write account check for Claude Code or Codex."""
+        try:
+            return JSONResponse(developer.check_connection(engine))
+        except DeveloperError as e:
+            return _error(409, str(e))
 
     @app.get("/v1/recovery")
     def recovery() -> dict:

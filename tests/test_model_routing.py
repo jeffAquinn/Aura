@@ -29,6 +29,7 @@ def choices(model: str = "qwen3:8b") -> dict[str, ModelChoice]:
 def test_routing_defaults_every_role_to_the_configured_local_model(settings):
     routing = ModelRouting(settings)
     assert routing.public() == {role: {"provider": "ollama", "model": settings.model} for role in ROLES}
+    assert routing.coding_engine() == "claude"
 
 
 def test_routing_persists_validated_role_choices(settings):
@@ -38,6 +39,13 @@ def test_routing_persists_validated_role_choices(settings):
     routing.replace(saved)
     assert ModelRouting(settings).choice("deep_research") == saved["deep_research"]
     assert (settings.data_dir / "model_routing.json").is_file()
+
+
+def test_routing_persists_the_account_backed_coding_engine_separately(settings):
+    routing = ModelRouting(settings)
+    routing.replace_coding_engine("codex")
+
+    assert ModelRouting(settings).coding_engine() == "codex"
 
 
 def test_sleep_mode_persists_separately_from_role_choices(settings):
@@ -170,6 +178,33 @@ def test_models_api_saves_all_roles_and_switches_before_a_turn(settings):
     body = {"roles": {role: {"provider": "ollama", "model": "qwen3:8b"} for role in ROLES}}
     updated = client.put("/v1/models", json=body, headers=AUTH)
     assert updated.status_code == 200 and updated.json()["roles"] == body["roles"]
+    reply = client.post("/v1/chat", json={"text": "Please refactor this code."}, headers=AUTH)
+    assert reply.status_code == 200
+    assert aura.active_model == ModelChoice("ollama", "qwen3:8b")
+
+
+def test_models_api_defaults_coding_to_claude_code_and_persists_a_codex_choice(settings):
+    aura, _ = make_aura(settings)
+    client = TestClient(create_app(aura, TOKEN, NoopKeeper()), base_url="http://127.0.0.1")
+
+    catalog = client.get("/v1/models", headers=AUTH)
+    assert catalog.status_code == 200 and catalog.json()["coding_engine"] == "claude"
+    updated = client.put("/v1/models/coding-engine", json={"engine": "codex"}, headers=AUTH)
+    assert updated.status_code == 200 and updated.json()["coding_engine"] == "codex"
+
+    restarted, _ = make_aura(settings)
+    reloaded = TestClient(create_app(restarted, TOKEN, NoopKeeper()), base_url="http://127.0.0.1")
+    assert reloaded.get("/v1/models", headers=AUTH).json()["coding_engine"] == "codex"
+
+
+def test_coding_requests_use_the_chat_model_for_planning_not_the_legacy_cloud_coding_model(settings):
+    aura, _ = make_aura(settings)
+    client = TestClient(create_app(aura, TOKEN, NoopKeeper()), base_url="http://127.0.0.1")
+    saved = choices("qwen3:8b")
+    saved["coding"] = ModelChoice("anthropic", "claude-fable-5-2")
+    assert client.put("/v1/models", json={"roles": {role: choice.public() for role, choice in saved.items()}}, headers=AUTH).status_code == 200
+
+    # The Developer may later be unavailable, but Auto must never select this stale cloud coding role.
     reply = client.post("/v1/chat", json={"text": "Please refactor this code."}, headers=AUTH)
     assert reply.status_code == 200
     assert aura.active_model == ModelChoice("ollama", "qwen3:8b")

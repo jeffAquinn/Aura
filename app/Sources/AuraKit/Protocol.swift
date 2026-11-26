@@ -304,6 +304,8 @@ public struct ModelCatalog: Codable, Sendable, Equatable {
     public let ollamaModels: [String]
     public let anthropicModels: [String]
     public let anthropicKeySet: Bool
+    /// Claude Code or Codex: the persisted account-backed coding harness, never a cloud chat model.
+    public let codingEngine: String
     public let sleepMode: SleepMode
     public let startupModelProblem: String?
 }

@@ -41,7 +41,9 @@ check_library reports a Python package's facts. The live registry snapshot suppl
 reply overrides conversation history: active means callable now, never auditing. Use the user's \
 real input; if it is missing, ask briefly rather than inventing a validation test.
 - The Developer: Claude Code (engine "claude", the default) or Codex (engine "codex", OpenAI's \
-coding agent), on the user's own plans. For work the user wants done in the vault by one of them \
+coding agent), on the user's own plans. Prefer these Developer engines for requests to implement, \
+debug, refactor, or test code and files; use Claude Code unless the user selected Codex or named it. \
+For work the user wants done in the vault by one of them \
 (writing or editing notes, scripts or other files, reorganizing folders), use ask_developer: it \
 works on a copy of one folder (default: the whole vault, which moving notes between parts needs) \
 and can't see this conversation, so write the task as complete instructions. The user approves \

@@ -825,14 +825,15 @@ struct InputBar: View {
 struct DeveloperPicker: View {
     let store: ChatStore
     static let symbol = "chevron.left.forwardslash.chevron.right"
+    private var engines: [EngineInfo] { store.developerInfo?.engines ?? EngineInfo.known }
 
     var body: some View {
         Menu {
             Picker("Send to", selection: Binding(get: { store.developer ?? "" },
                                                  set: { store.developer = $0.isEmpty ? nil : $0 })) {
                 Text(store.persona.name).tag("")
-                ForEach(EngineInfo.known) { engine in
-                    Text("\(engine.label) (\(engine.plan))").tag(engine.name)
+                ForEach(engines) { engine in
+                    Text("\(engine.label) (\(engine.plan))").tag(engine.name).disabled(engine.problem != nil)
                 }
             }
             .pickerStyle(.inline)

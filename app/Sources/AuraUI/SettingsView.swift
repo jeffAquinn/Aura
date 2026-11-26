@@ -63,6 +63,7 @@ struct SettingsView: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
             ModelsSection(store: store)
+            DeveloperAccountsSection(store: store)
             ConnectionsSection(store: store)
             KeysSection(store: store)
         }
@@ -92,6 +93,53 @@ struct SettingsView: View {
             Slider(value: value, in: range) { editing in
                 if !editing { Task { await store.updateVoice(patch(value.wrappedValue)) } }
             }
+        }
+    }
+}
+
+/// The coding harnesses deliberately use the user's own Claude and ChatGPT sign-ins, not the
+/// Anthropic cloud-chat key or a selectable cloud model. A check sends only a fixed prompt to an
+/// empty read-only container, so it is safe to run before asking either one to change files.
+struct DeveloperAccountsSection: View {
+    let store: ChatStore
+    @State private var checking: String?
+    @State private var error: String?
+
+    private var engines: [EngineInfo] { store.developerInfo?.engines ?? EngineInfo.known }
+
+    var body: some View {
+        Section("Claude Code & Codex") {
+            Text("Coding requests use your connected Claude Code or Codex account in Aura’s isolated Developer container. Cloud chat models, including unavailable ones such as Fable, are not used here.")
+                .font(.caption).foregroundStyle(.secondary)
+            ForEach(engines) { engine in
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text(engine.label).font(.body.weight(.medium))
+                        Spacer()
+                        Button(checking == engine.name ? "Checking…" : "Check account") { check(engine) }
+                            .disabled(checking != nil || engine.problem != nil)
+                    }
+                    Text(engine.plan).font(.caption).foregroundStyle(.secondary)
+                    if let problem = engine.problem {
+                        Text(problem).font(.caption).foregroundStyle(.orange)
+                    } else if let message = engine.checkMessage {
+                        Label(message, systemImage: engine.checkState == "verified" ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                            .font(.caption).foregroundStyle(engine.checkState == "verified" ? .green : .orange)
+                    } else {
+                        Text("Configured; run Check account to verify current plan access.").font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            if let error { Label(error, systemImage: "xmark.octagon").font(.caption).foregroundStyle(.red) }
+        }
+    }
+
+    private func check(_ engine: EngineInfo) {
+        checking = engine.name
+        error = nil
+        Task {
+            error = await store.checkDeveloper(engine.name)
+            checking = nil
         }
     }
 }
@@ -159,7 +207,8 @@ struct ModelsSection: View {
     @State private var savingSleep = false
     @State private var confirmSleep = false
 
-    private static let order = ["startup", "coding", "chat", "deep_research", "web_search"]
+    /// Coding is an account-backed Developer setting below, not an Aura cloud-chat model role.
+    private static let order = ["startup", "chat", "deep_research", "web_search"]
 
     var body: some View {
         Section("Models") {
@@ -189,6 +238,7 @@ struct ModelsSection: View {
                         isStartup: role == "startup"
                     )
                 }
+                DeveloperCodingRow(store: store, engine: catalog.codingEngine)
                 if let problem = catalog.startupModelProblem {
                     Label(problem, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
                 }
@@ -234,7 +284,7 @@ struct ModelsSection: View {
                     Text(saving ? "Saving model settings…" : "Model choices save automatically.")
                         .font(.caption).foregroundStyle(.secondary)
                     Spacer()
-                    Button("Save now") { saveNow() }.disabled(saving || roles.count != Self.order.count)
+                    Button("Save now") { saveNow() }.disabled(saving || roles.count != 5)
                 }
                 .controlSize(.small)
             } else {
@@ -279,7 +329,7 @@ struct ModelsSection: View {
     }
 
     private func scheduleSave() {
-        guard roles.count == Self.order.count, roles != savedRoles else { return }
+        guard roles.count == savedRoles.count, roles != savedRoles else { return }
         saveGeneration += 1
         let generation = saveGeneration
         // A provider switch changes both provider and model.  Debouncing lets those two picker
@@ -297,7 +347,7 @@ struct ModelsSection: View {
     }
 
     private func persist(_ requested: [String: ModelChoice]) async {
-        guard requested.count == Self.order.count else { return }
+        guard requested.count == savedRoles.count else { return }
         saving = true
         error = await store.updateModels(requested)
         if error == nil { savedRoles = requested }
@@ -347,6 +397,38 @@ struct ModelsSection: View {
         Task {
             error = await store.updateSleepMode(sleepMode)
             savingSleep = false
+        }
+    }
+}
+
+private struct DeveloperCodingRow: View {
+    let store: ChatStore
+    let engine: String
+    @State private var saving = false
+    @State private var error: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("Coding").font(.callout.weight(.medium))
+            Picker("Coding developer", selection: Binding(get: { engine }, set: save)) {
+                Text("Claude Code (your Claude plan)").tag("claude")
+                Text("Codex (your ChatGPT plan)").tag("codex")
+            }
+            .disabled(saving)
+            Text("Code-change requests use this connected Developer account after Aura presents its approval card. They do not use an Anthropic cloud-chat model.")
+                .font(.caption).foregroundStyle(.secondary)
+            if let error { Label(error, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange) }
+        }
+        .padding(8)
+        .background(Color.accentColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    private func save(_ selected: String) {
+        saving = true
+        error = nil
+        Task {
+            error = await store.updateCodingEngine(selected)
+            saving = false
         }
     }
 }

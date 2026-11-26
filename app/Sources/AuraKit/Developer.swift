@@ -10,13 +10,21 @@ public struct EngineInfo: Codable, Sendable, Equatable, Identifiable {
     public let vendor: String
     public let capsCost: Bool  // a hard dollar cap, enforced by the engine itself
     public let problem: String?  // why it can't run now (nil: ready)
+    /// Result of the user's explicit isolated account check; nil means it has not been run this launch.
+    public let checkState: String?
+    public let checkMessage: String?
+    public let checkedAt: String?
 
-    public init(name: String, label: String, vendor: String, capsCost: Bool, problem: String? = nil) {
+    public init(name: String, label: String, vendor: String, capsCost: Bool, problem: String? = nil,
+                checkState: String? = nil, checkMessage: String? = nil, checkedAt: String? = nil) {
         self.name = name
         self.label = label
         self.vendor = vendor
         self.capsCost = capsCost
         self.problem = problem
+        self.checkState = checkState
+        self.checkMessage = checkMessage
+        self.checkedAt = checkedAt
     }
 
     /// The two engines, for cards drawn before the Workshop has loaded the real state.

@@ -71,6 +71,8 @@ public final class ChatStore {
     public private(set) var voices: [VoiceInfo] = []
     /// Server-owned model role choices. API keys themselves are never sent back to the app.
     public private(set) var modelCatalog: ModelCatalog?
+    /// Developer account readiness, including the result of an explicit isolated connection check.
+    public private(set) var developerInfo: DeveloperInfo?
     /// Speaks replies and approval requests when spoken replies are on.
     public var speech: SpeechController? {
         didSet { speech?.profile = voice }
@@ -237,6 +239,7 @@ public final class ChatStore {
         setVoice(settings.voice)
         persona = settings.persona
         if let catalog = try? await transport?.models() { modelCatalog = catalog }
+        developerInfo = try? await transport?.developer()
     }
 
     public func updateModels(_ roles: [String: ModelChoice]) async -> String? {
@@ -245,6 +248,18 @@ public final class ChatStore {
         }
         modelCatalog = catalog
         return nil
+    }
+
+    public func updateCodingEngine(_ engine: String) async -> String? {
+        guard let transport else { return FriendlyMessage.offline }
+        do {
+            modelCatalog = try await transport.updateCodingEngine(engine)
+            return nil
+        } catch let AuraClientError.http(_, message) {
+            return message
+        } catch {
+            return FriendlyMessage.describe(error)
+        }
     }
 
     /// Refresh only after the user asks; opening Settings does not contact a cloud provider.
@@ -310,6 +325,20 @@ public final class ChatStore {
 
     public func loadSecrets() async {
         if let listing = try? await transport?.secrets() { secrets = listing }
+    }
+
+    /// Check the actual signed-in account without giving a Developer any conversation, vault, or source files.
+    public func checkDeveloper(_ engine: String) async -> String? {
+        guard let transport else { return FriendlyMessage.offline }
+        do {
+            _ = try await transport.checkDeveloper(engine)
+            developerInfo = try await transport.developer()
+            return nil
+        } catch let AuraClientError.http(_, message) {
+            return message
+        } catch {
+            return FriendlyMessage.describe(error)
+        }
     }
 
     /// Store a key. Returns why it was refused (nil: saved).

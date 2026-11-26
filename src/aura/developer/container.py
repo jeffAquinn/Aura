@@ -117,7 +117,8 @@ class DevContainer:
     # ── a run ───────────────────────────────────────────────────────────────────────────────
 
     def run(self, engine: Engine, workspace: Path, run_dir: Path, prompt: str, budget_usd: float,
-            timeout: float, on_event: Callable[[EngineEvent], None], stop: threading.Event) -> RunOutcome:  # fmt: skip
+            timeout: float, on_event: Callable[[EngineEvent], None], stop: threading.Event,
+            workspace_read_only: bool = False) -> RunOutcome:  # fmt: skip
         outcome = RunOutcome()
         try:
             docker = self.ensure(lambda s: on_event(EngineEvent("status", s)))
@@ -129,7 +130,7 @@ class DevContainer:
         try:
             self._start_proxy(docker, engine.hosts)
             outcome = self._run_engine(docker, name, engine, workspace, run_dir, prompt, budget_usd,
-                                       timeout, on_event, stop)  # fmt: skip
+                                       timeout, on_event, stop, workspace_read_only)  # fmt: skip
         except (SandboxUnavailable, OSError, subprocess.SubprocessError) as e:
             outcome.error = str(e)
         finally:
@@ -170,23 +171,24 @@ class DevContainer:
         return [line for line in logs.splitlines() if line.startswith(("ALLOW", "DENY"))]
 
     def argv(self, docker: str, name: str, engine: Engine, workspace: Path, run_dir: Path,
-             command: list[str]) -> list[str]:  # fmt: skip
+             command: list[str], workspace_read_only: bool = False) -> list[str]:  # fmt: skip
         """The isolated `docker run` for an engine (the leak test runs plain commands in it too)."""
         return [docker, "run", "--rm", "--name", name, "--network", NETWORK,
                 *[a for h in engine.hosts for a in ("--add-host", f"{h}:{self.proxy_ip}")],
                 "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
                 "--memory", "4g", "--cpus", "4", "--pids-limit", "512",
                 "--read-only", "--tmpfs", "/tmp:rw,size=512m", "--tmpfs", "/home/node:rw,size=512m,uid=1000,gid=1000",
-                "-v", f"{workspace}:/work",
+                "-v", f"{workspace}:/work" + (":ro" if workspace_read_only else ""),
                 *[a for host, inside in engine.mounts(run_dir) for a in ("-v", f"{host}:{inside}")],
                 *[a for n in engine.env_names() for a in ("-e", n)],  # values come from the environment
                 IMAGE, *command]  # fmt: skip
 
     def _run_engine(self, docker: str, name: str, engine: Engine, workspace: Path, run_dir: Path, prompt: str,
                     budget_usd: float, timeout: float, on_event: Callable[[EngineEvent], None],
-                    stop: threading.Event) -> RunOutcome:  # fmt: skip
+                    stop: threading.Event, workspace_read_only: bool = False) -> RunOutcome:  # fmt: skip
         outcome = RunOutcome()
-        argv = self.argv(docker, name, engine, workspace, run_dir, engine.command(prompt, budget_usd))
+        argv = self.argv(docker, name, engine, workspace, run_dir, engine.command(prompt, budget_usd),
+                         workspace_read_only)
         env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "HOME": os.environ.get("HOME", ""),
                **engine.env_values(self.secrets)}  # fmt: skip
         proc = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)

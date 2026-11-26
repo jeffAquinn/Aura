@@ -70,7 +70,7 @@ class FakeContainer:
     def problem(self):
         return None
 
-    def run(self, engine, workspace, run_dir, prompt, budget_usd, timeout, on_event, stop):
+    def run(self, engine, workspace, run_dir, prompt, budget_usd, timeout, on_event, stop, workspace_read_only=False):
         self.prompts.append(prompt)
         self.budgets.append(round(budget_usd, 2))
         self.workspaces.append(sorted(p.relative_to(workspace).as_posix() for p in workspace.rglob("*") if p.is_file()))
@@ -116,6 +116,38 @@ def test_a_specification_needs_every_section():
     problems = ws.check_specification(SPEC.replace("## Acceptance tests", "## Examples"))
     assert problems == ["missing sections: Acceptance tests"]
     assert "characters" in ws.check_specification("## Goal\nshort")[0]
+
+
+def test_connection_check_uses_the_signed_in_engine_in_an_empty_read_only_workspace(env):  # noqa: F811
+    class ConnectionContainer(FakeContainer):
+        def run(self, engine, workspace, run_dir, prompt, budget_usd, timeout, on_event, stop, workspace_read_only=False):
+            self.prompts.append(prompt)
+            self.workspaces.append(sorted(p.relative_to(workspace).as_posix() for p in workspace.rglob("*") if p.is_file()))
+            self.read_only = workspace_read_only
+            return RunOutcome(exit_code=0, ok=True)
+
+    container = ConnectionContainer()
+    d = developer(env, container)
+    result = d.check_connection("claude")
+
+    assert result["check_state"] == "verified"
+    assert "isolated read-only workspace" in result["check_message"]
+    assert container.read_only and container.workspaces == [[]]
+    assert "Do not read, create, edit, or delete any files" in container.prompts[0]
+    assert not d._busy.locked()
+    assert not any(p.name.startswith("c-") for p in d.settings.dev_dir.iterdir())
+
+
+def test_connection_check_reports_a_real_engine_failure_without_claiming_ready(env):  # noqa: F811
+    class ConnectionContainer(FakeContainer):
+        def run(self, *args, **kwargs):
+            return RunOutcome(exit_code=1, error="your plan has no available tokens")
+
+    d = developer(env, ConnectionContainer())
+    result = d.check_connection("codex")
+
+    assert result["check_state"] == "failed"
+    assert result["check_message"] == "your plan has no available tokens"
 
 
 def test_the_workspace_holds_only_the_spec_the_format_an_example_and_skill(tmp_path):
@@ -475,6 +507,8 @@ def test_developer_and_keys_api(env):  # noqa: F811
 
     state = client.get("/v1/developer", headers=auth).json()
     assert [e["name"] for e in state["engines"]] == ["claude", "codex"] and state["budget_usd"] == 2.0
+    checked = client.post("/v1/developer/claude/check", json={}, headers=auth)
+    assert checked.status_code == 200 and checked.json()["check_state"] == "verified"
 
     started = client.post("/v1/builds", json={"skill": "pdf_text", "specification": SPEC}, headers=auth)
     assert started.status_code == 202
@@ -557,6 +591,32 @@ def _model_leak_test(tmp_path, engine: Engine, secrets: Secrets, budget: float) 
 @pytest.mark.skipif(not _codex_ready(), reason="Codex isn't signed in, or Docker isn't running")
 def test_live_codex_cannot_reach_this_mac_or_the_internet(tmp_path):
     _model_leak_test(tmp_path, Codex(), Secrets(), 0)
+
+
+def _live_connection_check(env, engine: Engine, secrets: Secrets):  # noqa: F811
+    """The same minimal check Settings runs: no vault/source files, read-only /work, one reply."""
+    from aura.developer.container import DevContainer
+    from aura.tools.sandbox import Sandbox
+
+    settings, workshop, _, _ = env
+    sandbox = Sandbox("aura-sandbox:1", settings.vault_dir, 30, workshop.audit)
+    developer = Developer(settings, workshop, DevContainer(sandbox, secrets, workshop.audit), secrets, workshop.audit,
+                          engines={engine.name: engine})
+    result = developer.check_connection(engine.name)
+    print(f"{engine.label}: {result['check_state']} ({result['check_message']})")
+    assert result["check_state"] == "verified", result["check_message"]
+    assert not any(path.name.startswith("c-") for path in settings.dev_dir.iterdir())
+
+
+@pytest.mark.live
+@pytest.mark.skipif(not _codex_ready(), reason="Codex isn't signed in, or Docker isn't running")
+def test_live_codex_connection_check_uses_the_connected_chatgpt_account(env):  # noqa: F811
+    _live_connection_check(env, Codex(), Secrets())
+
+
+@pytest.mark.live
+def test_live_claude_connection_check_uses_the_connected_claude_account(env):  # noqa: F811
+    _live_connection_check(env, ClaudeCode(), _claude_secrets())
 
 
 @pytest.mark.live

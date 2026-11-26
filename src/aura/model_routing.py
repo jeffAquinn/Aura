@@ -18,9 +18,10 @@ from aura.config import Settings
 
 Provider = Literal["ollama", "anthropic"]
 ROLES = ("startup", "coding", "chat", "deep_research", "web_search")
+DEVELOPER_ENGINES = ("claude", "codex")
 ROLE_LABELS = {
     "startup": "Model on startup",
-    "coding": "Complex work / coding",
+    "coding": "Legacy coding model",
     "chat": "Chat",
     "deep_research": "Deep Research",
     "web_search": "Web Search",
@@ -76,12 +77,18 @@ class SleepMode:
 
 
 class ModelRouting:
-    """Load and atomically save the five model-role preferences."""
+    """Load model-role preferences and the user's coding-harness preference.
+
+    ``coding`` remains in the file for backwards compatibility with existing HOL preferences,
+    but normal Aura code requests use ``coding_engine`` (Claude Code or Codex), not a cloud chat
+    model. This prevents a cloud model selection from silently becoming a coding-agent choice.
+    """
 
     def __init__(self, settings: Settings):
         self.path = settings.data_dir / "model_routing.json"
         fallback = ModelChoice("ollama", settings.model)
         self._choices: dict[str, ModelChoice] = {role: fallback for role in ROLES}
+        self._coding_engine = "claude"
         self._sleep_mode = SleepMode(False, settings.model)
         self._anthropic_models: tuple[str, ...] = ANTHROPIC_MODELS
         self.load()
@@ -94,6 +101,9 @@ class ModelRouting:
                 item = choices.get(role)
                 if isinstance(item, dict):
                     self._choices[role] = ModelChoice(str(item["provider"]), str(item["model"])).validate()
+            engine = raw.get("coding_engine")
+            if engine in DEVELOPER_ENGINES:
+                self._coding_engine = engine
             sleep = raw.get("sleep_mode")
             if isinstance(sleep, dict):
                 self._sleep_mode = SleepMode(bool(sleep["enabled"]), str(sleep["model"])).validate()
@@ -119,6 +129,15 @@ class ModelRouting:
         self._choices = checked
         self._save()
 
+    def coding_engine(self) -> str:
+        return self._coding_engine
+
+    def replace_coding_engine(self, engine: str) -> None:
+        if engine not in DEVELOPER_ENGINES:
+            raise ValueError("Choose Claude Code or Codex for coding.")
+        self._coding_engine = engine
+        self._save()
+
     def sleep_mode(self) -> SleepMode:
         return self._sleep_mode
 
@@ -142,6 +161,7 @@ class ModelRouting:
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps({
             "roles": {role: choice.public() for role, choice in self._choices.items()},
+            "coding_engine": self._coding_engine,
             "sleep_mode": self._sleep_mode.public(),
             "anthropic_models": list(self._anthropic_models),
         }, indent=2) + "\n")

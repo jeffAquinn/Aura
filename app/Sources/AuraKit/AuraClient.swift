@@ -14,6 +14,7 @@ public protocol AuraTransport: Sendable {
     func settings() async throws -> AppSettings
     func models() async throws -> ModelCatalog
     func updateModels(_ update: ModelRoutingUpdate) async throws -> ModelCatalog
+    func updateCodingEngine(_ engine: String) async throws -> ModelCatalog
     /// Refresh the account-visible Anthropic model list after an explicit user action.
     func syncCloudModels() async throws -> ModelCatalog
     func updateSleepMode(_ mode: SleepMode) async throws -> ModelCatalog
@@ -45,6 +46,8 @@ public protocol AuraTransport: Sendable {
     func keepFlagged(_ skill: String) async throws
     func auditNow() async throws
     func developer() async throws -> DeveloperInfo
+    /// A user-requested, no-write verification of the signed-in Claude Code or Codex account.
+    func checkDeveloper(_ engine: String) async throws -> EngineInfo
     func startBuild(_ request: BuildRequest) async throws -> BuildInfo
     func stopBuild(_ id: String) async throws -> BuildInfo
     func secrets() async throws -> [SecretInfo]
@@ -84,6 +87,7 @@ extension AuraTransport {
     public func settings() async throws -> AppSettings { throw AuraClientError.badResponse }
     public func models() async throws -> ModelCatalog { throw AuraClientError.badResponse }
     public func updateModels(_ update: ModelRoutingUpdate) async throws -> ModelCatalog { throw AuraClientError.badResponse }
+    public func updateCodingEngine(_ engine: String) async throws -> ModelCatalog { throw AuraClientError.badResponse }
     public func syncCloudModels() async throws -> ModelCatalog { throw AuraClientError.badResponse }
     public func updateSleepMode(_ mode: SleepMode) async throws -> ModelCatalog { throw AuraClientError.badResponse }
     public func pullLocalModel(_ model: String) async throws -> ModelCatalog { throw AuraClientError.badResponse }
@@ -117,6 +121,7 @@ extension AuraTransport {
         approve(decisions.map(\.approved))
     }
     public func developer() async throws -> DeveloperInfo { throw AuraClientError.badResponse }
+    public func checkDeveloper(_ engine: String) async throws -> EngineInfo { throw AuraClientError.badResponse }
     public func startBuild(_ request: BuildRequest) async throws -> BuildInfo { throw AuraClientError.badResponse }
     public func stopBuild(_ id: String) async throws -> BuildInfo { throw AuraClientError.badResponse }
     public func secrets() async throws -> [SecretInfo] { [] }
@@ -304,6 +309,13 @@ public final class AuraClient: AuraTransport {
         return try Self.decoder.decode(ModelCatalog.self, from: await send(r))
     }
 
+    public func updateCodingEngine(_ engine: String) async throws -> ModelCatalog {
+        struct Body: Encodable { let engine: String }
+        var r = request("/v1/models/coding-engine", body: Body(engine: engine))
+        r.httpMethod = "PUT"
+        return try Self.decoder.decode(ModelCatalog.self, from: await send(r))
+    }
+
     public func syncCloudModels() async throws -> ModelCatalog {
         try Self.decoder.decode(ModelCatalog.self, from: await send(request("/v1/models/sync-cloud", body: [String: String]())))
     }
@@ -431,6 +443,12 @@ public final class AuraClient: AuraTransport {
 
     public func developer() async throws -> DeveloperInfo {
         try Self.decoder.decode(DeveloperInfo.self, from: await send(request("/v1/developer")))
+    }
+
+    public func checkDeveloper(_ engine: String) async throws -> EngineInfo {
+        var r = request("/v1/developer/\(engine)/check", body: [String: String]())
+        r.timeoutInterval = 120  // runs a single answer through the isolated Developer container
+        return try Self.decoder.decode(EngineInfo.self, from: await send(r))
     }
 
     public func startBuild(_ request: BuildRequest) async throws -> BuildInfo {

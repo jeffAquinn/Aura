@@ -43,6 +43,11 @@ EXAMPLE = Path(__file__).resolve().parents[3] / "examples" / "skills" / "pdf_tex
 RUNNING = ("queued", "developing", "auditing", "repairing")
 KEEP_SCRATCH = 24 * 3600.0  # seconds a failed or interrupted job's scratch folder is kept, for diagnosis
 CREDENTIAL_COPIES = ("codex", "codex.sum")  # an engine's per-run sign-in copy: never kept
+CONNECTION_CHECK_TIMEOUT = 90.0
+CONNECTION_CHECK_PROMPT = (
+    "This is Aura's connection check. Do not read, create, edit, or delete any files, and do not run shell "
+    "commands or use tools. Reply with exactly: Aura developer connection ready."
+)
 
 
 class DeveloperError(ValueError):
@@ -225,6 +230,7 @@ class Developer:
         self.example = example
         self.builds: dict[str, Build] = {}
         self.tasks: dict[str, VaultTask] = {}  # vault tasks awaiting the user's decisions, by tool call
+        self.connection_checks: dict[str, dict[str, str | None]] = {}
         self.on_ready: Callable[[Build], None] = lambda b: None  # e.g. a spoken status line
         self._busy = threading.Lock()
         self.state = state or StateStore(None)
@@ -368,8 +374,58 @@ class Developer:
 
     def engines_status(self) -> list[dict[str, Any]]:
         docker = self.container.problem()
-        return [{"name": e.name, "label": e.label, "vendor": e.vendor, "caps_cost": e.caps_cost,
-                 "problem": docker or e.problem(self.secrets)} for e in self.engines.values()]  # fmt: skip
+        return [self._engine_status(e, docker or e.problem(self.secrets)) for e in self.engines.values()]
+
+    def _engine_status(self, engine: Engine, problem: str | None = None) -> dict[str, Any]:
+        check = self.connection_checks.get(engine.name, {})
+        return {"name": engine.name, "label": engine.label, "vendor": engine.vendor, "caps_cost": engine.caps_cost,
+                "problem": problem, "check_state": check.get("state"), "check_message": check.get("message"),
+                "checked_at": check.get("checked_at")}  # fmt: skip
+
+    def check_connection(self, engine_name: str) -> dict[str, Any]:
+        """Prove one signed-in Developer can answer in an empty, read-only workspace.
+
+        This deliberately does not use a vault copy or Aura source tree, and is separate from a
+        build or ``ask_developer`` task: no user files can be changed or sent during the check.
+        """
+        if engine_name not in self.engines:
+            raise DeveloperError(f"unknown developer '{engine_name}' (choose: {', '.join(self.engines)})")
+        engine = self.engines[engine_name]
+        if problem := (self.container.problem() or engine.problem(self.secrets)):
+            self._set_connection_check(engine.name, "unavailable", problem)
+            self.audit.record("developer_connection_check", engine=engine.name, result="unavailable")
+            return self._engine_status(engine, problem)
+        if self.running() or not self._busy.acquire(blocking=False):
+            raise DeveloperError("Claude Code or Codex is busy with another job; wait for it to finish before checking an account")
+        root = self.settings.dev_dir / ("c-" + uuid.uuid4().hex[:8])
+        try:
+            work = root / "work"
+            work.mkdir(parents=True)
+            outcome = self.container.run(engine, work, root, CONNECTION_CHECK_PROMPT, 0.0,
+                                         CONNECTION_CHECK_TIMEOUT, lambda _event: None, threading.Event(),
+                                         workspace_read_only=True)
+            if outcome.ok and outcome.exit_code == 0 and not outcome.timed_out and not outcome.stopped:
+                self._set_connection_check(engine.name, "verified", "Verified with your connected account in an isolated read-only workspace.")
+            else:
+                detail = outcome.error or outcome.result or "The developer did not report a successful response."
+                if outcome.timed_out:
+                    detail = f"Timed out after {int(CONNECTION_CHECK_TIMEOUT)} seconds."
+                elif outcome.stopped:
+                    detail = "Stopped before the account check finished."
+                self._set_connection_check(engine.name, "failed", cap(self.masker.mask(detail), 500) or "Connection check failed.")
+            state = self.connection_checks[engine.name]["state"]
+            self.audit.record("developer_connection_check", engine=engine.name, result=state)
+            return self._engine_status(engine)
+        except Exception as err:  # noqa: BLE001: a connection check must become an inspectable status
+            self._set_connection_check(engine.name, "failed", cap(self.masker.mask(str(err)), 500) or "Connection check failed.")
+            self.audit.record("developer_connection_check", engine=engine.name, result="failed")
+            return self._engine_status(engine)
+        finally:
+            shutil.rmtree(root, ignore_errors=True)
+            self._busy.release()
+
+    def _set_connection_check(self, engine: str, state: str, message: str) -> None:
+        self.connection_checks[engine] = {"state": state, "message": message, "checked_at": _now()}
 
     def running(self) -> Build | None:
         return next((b for b in self.builds.values() if b.stage in ("queued", "developing", "auditing", "repairing")), None)
