@@ -10,6 +10,8 @@ public protocol AuraTransport: Sendable {
     func approve(decisions: [ApprovalDecision]) -> AsyncThrowingStream<AuraEvent, Error>
     func newConversation() async throws
     func warmup() async throws
+    /// The chat box picked this model: load it now (and unload llama-server's model if it's another).
+    func prepareModel(_ choice: ModelChoice) async throws
     func health() async throws -> Health
     func settings() async throws -> AppSettings
     func models() async throws -> ModelCatalog
@@ -94,6 +96,7 @@ public protocol AuraTransport: Sendable {
 extension AuraTransport {
     public func chat(_ text: String, developer: String?) -> AsyncThrowingStream<AuraEvent, Error> { chat(text) }
     public func settings() async throws -> AppSettings { throw AuraClientError.badResponse }
+    public func prepareModel(_ choice: ModelChoice) async throws {}
     public func models() async throws -> ModelCatalog { throw AuraClientError.badResponse }
     public func updateModels(_ update: ModelRoutingUpdate) async throws -> ModelCatalog { throw AuraClientError.badResponse }
     public func updateCodingEngine(_ engine: String) async throws -> ModelCatalog { throw AuraClientError.badResponse }
@@ -314,6 +317,10 @@ public final class AuraClient: AuraTransport {
 
     public func warmup() async throws {
         _ = try await send(request("/v1/warmup", body: [String: String]()))
+    }
+
+    public func prepareModel(_ choice: ModelChoice) async throws {
+        _ = try await send(request("/v1/models/prepare", body: choice))
     }
 
     public func health() async throws -> Health {

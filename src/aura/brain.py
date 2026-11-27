@@ -39,6 +39,7 @@ from langgraph.types import Command, Interrupt
 
 from aura.config import Settings
 from aura.model_routing import LOCAL_PROVIDERS, ModelChoice, llamacpp_root
+from aura.llama_server import API_KEY as LLAMA_API_KEY, LocalModelError
 from aura.middleware import (
     REJECTION_NOTE,
     CapabilitySelection,
@@ -322,6 +323,31 @@ class _LocalPerformanceRecorder(BaseCallbackHandler):
         return finished
 
 
+ENGINE_PLACES = {"ollama": "Ollama, on this Mac", "llamacpp": "llama.cpp, on this Mac", "anthropic": "Anthropic's cloud"}
+
+
+def engine_name(choice: ModelChoice) -> str:
+    """The model answering, as Aura's prompt states it: "gemma4:26b (Ollama, on this Mac)"."""
+    return f"{choice.model} ({ENGINE_PLACES.get(choice.provider, choice.provider)})"
+
+
+# A model's recommended sampling, sent unless its settings say otherwise (docs/model-settings.md §5).
+# Bonsai's file carries thinking-mode defaults (1.0 / 0.95 / 20 / min_p 0.05), but Aura turns its
+# thinking off; these non-thinking values tied on accuracy and were 30% faster (§10, measured on Q2_0).
+RECOMMENDED_SAMPLING: dict[str, dict[str, Any]] = {
+    "bonsai": {"temperature": 0.7, "top_p": 0.8, "presence_penalty": 0.0,
+               "extra_body": {"top_k": 20, "min_p": 0.0, "repeat_penalty": 1.0}},
+}
+
+
+def recommended_sampling(choice: ModelChoice) -> dict[str, Any]:
+    """The recommended sampling for a llama.cpp model, matched by family name; {} for others."""
+    if choice.provider != "llamacpp":
+        return {}
+    name = choice.model.lower()
+    return next((dict(values) for family, values in RECOMMENDED_SAMPLING.items() if family in name), {})
+
+
 def build_model(settings: Settings, choice: ModelChoice | None = None, api_key: str | None = None) -> BaseChatModel:
     """Build either the local OpenAI-compatible model or a first-party Claude API model.
 
@@ -336,7 +362,7 @@ def build_model(settings: Settings, choice: ModelChoice | None = None, api_key: 
     llama = choice.provider == "llamacpp"
     return ChatOpenAI(
         base_url=f"{llamacpp_root(settings)}/v1" if llama else settings.base_url,
-        api_key="llama.cpp" if llama else settings.api_key,  # llama-server ignores the key
+        api_key=LLAMA_API_KEY if llama else settings.api_key,  # Aura's llama-server's own key
         model=choice.model,
         reasoning_effort=settings.reasoning_effort,
         max_tokens=settings.max_reply_tokens,  # a looping model stops instead of running forever
@@ -344,6 +370,7 @@ def build_model(settings: Settings, choice: ModelChoice | None = None, api_key: 
         # server's count, which (unlike the local estimate) includes the system prompt and
         # tool schemas.
         stream_usage=True,
+        **recommended_sampling(choice),
     )
 
 
@@ -386,7 +413,7 @@ class Aura:
             # so the server's prompt cache stays warm.
             # The persona is re-read every turn, so an approved change applies on the next reply.
             return system_prompt(
-                date.today(), self.active_model.model, vault.root, identity.load(), SOUL_DIRECTIVE,
+                date.today(), engine_name(self.active_model), vault.root, identity.load(), SOUL_DIRECTIVE,
                 project_sandbox=self.settings.project_sandbox_dir,
             ) + "\n\n" + self._live_skill_context()
 
@@ -866,6 +893,19 @@ class Aura:
         """`cancel`: the turn's token. Checked at every chunk (a model writing a long tool call
         streams no text), so a stop ends the run at the next chunk; the step's open tool calls are
         settled before the next message (_settle), and no approval is raised by a stopped run."""
+        local_server = self.toolbox.local_server
+        if local_server is not None:  # the server sets it, only for a real (not injected) model
+            # Load a llama.cpp model (llama-server is started for it), or unload llama-server's
+            # model when this turn uses another one. Runs on the turn's first step, in its worker.
+            try:
+                local_server.prepare(self.active_model, cancel)
+            except LocalModelError:
+                if cancel is not None and cancel.is_set():
+                    return  # Stop pressed while the model loaded: the turn just ends
+                raise
+        elif self.active_model.provider == "llamacpp" and not self._injected_model:
+            # Only the Aura app's server runs llama-server (one per Mac, on one port).
+            raise LocalModelError("llama.cpp models run in the Aura app. Choose an Ollama or cloud model here.")
         performance = _LocalPerformanceRecorder() if self.active_model.provider in LOCAL_PROVIDERS else None
         callbacks: list[BaseCallbackHandler] = []
         if cancel is not None:

@@ -381,7 +381,7 @@ def test_every_turn_and_warmup_restart_the_keep_alive_timer(settings):
 
 def test_keeper_talks_to_ollamas_native_api():
     k = ModelKeeper("http://localhost:11434/v1/", "gemma4:26b")
-    assert (k.url, k.keep_alive) == ("http://localhost:11434", "5m")
+    assert (k.url, k.keep_alive) == ("http://localhost:11434", "10m")
     assert ModelKeeper("http://127.0.0.1:9/v1", "m").loaded() is None  # unreachable: unknown
 
 
@@ -437,12 +437,12 @@ def _ollama_up() -> bool:
 
 
 @pytest.mark.skipif(not _ollama_up(), reason="Ollama isn't running")
-def test_live_warm_sets_a_five_minute_keep_alive():
+def test_live_warm_sets_a_ten_minute_keep_alive():
     k = ModelKeeper("http://localhost:11434/v1", "gemma4:26b")
     assert k.warm() is True and k.loaded() is True
     out = subprocess.run(["ollama", "ps"], capture_output=True, text=True).stdout
     line = next(row for row in out.splitlines() if row.startswith("gemma4:26b"))
-    assert any(f"{m} minutes from now" in line for m in (4, 5)), line
+    assert any(f"{m} minutes from now" in line for m in (9, 10)), line
 
 
 # ── the real process ────────────────────────────────────────────────────────────────────────

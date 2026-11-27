@@ -23,6 +23,8 @@ struct ComposerLayoutTests {
         (view as? NSTextField).map { [$0] } ?? view.subviews.flatMap(fields)
     }
 
+    static func fieldsIn(_ view: NSView) -> [NSTextField] { fields(in: view) }
+
     /// Type `text` into the empty composer the way keystrokes arrive (the field editor), letting
     /// SwiftUI lay out between chunks, then draw it at the size the window gives it.
     @Test(arguments: [(ChatAppearance.defaultSize, 0, "system"), (ChatAppearance.defaultSize, 2, "system"),
@@ -75,6 +77,70 @@ struct ComposerLayoutTests {
             #expect(box.insetBy(dx: -2, dy: -2).contains(CGPoint(x: caret.midX, y: caret.midY)),
                     "the caret at the start is out of view: caret \(caret), box \(box)")
         }
+    }
+}
+
+/// In the same serialized suite: chat-box windows drawn in parallel steal each other's focus.
+extension ComposerLayoutTests {
+    /// A long model name in the chat box's model menu stays in its own lane: it never runs over
+    /// the divider into the text field or past the rounded border.
+    @Test func aLongModelNameStaysInItsLane() async throws {
+        let store = ChatStore(items: [])
+        store.transport = FakeComposerTransport()
+        store.chatModel = ModelChoice(provider: "llamacpp", model: "Ternary-Bonsai-2.5-27B-Q2_0-extra-long-name")
+        let host = NSHostingView(rootView: VStack(spacing: 0) { Spacer(); InputBar(store: store) }
+            .frame(width: 360, height: 120)
+            .environment(\.chatText, .standard)
+            .environment(\.bubbles, .standard))
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 360, height: 120), styleMask: [.titled],
+                              backing: .buffered, defer: false)
+        window.contentView = host
+        for _ in 0..<5 { host.layoutSubtreeIfNeeded(); try await Task.sleep(for: .milliseconds(30)) }
+        if let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
+            host.cacheDisplay(in: host.bounds, to: rep)
+            try? rep.representation(using: .png, properties: [:])?.write(to: SnapshotTests.outDir.appending(path: "composer-long-model.png"))
+        }
+        let field = try #require(ComposerLayoutTests.fieldsIn(host).last)
+        let fieldFrame = field.convert(field.bounds, to: host)
+        #expect(fieldFrame.width > 120, "the text field was squeezed by the model name: \(fieldFrame)")
+        // Nothing is drawn past the panel's edges (the long name used to run off the left).
+        func all(_ view: NSView) -> [NSView] { [view] + view.subviews.flatMap(all) }
+        for view in all(host) where view !== host && !view.isHidden && view.bounds.width > 0 {
+            let frame = view.convert(view.bounds, to: host)
+            #expect(frame.minX >= -1 && frame.maxX <= host.bounds.maxX + 1, "\(type(of: view)) runs outside: \(frame)")
+        }
+    }
+}
+
+/// In the same serialized suite: chat-box windows drawn in parallel steal each other's focus.
+extension ComposerLayoutTests {
+    /// A pasted URL or path with no spaces wraps inside the box instead of running past its edge.
+    @Test func aLongUnbrokenStringWrapsInsideTheBorder() async throws {
+        let store = ChatStore(items: [])
+        store.transport = FakeComposerTransport()
+        let host = NSHostingView(rootView: VStack(spacing: 0) { Spacer(); InputBar(store: store) }
+            .frame(width: 360, height: 300)
+            .environment(\.chatText, .standard)
+            .environment(\.bubbles, .standard))
+        let window = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 360, height: 300), styleMask: [.titled],
+                              backing: .buffered, defer: false)
+        window.contentView = host
+        host.layoutSubtreeIfNeeded()
+        let field = try #require(ComposerLayoutTests.fieldsIn(host).last)
+        window.makeFirstResponder(field)
+        let editor = try #require(window.fieldEditor(true, for: field) as? NSTextView)
+        let url = "https://example.com/" + String(repeating: "averyveryverylongpathsegment/", count: 6) + "end"
+        editor.insertText(url, replacementRange: editor.selectedRange())
+        for _ in 0..<5 { await Task.yield(); host.layoutSubtreeIfNeeded(); try await Task.sleep(for: .milliseconds(30)) }
+        if let rep = host.bitmapImageRepForCachingDisplay(in: host.bounds) {
+            host.cacheDisplay(in: host.bounds, to: rep)
+            try? rep.representation(using: .png, properties: [:])?.write(to: SnapshotTests.outDir.appending(path: "composer-unbroken.png"))
+        }
+        let lm = try #require(editor.layoutManager), tc = try #require(editor.textContainer)
+        lm.ensureLayout(for: tc)
+        let used = editor.convert(lm.usedRect(for: tc), to: host)
+        let box = try #require(field.enclosingScrollView).convert(field.enclosingScrollView!.bounds, to: host)
+        #expect(used.maxX <= box.maxX + 2 && used.minX >= box.minX - 2, "the text runs outside the box: \(used) vs \(box)")
     }
 }
 

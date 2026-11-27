@@ -27,6 +27,8 @@ struct SnapshotTests {
         .map { Image(decorative: $0, scale: 1) }
     static let backdrop: Image? = portrait?.cropping(to: CGRect(x: 2000, y: 0, width: 752, height: 1536))
         .map { Image(decorative: $0, scale: 1) }
+    static let welcome: Image? = NSImage(contentsOf: repo.appending(path: "assets/Welcome.jpeg"))
+        .map { Image(nsImage: $0) }
 
     static let reply = """
     ## London right now
@@ -56,7 +58,7 @@ struct SnapshotTests {
                 OfflineBanner(message: message, onRestart: {})
             }
             if store.items.isEmpty, store.phase == .idle {
-                WelcomeView(avatar: Self.avatar).frame(height: 360)
+                WelcomeView(avatar: Self.avatar, image: Self.welcome, starting: store.connection == .starting).frame(height: 400)
             } else {
                 TranscriptContent(store: store, avatar: Self.avatar, lazy: false)
             }
@@ -90,6 +92,30 @@ struct SnapshotTests {
             item(.status, "[Tool: Web_Search_Tool] Searching for 'current weather in London'..."),
             item(.aura, Self.reply),
         ]
+    }
+
+    @Test func longUnbrokenTextStaysInsideItsBubbles() throws {
+        let url = "https://example.com/" + String(repeating: "averyveryverylongpathsegment/", count: 5) + "end"
+        let store = ChatStore(items: [
+            item(.user, "Open \(url) please"),
+            item(.aura, "Here it is: \(url)\n\n`\(String(repeating: "x", count: 120))`"),
+        ])
+        let size = try render("37-long-unbroken-text", store)
+        #expect(size.width == 840)  // the panel didn't grow to fit the text
+    }
+
+    @Test func headerShowsMemoryAndTheLastLocalSpeed() throws {
+        let store = ChatStore(items: conversation, phase: .streaming)  // mid-reply: the stage bar shows
+        store.apply(.performance(LocalModelPerformance(totalDuration: 4.2, promptDuration: 1.1, promptTokens: 2400,
+                                                       promptTokensPerSecond: 2181.8, generationDuration: 3.1,
+                                                       outputTokens: 99, outputTokensPerSecond: 31.9)))
+        try render("38-header-usage", store)
+        #expect(store.localPerformance?.outputTokensPerSecond == 31.9)
+    }
+
+    @Test func memoryInUseIsAPlausibleShareOfTheMac() {
+        let used = AuraRuntimeUsage.memoryInUse() ?? 0
+        #expect(used > 256 * 1_048_576 && used < ProcessInfo.processInfo.physicalMemory)
     }
 
     @Test func welcome() throws {

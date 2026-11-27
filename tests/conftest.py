@@ -68,8 +68,10 @@ def _isolate_from_real_vault(tmp_path, monkeypatch):
 
 @pytest.fixture
 def settings(tmp_path) -> Settings:
+    # No real llama.cpp models or llama-server: a test that needs them makes its own.
     return Settings(vault_dir=tmp_path / "vault", audit_log=tmp_path / "audit.jsonl", data_dir=tmp_path / "data",
-                    dev_dir=tmp_path / "dev")
+                    dev_dir=tmp_path / "dev", llamacpp_models_dir=tmp_path / "models",
+                    llama_server=str(tmp_path / "no-llama-server"))
 
 
 def call(name: str, **args: Any) -> dict:

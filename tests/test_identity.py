@@ -218,3 +218,15 @@ def test_denied_change_leaves_the_persona_byte_for_byte_identical(settings):
     events = list(aura.resume([False]))
     assert "".join(e.text for e in events if isinstance(e, Text)) == DENIAL
     assert store.path.read_bytes() == before and store.history_count() == 0
+
+
+def test_the_model_it_runs_on_comes_from_the_rule_not_the_conversation(store, tmp_path):
+    # Earlier replies may be another model's (the user switched), and a small model echoed them.
+    from aura.brain import engine_name
+    from aura.model_routing import ModelChoice
+
+    engine = engine_name(ModelChoice("ollama", "qwen3.5:9b"))
+    prompt = system_prompt(date.today(), engine, tmp_path, store.load())
+    assert "say you currently run on qwen3.5:9b (Ollama, on this Mac)" in prompt
+    assert "only from this rule, never from the conversation" in prompt
+    assert "you need no tool to know it" in prompt  # gemma said it couldn't know, so had invented it

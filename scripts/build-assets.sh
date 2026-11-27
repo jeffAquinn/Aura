@@ -1,6 +1,6 @@
 #!/bin/sh
 # Derive Aura's UI assets from assets/Aura.jpeg (the source of truth, never shipped as is).
-#   scripts/build-assets.sh <output-dir>   ->  Avatar.png, Starfield.png, AppIcon.icns
+#   scripts/build-assets.sh <output-dir>   ->  Avatar.png, Starfield.png, Welcome.jpg, AppIcon.icns
 set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$1"
@@ -18,6 +18,9 @@ sips -Z 256 "$TMP/face.png" --out "$OUT/Avatar.png" >/dev/null
 # "Aura Starfield" theme: the starfield at the right of the portrait (no face), blurred in-app.
 sips -s format png -c 1536 752 --cropOffset 0 2000 "$ROOT/assets/Aura.jpeg" --out "$TMP/stars.png" >/dev/null
 sips -Z 900 "$TMP/stars.png" --out "$OUT/Starfield.png" >/dev/null
+
+# Welcome: shown while Aura starts and whenever the conversation is empty (assets/Welcome.jpeg).
+sips -s format jpeg -s formatOptions 85 -Z 900 "$ROOT/assets/Welcome.jpeg" --out "$OUT/Welcome.jpg" >/dev/null
 
 # App icon (Finder, permission prompts, Activity Monitor).
 ICONSET="$TMP/AppIcon.iconset"

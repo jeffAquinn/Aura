@@ -8,6 +8,7 @@ public struct ChatView: View {
     let store: ChatStore
     let avatar: Image?
     let backdrop: Image?
+    let welcome: Image?  // shown while Aura starts and while the conversation is empty
     let onRestart: () -> Void
     let onOpenHOLTerminal: () -> Void
     let onOpenWorkstation: () -> Void
@@ -31,13 +32,14 @@ public struct ChatView: View {
     @AppStorage(ChatAppearance.userAvatarBorderTransparencyKey) private var userAvatarBorderTransparency = 0.55
     @AppStorage(ChatAppearance.auraAvatarBorderTransparencyKey) private var auraAvatarBorderTransparency = 0.5
 
-    public init(store: ChatStore, avatar: Image?, backdrop: Image? = nil, onRestart: @escaping () -> Void,
+    public init(store: ChatStore, avatar: Image?, backdrop: Image? = nil, welcome: Image? = nil, onRestart: @escaping () -> Void,
                 onOpenHOLTerminal: @escaping () -> Void = {}, onOpenWorkstation: @escaping () -> Void = {},
                 onOpenVault: @escaping () -> Void = {}, onOpenAuditLog: @escaping () -> Void = {},
                 onOpenObserver: @escaping () -> Void = {}) {
         self.store = store
         self.avatar = avatar
         self.backdrop = backdrop
+        self.welcome = welcome
         self.onRestart = onRestart
         self.onOpenHOLTerminal = onOpenHOLTerminal
         self.onOpenWorkstation = onOpenWorkstation
@@ -54,11 +56,15 @@ public struct ChatView: View {
             if case let .offline(message) = store.connection {
                 OfflineBanner(message: message, onRestart: onRestart)
             }
-            if store.items.isEmpty, store.phase == .idle {
-                WelcomeView(avatar: avatar, name: store.persona.name)
-            } else {
-                TranscriptView(store: store, avatar: avatar)
+            Group {
+                if store.items.isEmpty, store.phase == .idle {
+                    WelcomeView(avatar: avatar, image: welcome, name: store.persona.name,
+                                starting: store.connection == .starting).transition(.opacity)
+                } else {
+                    TranscriptView(store: store, avatar: avatar).transition(.opacity)
+                }
             }
+            .animation(.smooth(duration: 0.3), value: store.items.isEmpty)
             InputBar(store: store)
         }
         .frame(minWidth: 360, minHeight: 440)
@@ -144,28 +150,33 @@ struct HeaderView: View {
     }
 
     var body: some View {
-        HStack(spacing: 10) {
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 10) {
-                    AvatarView(image: avatar, size: 30, pulsing: store.phase == .waking || store.connection == .starting || speaking)
-                    Text(store.persona.name).font(.headline)
-                    Divider().frame(height: 14)
-                    AuraUsageView(usage: usage)
-                        .task { usage.start() }
+        VStack(alignment: .leading, spacing: 6) {
+            // Top to bottom: resource use; Aura's portrait and name (centered) with the panel's
+            // controls; the current stage and its progress (only while something happens); then
+            // the status lights.
+            AuraUsageView(usage: usage, performance: store.localPerformance).task { usage.start() }
+            ZStack {
+                HStack(spacing: 12) {
+                    Spacer(minLength: 0)
+                    controls
                 }
-                VStack(alignment: .leading, spacing: 1) {
-                    if let subtitle {
-                        Text(subtitle).font(.caption.weight(.medium)).lineLimit(1)
-                    }
-                    StatusChips(activityColor: dotColor, activityDetail: activityDetail, health: store.health,
-                                localPerformance: store.localPerformance)
-                }
-                .padding(.leading, 40)
+                AuraTitle(name: store.persona.name, avatar: avatar,
+                          pulsing: store.phase == .waking || store.connection == .starting || speaking)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .contentShape(.rect)
-            .overlay { if !offscreen { WindowDragArea() } }  // the panel moves by its header; elsewhere, drags select text
-            .help("Drag to move")
+            TurnProgress(stage: TurnStage(store: store, speaking: speaking))
+            StatusChips(store: store)
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 10)
+        .padding(.bottom, 8)
+        // The panel moves by its header (its empty parts; the buttons stay buttons). Elsewhere,
+        // drags select text.
+        .background { if !offscreen { WindowDragArea() } }
+        .help("Drag to move")
+    }
+
+    private var controls: some View {
+        HStack(spacing: 12) {
             Button {
                 if speaking { store.speech?.stop() }
                 Task { await store.updateVoice(VoicePatch(speak: !store.voice.speak)) }
@@ -177,6 +188,15 @@ struct HeaderView: View {
             .foregroundStyle(store.voice.speak ? Color.accentColor : .secondary)
             .help(store.voice.speak ? "Spoken replies are on" : "Spoken replies are off")
             .disabled(store.transport == nil)
+            Button {
+                Task { await store.newConversation() }
+            } label: {
+                Image(systemName: "square.and.pencil")
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("New conversation")
+            .disabled(store.isBusy || store.transport == nil || store.items.isEmpty)
             Menu {
                 Button("Settings…") { showSettings = true }
                 Divider()
@@ -194,167 +214,201 @@ struct HeaderView: View {
                 Image(systemName: "ellipsis.circle")
             }
             .menuStyle(.borderlessButton)
-                .foregroundStyle(.secondary)
-                .help("Open settings and Aura panels")
-                .popover(isPresented: $showSettings, arrowEdge: .bottom) { SettingsView(store: store) }
-                .confirmationDialog("Restart Aura Server?", isPresented: $confirmRestart, titleVisibility: .visible) {
-                    Button("Restart Server", role: .destructive, action: onRestart)
-                    Button("Cancel", role: .cancel) {}
-                } message: {
-                    Text("This temporarily disconnects Aura and interrupts active sessions.")
-                }
-            Button {
-                Task { await store.newConversation() }
-            } label: {
-                Image(systemName: "square.and.pencil")
-            }
-            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
+            .fixedSize()
             .foregroundStyle(.secondary)
-            .help("New conversation")
-            .disabled(store.isBusy || store.transport == nil || store.items.isEmpty)
-        }
-        .padding(.horizontal, 16)
-        .padding(.top, 16)
-        .padding(.bottom, 10)
-    }
-
-    private var subtitle: String? {
-        switch store.connection {
-        case .starting: return "Starting Aura…"
-        case .offline: return "Aura is offline"
-        case .connected:
-            if store.isAnsweringElsewhere { return "Answering from Slack…" }
-            return switch store.phase {
-            case .idle: speaking ? "Speaking a reply" : nil
-            case .thinking: "Thinking through your request"
-            case .waking: "Waking the selected model"
-            case .streaming: "Writing a reply"
-            case .stopping: "Stopping the current task"
-            case .awaitingApproval: "Waiting for your approval"
-            }
-        }
-    }
-
-    private var activityDetail: String {
-        switch store.connection {
-        case .starting: "Aura Server is starting."
-        case let .offline(message): "Aura Server is unavailable: \(message)"
-        case .connected: "Aura Server is connected."
-        }
-    }
-
-    private var dotColor: Color {
-        switch store.connection {
-        case .starting: .orange
-        case .offline: .red
-        case .connected:
-            switch store.phase {
-            case .idle: .green
-            case .waking, .stopping, .awaitingApproval: .orange
-            case .thinking, .streaming: .accentColor
+            .help("Open settings and Aura panels")
+            .popover(isPresented: $showSettings, arrowEdge: .bottom) { SettingsView(store: store) }
+            .confirmationDialog("Restart Aura Server?", isPresented: $confirmRestart, titleVisibility: .visible) {
+                Button("Restart Server", role: .destructive, action: onRestart)
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("This temporarily disconnects Aura and interrupts active sessions.")
             }
         }
     }
 }
 
-/// Three compact, evidence-scoped status chips. Each dot stays beside the label it represents.
-private struct StatusChips: View {
-    let activityColor: Color
-    let activityDetail: String
-    let health: Health?
-    let localPerformance: LocalModelPerformance?
+/// Aura's portrait and name, centered at the top of the panel: one clean line, like a Mac app's
+/// title, in the system face with a little extra letter spacing.
+struct AuraTitle: View {
+    let name: String
+    let avatar: Image?
+    var pulsing = false
 
     var body: some View {
-        HStack(spacing: 4) {
-            StatusChip(label: activityLabel, color: activityColor, detail: activityDetail)
-            StatusChip(label: runtimeLabel, color: runtimeColor, detail: runtimeDetail)
-            StatusChip(label: governanceLabel, color: governanceColor, detail: governanceDetail)
-            if let localPerformance { LocalPerformanceChip(performance: localPerformance) }
+        HStack(spacing: 7) {
+            AvatarView(image: avatar, size: 24, pulsing: pulsing)
+            Text(name)
+                .font(.system(size: 15, weight: .semibold))
+                .tracking(0.6)
+                .foregroundStyle(.primary)
         }
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("Session: \(activityDetail). Runtime: \(runtimeDetail). Safeguards: \(governanceDetail)")
-    }
-
-    private var activityLabel: String {
-        activityDetail.hasPrefix("Aura Server is connected") ? "Connected" : activityDetail.hasPrefix("Aura Server is starting") ? "Starting" : "Offline"
-    }
-
-    private var runtimeLabel: String {
-        switch health?.runtimeHealth?.state {
-        case "loaded": "Model loaded"
-        case "idle": "Model idle"
-        case "unavailable": "Model unavailable"
-        default: "Checking model"
-        }
-    }
-
-    private var governanceLabel: String {
-        guard let governance = health?.governanceHealth else { return "Checking safeguards" }
-        return governance.state == "attention" ? "Review needed" : "Safeguards ready"
-    }
-
-    private var runtimeColor: Color {
-        switch health?.runtimeHealth?.state {
-        case "unavailable": .red
-        case "idle", "unknown": .orange
-        case "loaded": .green
-        default: .secondary
-        }
-    }
-
-    private var governanceColor: Color { health?.governanceHealth?.state == "attention" ? .orange : health == nil ? .secondary : .green }
-    private var runtimeDetail: String { health?.runtimeHealth?.detail ?? "Runtime state has not been checked yet." }
-    private var governanceDetail: String {
-        guard let governance = health?.governanceHealth else { return "Governance state has not been checked yet." }
-        let connections = governance.optionalConnectionAttention
-        return connections.isEmpty ? governance.agent.detail : "Optional connection attention: \(connections.joined(separator: ", ")). \(governance.agent.detail)"
+        .accessibilityAddTraits(.isHeader)
     }
 }
 
-/// The local model's last completed generation, shown alongside the status it belongs to.
-private struct LocalPerformanceChip: View {
-    let performance: LocalModelPerformance
-    @Environment(\.bubbles) private var bubbles
+/// Where the current turn is, for the progress bar under the status: each stage it moves
+/// through has its place on the bar. nil when nothing is happening.
+struct TurnStage: Equatable {
+    let label: String
+    let progress: Double
+    var tint: Color = .accentColor
 
-    private var label: String {
-        "\(performance.totalDuration.formatted(.number.precision(.fractionLength(1))))s · \(performance.outputTokensPerSecond.formatted(.number.precision(.fractionLength(1)))) tok/s"
+    init(label: String, progress: Double, tint: Color = .accentColor) {
+        self.label = label
+        self.progress = progress
+        self.tint = tint
     }
 
-    private var detail: String {
-        "Local model performance: \(performance.totalDuration.formatted(.number.precision(.fractionLength(2)))) seconds total; \(performance.outputTokens) generated tokens at \(performance.outputTokensPerSecond.formatted(.number.precision(.fractionLength(2)))) tokens per second."
+    @MainActor init?(store: ChatStore, speaking: Bool) {
+        switch store.connection {
+        case .starting: self.init(label: "Starting Aura", progress: 0.3); return
+        case .offline: return nil
+        case .connected: break
+        }
+        if store.isAnsweringElsewhere {
+            self.init(label: "Answering from Slack", progress: 0.5); return
+        }
+        switch store.phase {
+        case .idle:
+            if speaking { self.init(label: "Speaking the reply", progress: 1) } else { return nil }
+        case .waking: self.init(label: "Loading the model", progress: 0.2, tint: .orange)
+        case .thinking: self.init(label: "Thinking", progress: 0.4)
+        case .streaming:
+            // A tool line is the newest thing: Aura is working; otherwise it is writing.
+            if store.items.last?.role == .status {
+                self.init(label: Self.tool(store.items.last?.text ?? ""), progress: 0.6)
+            } else {
+                self.init(label: "Writing the reply", progress: 0.85)
+            }
+        case .awaitingApproval: self.init(label: "Waiting for your approval", progress: 0.7, tint: .orange)
+        case .stopping: self.init(label: "Stopping", progress: 0.95, tint: .orange)
+        }
     }
+
+    /// "[Tool: Web_Search_Tool] Searching…" reads as "Using Web Search".
+    static func tool(_ status: String) -> String {
+        guard let match = status.firstMatch(of: /\[Tool: ([^\]]+)\]/) else { return "Working" }
+        let name = String(match.1).replacingOccurrences(of: "_Tool", with: "").replacingOccurrences(of: "_", with: " ")
+        return "Using \(name)"
+    }
+}
+
+/// A slim progress bar with the stage's name: it glides from stage to stage, fills when the turn
+/// ends, then fades away. Nothing is shown while Aura is idle.
+struct TurnProgress: View {
+    let stage: TurnStage?
+    @State private var done: TurnStage?  // the full bar after a turn, while it fades
+    @State private var fading: Task<Void, Never>?
+
+    private var shown: TurnStage? { stage ?? done }
 
     var body: some View {
-        Label(label, systemImage: "speedometer")
-            .font(.caption2.weight(.medium))
-            .monospacedDigit()
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 3)
-            .overlay(Capsule().strokeBorder(bubbles.auraBorder, lineWidth: 1))
-            .help(detail)
-            .accessibilityLabel(detail)
+        Group {
+            if let shown {
+                HStack(spacing: 8) {
+                    Text(shown.label)
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .contentTransition(.opacity)
+                    GeometryReader { geometry in
+                        ZStack(alignment: .leading) {
+                            Capsule().fill(.quaternary)
+                            Capsule().fill(shown.tint.gradient)
+                                .frame(width: max(3, geometry.size.width * shown.progress))
+                        }
+                    }
+                    .frame(width: 96, height: 3)
+                }
+                .transition(.opacity)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("\(shown.label), \(Int(shown.progress * 100)) percent")
+            }
+        }
+        .frame(height: shown == nil ? 0 : 14, alignment: .leading)
+        .clipped()
+        .animation(.smooth(duration: 0.35), value: shown)
+        .onChange(of: stage) { previous, next in
+            fading?.cancel()
+            guard next == nil, let previous else { done = nil; return }
+            // The turn ended: fill the bar, then let it fade.
+            done = TurnStage(label: previous.label == "Loading the model" ? "Ready" : "Done", progress: 1)
+            fading = Task {
+                try? await Task.sleep(for: .milliseconds(700))
+                guard !Task.isCancelled else { return }
+                done = nil
+            }
+        }
     }
 }
 
-/// A small outlined capsule that uses the configured Aura-message border, so status reads as
-/// part of the same visual system without impersonating a message bubble.
-private struct StatusChip: View {
+/// Three quiet status lights, each showing only the thing it is named for: the connection to
+/// Aura Server, the model the next message will use, and Aura's safeguards.
+struct StatusChips: View {
+    let store: ChatStore
+
+    var body: some View {
+        HStack(spacing: 10) {
+            StatusLight(label: connection.label, color: connection.color, detail: connection.detail)
+            StatusLight(label: model.label, color: model.color, detail: model.detail)
+            StatusLight(label: safeguards.label, color: safeguards.color, detail: safeguards.detail)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    typealias Light = (label: String, color: Color, detail: String)
+
+    var connection: Light {
+        switch store.connection {
+        case .starting: ("Starting", .orange, "Aura Server is starting.")
+        case let .offline(message): ("Offline", .red, "Aura Server is unavailable: \(message)")
+        case .connected: ("Connected", .green, "Aura Server is connected.")
+        }
+    }
+
+    var model: Light {
+        let runtime = store.health?.runtimeHealth
+        let detail = runtime.map { "\($0.model): \($0.detail)" } ?? "The model hasn't been checked yet."
+        // A turn waking the model knows before the next health check does.
+        if store.phase == .waking { return ("Model loading", .orange, detail) }
+        switch runtime?.state {
+        case "loaded": return ("Model ready", .green, detail)
+        case "loading": return ("Model loading", .orange, detail)
+        case "idle": return ("Model idle", .secondary, detail)  // normal: it loads with the next message
+        case "unavailable": return ("No model", .red, detail)
+        case "unknown": return ("Cloud model", .accentColor, detail)
+        default: return ("Checking", .secondary, detail)
+        }
+    }
+
+    var safeguards: Light {
+        guard let governance = store.health?.governanceHealth else {
+            return ("Checking", .secondary, "Aura's safeguards haven't been checked yet.")
+        }
+        let connections = governance.optionalConnectionAttention
+        let detail = connections.isEmpty ? governance.agent.detail
+            : "Optional connection attention: \(connections.joined(separator: ", ")). \(governance.agent.detail)"
+        return governance.state == "attention" ? ("Review needed", .orange, detail) : ("Safeguards on", .green, detail)
+    }
+}
+
+/// One status light: a small dot and a short word, with the full detail on hover.
+private struct StatusLight: View {
     let label: String
     let color: Color
     let detail: String
-    @Environment(\.bubbles) private var bubbles
 
     var body: some View {
         HStack(spacing: 4) {
             Circle().fill(color).frame(width: 6, height: 6)
-            Text(label).lineLimit(1)
+            Text(label).lineLimit(1).fixedSize()
         }
         .font(.caption2.weight(.medium))
         .foregroundStyle(.secondary)
-        .padding(.horizontal, 6)
-        .padding(.vertical, 3)
-        .overlay(Capsule().strokeBorder(bubbles.auraBorder, lineWidth: 1))
+        .animation(.smooth(duration: 0.3), value: label)
         .help(detail)
         .accessibilityLabel("\(label): \(detail)")
     }
@@ -380,27 +434,57 @@ struct OfflineBanner: View {
 
 // MARK: - transcript
 
+/// While Aura starts, and whenever the conversation is empty: Aura's welcome image, feathered
+/// into the panel with no hard edge, and a short greeting. While starting, the image breathes
+/// slowly as the loading cue (not with Reduce Motion).
 struct WelcomeView: View {
     let avatar: Image?
+    var image: Image? = nil
     var name = "Aura"
+    var starting = false
+    @State private var breathe = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
         VStack(spacing: 10) {
-            Spacer()
-            AvatarView(image: avatar, size: 64)
-            Text("Hi, I'm \(name).").font(.title3.weight(.semibold))
-            Text("Ask me anything, search the web, run some Python,\nor have me work in your vault.")
+            Spacer(minLength: 8)
+            if let image {
+                image.resizable().scaledToFill()
+                    .frame(width: 220, height: 220)
+                    .mask(RadialGradient(colors: [.black, .black.opacity(0.85), .clear], center: .center,
+                                         startRadius: 30, endRadius: 112))
+                    .scaleEffect(breathe ? 1.04 : 1)
+                    .opacity(breathe ? 1 : 0.9)
+                    .padding(.bottom, 2)
+                    .accessibilityHidden(true)
+            } else {
+                AvatarView(image: avatar, size: 64)
+            }
+            Text(starting ? "Getting \(name) ready…" : "Hi, I'm \(name).")
+                .font(.title3.weight(.semibold))
+                .contentTransition(.opacity)
+            Text(starting ? "Starting Aura Server and your model." : "Ask me anything, search the web, run some Python,\nor have me work in your vault.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
+                .contentTransition(.opacity)
             Text("⌥Space shows or hides this panel")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
                 .padding(.top, 4)
-            Spacer()
+                .opacity(starting ? 0 : 1)
+            Spacer(minLength: 8)
         }
         .frame(maxWidth: .infinity)
         .padding(20)
+        .animation(.smooth(duration: 0.4), value: starting)
+        .onChange(of: starting, initial: true) { _, isStarting in
+            if isStarting && !reduceMotion {
+                withAnimation(.easeInOut(duration: 2.4).repeatForever(autoreverses: true)) { breathe = true }
+            } else {
+                withAnimation(.smooth(duration: 0.6)) { breathe = false }
+            }
+        }
     }
 }
 
@@ -415,13 +499,17 @@ struct TranscriptView: View {
                 Color.clear.frame(height: 1).id("bottom")
             }
             .scrollIndicators(.automatic)
-            // A restored conversation arrives before this view exists (the welcome view shows
-            // while the transcript is empty), so the onChange handlers below never fire for it.
-            // Start at the last message instead of the top.
+            // Start at the last message, and stay pinned there as the content grows (a reply
+            // streaming in, a new bubble, the typing dots) without jumping: SwiftUI keeps the
+            // bottom in place itself. Jumping to the end on every word or phase change made the
+            // lazy list land on rows it hadn't drawn yet, so the bubbles flashed blank.
             .defaultScrollAnchor(.bottom, for: .initialOffset)
-            .onChange(of: store.items.last?.text) { proxy.scrollTo("bottom", anchor: .bottom) }
-            .onChange(of: store.items.count) { proxy.scrollTo("bottom", anchor: .bottom) }
-            .onChange(of: store.phase) { proxy.scrollTo("bottom", anchor: .bottom) }
+            .defaultScrollAnchor(.bottom, for: .sizeChanges)
+            // Only your own new message scrolls the view, smoothly, if you'd scrolled up to read.
+            .onChange(of: store.items.count) { old, new in
+                guard new > old, store.items.last?.role == .user else { return }
+                withAnimation(.smooth(duration: 0.3)) { proxy.scrollTo("bottom", anchor: .bottom) }
+            }
         }
     }
 }
@@ -437,13 +525,16 @@ struct TranscriptContent: View {
             ForEach(Array(store.items.enumerated()), id: \.element.id) { index, item in
                 ItemView(item: item, store: store, avatar: avatar)
                     .padding(.top, spacing(before: index))
+                    .transition(Self.arrival)
             }
             if store.phase == .thinking || store.phase == .waking {
                 TypingIndicator(waking: store.phase == .waking, avatar: avatar).padding(.top, 10)
+                    .transition(.opacity)
             } else if store.phase == .stopping {
                 TypingIndicator(waking: false, stopping: true, avatar: avatar)
                     .accessibilityLabel("Stopping the current task")
                     .padding(.top, 10)
+                    .transition(.opacity)
             }
         }
         Group {
@@ -451,7 +542,13 @@ struct TranscriptContent: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
+        // New bubbles fade and rise into place; text streaming into a bubble isn't animated.
+        .animation(.smooth(duration: 0.28), value: store.items.count)
+        .animation(.smooth(duration: 0.2), value: store.phase)
     }
+
+    /// How a new bubble arrives: it fades in as it rises a little; a removed one simply fades.
+    static let arrival: AnyTransition = .asymmetric(insertion: .opacity.combined(with: .offset(y: 10)), removal: .opacity)
 
     /// Generous space between turns, tight space between a tool line and what it belongs to.
     private func spacing(before index: Int) -> CGFloat {
@@ -1012,30 +1109,66 @@ struct DeveloperChip: View {
     }
 }
 
-/// Live, scoped resource use for Aura's macOS app process.
-private struct AuraUsageView: View {
-    @ObservedObject var usage: AuraRuntimeUsage
-
-    var body: some View {
-        HStack(spacing: 7) {
-            Label("CPU \(usage.cpuText)", systemImage: "gauge.with.dots.needle.50percent")
-                .help("CPU currently used by Aura's macOS app process.")
-            Label("Disk \(usage.storageText)", systemImage: "internaldrive")
-                .help("Aura app bundle, application data and logs. Local model downloads and disposable developer workspaces are excluded.")
-        }
-        .font(.system(size: 10, weight: .medium, design: .rounded).monospacedDigit())
-        .foregroundStyle(.secondary)
-        .fixedSize()
-        .accessibilityElement(children: .combine)
-        .accessibilityLabel("Aura resource use: CPU \(usage.cpuText), storage \(usage.storageText)")
+/// An icon and its text, close together (the top row is narrow).
+private struct CompactLabel: LabelStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        HStack(spacing: 2) { configuration.icon; configuration.title }
     }
 }
 
-/// A per-message override. "Automatic" follows the user's Chat role configured in Settings.
+/// Live resource use in one row at the top left: CPU, memory, storage, and the local model's
+/// last speed (after a local reply).
+private struct AuraUsageView: View {
+    @ObservedObject var usage: AuraRuntimeUsage
+    let performance: LocalModelPerformance?
+
+    var body: some View {
+        HStack(spacing: 9) {
+            Label(usage.cpuText, systemImage: "gauge.with.dots.needle.50percent")
+                .help("CPU currently used by Aura's macOS app process.")
+            Label(usage.memoryText, systemImage: "memorychip")
+                .help(usage.memoryDetail)
+            Label(usage.storageText, systemImage: "internaldrive")
+                .help("Aura app bundle, application data and logs. Local model downloads and disposable developer workspaces are excluded.")
+            if let performance {
+                Label("\(performance.outputTokensPerSecond.formatted(.number.precision(.fractionLength(1)))) tok/s",
+                      systemImage: "speedometer")
+                    .help(Self.detail(performance))
+                    .transition(.opacity)
+            }
+        }
+        .labelStyle(CompactLabel())
+        .font(.system(size: 10, weight: .medium, design: .rounded).monospacedDigit())
+        .foregroundStyle(.secondary)
+        .lineLimit(1)
+        .fixedSize()
+        .animation(.smooth(duration: 0.3), value: performance == nil)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("Resource use: CPU \(usage.cpuText), memory \(usage.memoryText), storage \(usage.storageText)"
+                            + (performance.map { ", \(Self.detail($0))" } ?? ""))
+    }
+
+    static func detail(_ performance: LocalModelPerformance) -> String {
+        "Local model's last reply: \(performance.totalDuration.formatted(.number.precision(.fractionLength(2)))) seconds total; \(performance.outputTokens) tokens at \(performance.outputTokensPerSecond.formatted(.number.precision(.fractionLength(2)))) tokens per second."
+    }
+}
+
+/// The Aura model for the next messages. It starts on the Startup model saved in Settings;
+/// "Automatic" sends each message to its role's model instead.
 /// Developer turns use the selected coding harness, so this control is shown only for Aura turns.
 struct ChatModelPicker: View {
     let store: ChatStore
     static let automatic = ""
+    static let labelLength = 14  // characters: the lane is 146 points, shared with the Developer button
+
+    /// A long model file name, shortened in the middle so its family and size stay readable
+    /// ("Ternary-…Q2_0"). macOS draws this menu as a native pop-up sized to its whole title, so
+    /// the title itself must be short. The full name is in the menu and the help.
+    static func short(_ name: String, _ length: Int = labelLength) -> String {
+        guard name.count > length else { return name }
+        let head = (length - 1) / 2, tail = length - 1 - head
+        return "\(name.prefix(head))…\(name.suffix(tail))"
+    }
     static let sections = [(provider: "ollama", title: "Local Ollama"), (provider: "llamacpp", title: "Local llama.cpp"),
                            (provider: "anthropic", title: "Anthropic cloud")]
 
@@ -1047,9 +1180,8 @@ struct ChatModelPicker: View {
                 return "\(model.provider)|\(model.model)"
             },
             set: { value in
-                guard !value.isEmpty else { store.chatModel = nil; return }
                 let pieces = value.split(separator: "|", maxSplits: 1).map(String.init)
-                store.chatModel = pieces.count == 2 ? ModelChoice(provider: pieces[0], model: pieces[1]) : nil
+                store.pickChatModel(pieces.count == 2 ? ModelChoice(provider: pieces[0], model: pieces[1]) : nil)
             }
         )
     }
@@ -1057,7 +1189,7 @@ struct ChatModelPicker: View {
     var body: some View {
         Menu {
             Picker("Aura model", selection: selection) {
-                Text("Automatic (Chat setting)").tag(Self.automatic)
+                Text("Automatic (model by task)").tag(Self.automatic)
                 if let catalog {
                     ForEach(Self.sections, id: \.provider) { section in
                         let models = catalog.models(for: section.provider)
@@ -1075,6 +1207,8 @@ struct ChatModelPicker: View {
         } label: {
             HStack(spacing: 3) {
                 Image(systemName: "cpu")
+                // A long model file name keeps to its lane: shortened in the middle, so both its
+                // family and its size stay readable (the full name is in the menu and the help).
                 Text(modelLabel).lineLimit(1)
             }
             .font(.system(size: 11, weight: .semibold))
@@ -1088,12 +1222,12 @@ struct ChatModelPicker: View {
         .fixedSize()
         .disabled(store.developer != nil || catalog == nil)
         .help(store.developer != nil ? "Developer turns use their selected coding harness"
-              : "Choose a model for the next Aura message, or follow the Chat setting")
+              : "\(store.chatModel?.model ?? "Automatic"): choose the model for your Aura messages, or Automatic to pick one by task")
     }
 
     private var modelLabel: String {
-        if let model = store.chatModel { return model.model }
-        if let model = store.automaticModel { return "Auto · \(model.model)" }
+        if let model = store.chatModel { return Self.short(model.model) }
+        if let model = store.automaticModel { return "Auto · \(Self.short(model.model, Self.labelLength - 7))" }
         return "Auto"
     }
 }

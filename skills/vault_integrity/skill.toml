@@ -1,0 +1,14 @@
+name = "vault_integrity"
+version = "1.0.0"
+purpose = "Check that a change to a vault file did exactly what was intended: fingerprint the file and its folder before an approved write, then compare after it. Read-only."
+dependencies = []
+
+[inputs]
+path = "vault-relative path of the file to check, e.g. 'notes/plan.md'"
+baseline = "empty to take a fingerprint; or the 'baseline' JSON a previous run returned, to compare against it"
+expected_sha256 = "optional: the SHA-256 the file should have after the change (empty if not known)"
+expected_content = "optional: the exact text the file should hold after the change, used when expected_sha256 is empty"
+
+[permissions]
+network = false
+vault = "read"

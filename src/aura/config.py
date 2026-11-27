@@ -9,6 +9,9 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 PROJECT_DIR = Path(__file__).resolve().parents[2]  # the repository: src/aura/config.py -> ../..
+# Where Homebrew puts llama.cpp's server (Apple silicon first). The app's PATH has neither.
+LLAMA_SERVER = next((p for p in ("/opt/homebrew/bin/llama-server", "/usr/local/bin/llama-server")
+                     if Path(p).is_file()), "/opt/homebrew/bin/llama-server")
 
 
 @dataclass(frozen=True)
@@ -17,17 +20,20 @@ class Settings:
     base_url: str = "http://localhost:11434/v1"
     api_key: str = "ollama"  # Ollama ignores the key, but the client requires one.
     model: str = "gemma4:26b"
-    # llama.cpp's llama-server, which the user starts themselves (scripts/llama-server-bonsai.sh).
-    # Aura only connects to it, and only on this Mac: the URL must be a 127.0.0.1/localhost one.
+    # llama.cpp's llama-server, which Aura starts for a llama.cpp model and stops again
+    # (aura.llama_server). Only on this Mac: the URL must be a 127.0.0.1/localhost one.
     llamacpp_url: str = "http://127.0.0.1:8080/v1"
+    # The llama.cpp models: every .gguf file in this folder (and below), named by its file name.
+    llamacpp_models_dir: Path = Path("~/models").expanduser()
+    llama_server: str = LLAMA_SERVER  # the program Aura runs; never one a model or skill names
     # "none" | "low" | "medium" | "high"; None omits the parameter for servers that reject it.
     reasoning_effort: str | None = "none"
     # The context window the *server* actually allocates (see `ollama ps`). Ollama silently
     # drops the oldest messages past this, so Aura compacts its memory before reaching it.
     context_tokens: int = 16384
-    # How long Ollama keeps the model resident after an actual chat turn. Aura does not preload
-    # models simply because its panel is visible.
-    model_keep_alive: str = "5m"
+    # How long a local model (Ollama's, or llama-server's) stays loaded after a turn. Aura does
+    # not preload models simply because its panel is visible.
+    model_keep_alive: str = "10m"
     # The most one model call may generate. Without a cap, a model stuck in a loop never stops:
     # Ollama shifts its context and keeps going (seen in a live test: one call ran 23 minutes).
     # Half the window leaves room for the longest memory summary.
@@ -62,6 +68,8 @@ class Settings:
             api_key=env("AURA_API_KEY", d.api_key),
             model=env("AURA_MODEL", d.model),
             llamacpp_url=env("AURA_LLAMACPP_URL", d.llamacpp_url),
+            llamacpp_models_dir=Path(env("AURA_LLAMACPP_MODELS_DIR", str(d.llamacpp_models_dir))).expanduser(),
+            llama_server=env("AURA_LLAMA_SERVER", d.llama_server),
             reasoning_effort=env("AURA_REASONING_EFFORT", d.reasoning_effort) or None,
             context_tokens=int(env("AURA_CONTEXT_TOKENS", d.context_tokens)),
             model_keep_alive=env("AURA_MODEL_KEEP_ALIVE", d.model_keep_alive),

@@ -53,8 +53,10 @@ public final class ChatStore {
     public private(set) var health: Health?
     /// The chat box's choice: hand messages to this Developer ("claude", "codex"), or nil (Aura decides).
     public var developer: String?
-    /// Optional one-turn Aura-model override selected beside the chat box. nil follows the Chat role.
+    /// The Aura model chosen beside the chat box; it starts on the saved Startup model (`adopt`).
+    /// nil is "Automatic": each message goes to its role's model (Chat, Web search, Deep research).
     public var chatModel: ModelChoice?
+    @ObservationIgnored private var startupApplied = false  // the Startup model was put in the chat box
     /// The concrete model the server selected for the most recent automatic Aura turn.
     public private(set) var automaticModel: ModelChoice?
     /// The last completed local inference, measured by the server around the actual model stream.
@@ -265,7 +267,13 @@ public final class ChatStore {
     }
 
     private func show(_ info: ConversationInfo) {
-        items = info.messages.map { Item(role: $0.role == "user" ? .user : .aura, text: $0.text, origin: $0.origin) }
+        // Keep the bubbles already shown (same place, role and text) as they are: new identities
+        // would make the transcript redraw every bubble at once, which flashes it blank.
+        let shown = items
+        items = info.messages.enumerated().map { i, message in
+            let item = Item(role: message.role == "user" ? .user : .aura, text: message.text, origin: message.origin)
+            return i < shown.count && shown[i].role == item.role && shown[i].text == item.text ? shown[i] : item
+        }
         if let note = info.recoveryNote {
             items.append(Item(role: .status, text: note))
         }
@@ -377,22 +385,51 @@ public final class ChatStore {
         guard let settings = try? await transport?.settings() else { return }
         setVoice(settings.voice)
         persona = settings.persona
-        if let catalog = try? await transport?.models() { modelCatalog = catalog }
+        if let catalog = try? await transport?.models() { adopt(catalog) }
         developerInfo = try? await transport?.developer()
+    }
+
+    /// The user picked a model in the chat box: load it now, so the next message doesn't wait for
+    /// it. A llama.cpp model starts Aura's llama-server; picking another model stops it.
+    public func pickChatModel(_ model: ModelChoice?) {
+        let changed = model != chatModel
+        chatModel = model
+        startupApplied = true  // the user's pick: a later Settings load must not replace it
+        guard changed, let model, let transport else { return }
+        Task {
+            try? await transport.prepareModel(model)
+            await refreshHealth()  // the status shows the picked model (loading, or ready) right away
+        }
+    }
+
+    /// Take the server's model settings. The chat box starts on the saved Startup model (once, when
+    /// the settings first load) and follows a later Startup change while it is still on the old one.
+    /// A model the user picked, or "Automatic", stays. A Startup model the server can't run leaves
+    /// the chat box on Automatic: Settings shows why, and a turn on it would only fail.
+    private func adopt(_ catalog: ModelCatalog) {
+        let previous = modelCatalog?.roles["startup"]
+        modelCatalog = catalog
+        guard let startup = catalog.roles["startup"], catalog.startupModelProblem == nil else { return }
+        if !startupApplied {
+            startupApplied = true
+            if chatModel == nil { chatModel = startup }
+        } else if chatModel != nil && chatModel == previous {
+            chatModel = startup
+        }
     }
 
     public func updateModels(_ roles: [String: ModelChoice]) async -> String? {
         guard let catalog = try? await transport?.updateModels(ModelRoutingUpdate(roles: roles)) else {
             return "Aura could not save the model settings."
         }
-        modelCatalog = catalog
+        adopt(catalog)
         return nil
     }
 
     public func updateCodingEngine(_ engine: String) async -> String? {
         guard let transport else { return FriendlyMessage.offline }
         do {
-            modelCatalog = try await transport.updateCodingEngine(engine)
+            adopt(try await transport.updateCodingEngine(engine))
             return nil
         } catch let AuraClientError.http(_, message) {
             return message
@@ -405,7 +442,7 @@ public final class ChatStore {
     public func syncCloudModels() async -> String? {
         guard let transport else { return FriendlyMessage.offline }
         do {
-            modelCatalog = try await transport.syncCloudModels()
+            adopt(try await transport.syncCloudModels())
             return nil
         } catch let AuraClientError.http(_, message) {
             return message
@@ -417,7 +454,7 @@ public final class ChatStore {
     public func updateSleepMode(_ mode: SleepMode) async -> String? {
         guard let transport else { return FriendlyMessage.offline }
         do {
-            modelCatalog = try await transport.updateSleepMode(mode)
+            adopt(try await transport.updateSleepMode(mode))
             return nil
         } catch let AuraClientError.http(_, message) {
             return message
@@ -432,7 +469,7 @@ public final class ChatStore {
         let model = model.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !model.isEmpty, let transport else { return FriendlyMessage.offline }
         do {
-            modelCatalog = try await transport.pullLocalModel(model)
+            adopt(try await transport.pullLocalModel(model))
             return nil
         } catch let AuraClientError.http(_, message) {
             return message
@@ -653,6 +690,7 @@ public final class ChatStore {
     }
 
     private func endTurn() {
+        Task { await refreshHealth() }  // the model's state just changed (loaded, or done): show it now
         flushPendingText()
         if phase != .awaitingApproval {
             finishSpokenSegment()

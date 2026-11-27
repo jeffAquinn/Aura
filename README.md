@@ -78,8 +78,11 @@ consequential is recorded in `~/Library/Logs/Aura/actions.jsonl`.
 ### Model roles
 
 Settings → **Models** chooses a model for startup/default, complex coding, chat, deep research,
-and web search. Every role starts with the selected local **Ollama** model. Aura does not preload
-the startup model: it is only the initial choice, so opening Aura does not reserve model memory.
+and web search. Every role starts with the selected local **Ollama** model. At launch Aura loads
+the startup model, and the chat box starts on it; **Automatic** in the chat box's model menu picks
+the model by task instead. After 10 idle minutes (`AURA_MODEL_KEEP_ALIVE`), Aura unloads every model,
+Ollama's and llama.cpp's. With **Sleep Mode** on (Settings → Models), it then loads that one Ollama
+model and keeps it ready until Aura is used again; with it off, nothing stays loaded.
 
 To use Claude for any role, add an **Anthropic API key (Aura cloud models)** in Settings → Keys,
 then select Anthropic and a Claude model for that role. The key remains in the macOS Keychain and
@@ -94,12 +97,15 @@ chat prompt. Once Ollama reports the download complete, the model appears in the
 all five roles and in the chat box's one-turn model picker. Developer turns remain on their chosen
 Claude Code or Codex harness.
 
-A role can also use a model served by **llama.cpp** (`llama-server`), such as Ternary Bonsai 2.5:
-start it with `scripts/llama-server-bonsai.sh`, then choose **llama.cpp (local)** for a role. Aura
-only connects to `llama-server`; it never starts or stops it. The URL (`AURA_LLAMACPP_URL`,
-default `http://127.0.0.1:8080/v1`) must be on 127.0.0.1 or localhost. If `llama-server` isn't
-running, the automatic picker falls back to another local role, never to a cloud model. Sleep
-Mode, model downloads and the Developer's final handoff use Ollama only.
+A role can also use a **llama.cpp** model, such as Ternary Bonsai 2.5: install llama.cpp
+(`brew install llama.cpp`), put the `.gguf` file in `~/models` (`AURA_LLAMACPP_MODELS_DIR`), and
+choose **llama.cpp (local)**. A model's name is its file name. Aura runs `llama-server` itself:
+it starts it when a turn (or the chat box) picks a llama.cpp model, and stops it, unloading the
+model, when another model is picked, after 10 idle minutes, or when Aura quits. It listens on
+127.0.0.1 only (`AURA_LLAMACPP_URL`, default port 8080) with a random key for each launch, so no
+other program or web page can use it. If a llama.cpp model can't run, the automatic picker falls
+back to another local role, never to a cloud model. Sleep Mode, model downloads and the
+Developer's final handoff use Ollama only.
 
 ### The Observer
 

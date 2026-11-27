@@ -78,6 +78,7 @@ class Toolbox:
     masker: Masker = field(default_factory=Masker)  # secrets out of tool output, audit entries and replies
     skill_rows: list[Capability] = field(default_factory=list)  # the loaded skills' rows, as of all_tools()
     skill_state: tuple[tuple[str, str], ...] = ()  # the loaded skills' (name, digest), as of all_tools()
+    local_server: Any = None  # Aura's llama-server (aura.llama_server), set by the server only
     _checkpointer: Any = field(default=None, repr=False)
 
     def checkpointer(self) -> Any:

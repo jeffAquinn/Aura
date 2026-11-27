@@ -254,12 +254,8 @@ struct ModelsSection: View {
                         if sleepMode.enabled { saveSleepMode() }
                     }
                 }
-                Text("When on, Aura asks Ollama to keep this local model in memory even after the normal five-minute idle period. It can reserve several GB of unified memory and continues after Aura closes. Turning it off returns the model to Aura's normal idle lifecycle.")
+                Text("After 10 minutes with nothing happening, Aura unloads every model to free your Mac's memory. With Sleep Mode on, it then loads this one local model and keeps it ready, so your next message answers quickly; it can use several GB of memory and stays loaded after Aura closes. With Sleep Mode off, nothing stays loaded.")
                     .font(.caption).foregroundStyle(.secondary)
-                if let startup = roles["startup"]?.model, sleepMode.enabled && sleepMode.model != startup {
-                    Label("The Startup and Sleep models differ. Aura may load both models at launch, which increases memory use.", systemImage: "exclamationmark.triangle")
-                        .font(.caption).foregroundStyle(.orange)
-                }
                 Divider()
                 Text("Install a local Ollama model")
                     .font(.callout.weight(.medium))
@@ -307,7 +303,7 @@ struct ModelsSection: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("This keeps the selected local model resident in Ollama memory until you turn Sleep Mode off. It may make a smaller Mac feel less responsive.")
+            Text("After 10 idle minutes, Aura unloads every other model and keeps this one loaded in Ollama until you use Aura again. It may make a smaller Mac feel less responsive.")
         }
     }
 
@@ -476,7 +472,7 @@ private struct ModelRoleRow: View {
                     .frame(minWidth: 180)
             }
             if choice.provider == "llamacpp" && suggestions.isEmpty {
-                Text("llama-server isn’t running. Start it with scripts/llama-server-bonsai.sh, then reopen Settings.")
+                Text("No llama.cpp models found. Install llama.cpp (brew install llama.cpp) and put .gguf model files in ~/models; Aura starts and stops llama-server itself.")
                     .font(.caption).foregroundStyle(.orange)
             }
             if !suggestions.isEmpty {

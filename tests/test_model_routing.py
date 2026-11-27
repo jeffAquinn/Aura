@@ -393,7 +393,7 @@ def test_local_model_pull_rejects_unsafe_names_without_contacting_ollama(setting
     assert response.status_code == 422 and "unsupported characters" in response.json()["error"]
 
 
-def test_sleep_mode_keeps_only_the_chosen_local_model_resident(settings, monkeypatch):
+def test_switching_sleep_mode_on_loads_nothing_until_aura_is_idle(settings, monkeypatch):
     calls = []
     monkeypatch.setattr(server_module, "installed_ollama_models", lambda _settings: ["qwen3:8b"])
     monkeypatch.setattr(server_module.ModelKeeper, "warm_soon", lambda self: calls.append((self.model, self.keep_alive)))
@@ -403,7 +403,7 @@ def test_sleep_mode_keeps_only_the_chosen_local_model_resident(settings, monkeyp
     enabled = client.put("/v1/models/sleep", json={"enabled": True, "model": "qwen3:8b"}, headers=AUTH)
     assert enabled.status_code == 200
     assert enabled.json()["sleep_mode"] == {"enabled": True, "model": "qwen3:8b"}
-    assert calls == [("qwen3:8b", -1)]
+    assert calls == []  # it loads after ten idle minutes (tests/test_idle_sleep.py)
 
     disabled = client.put("/v1/models/sleep", json={"enabled": False, "model": "qwen3:8b"}, headers=AUTH)
     assert disabled.status_code == 200 and calls[-1] == ("qwen3:8b", settings.model_keep_alive)

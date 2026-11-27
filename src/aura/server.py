@@ -40,11 +40,12 @@ from aura.broadcast import TurnBroadcast, TurnView, frame
 from aura.citations import verify_citations, warning as citation_warning
 from aura.agents import AgentError
 from aura.lifecycle import Lifecycle, Turn
+from aura.llama_server import LlamaServer, LocalModelError, keep_alive_seconds, llamacpp_models
 from aura.masking import PATTERNS_ONLY, Masker
 from aura.config import Settings
 from aura.model_routing import (
     LOCAL_HOSTS, LOCAL_PROVIDERS, ROLES, ModelChoice, ModelRouting, Provider, SleepMode, infer_role,
-    llamacpp_root, local_root, valid_model_name,
+    local_root,
 )
 from aura.governor.continuous import DEEP
 from aura.developer.workflow import DeveloperError
@@ -60,7 +61,7 @@ from aura.tools.sandbox import cleanup_aura_docker, find_docker
 from aura.tools import vault_map
 from aura.voice import VoiceError
 
-KEEP_ALIVE = "5m"
+KEEP_ALIVE = "10m"
 MIN_TOKEN_CHARS = 32
 log = logging.getLogger("aura.server")
 
@@ -149,19 +150,22 @@ class ActiveModelKeeper:
 
     def loaded(self) -> bool | None:
         if self.aura.active_model.provider == "llamacpp":
-            # llama-server keeps its one model resident for as long as it runs; /health answers
-            # 200 only once that model is loaded. Down or loading is "can't tell", as for Ollama.
-            # A server running another model is also "can't tell": llama-server ignores the
-            # requested name, so the turn would quietly run on a different model.
-            try:
-                ok = httpx.get(f"{llamacpp_root(self.aura.settings)}/health", timeout=2).status_code == 200
-            except (httpx.HTTPError, ValueError):
-                ok = False
-            return True if ok and self.aura.active_model.model in llamacpp_models(self.aura.settings) else None
+            # Aura's own llama-server: loaded, or not (it starts on the next turn, as an idle
+            # Ollama model loads). None when Aura can't run it: no llama-server, or no model file.
+            server = self.aura.toolbox.local_server
+            model = self.aura.active_model.model
+            if server is None:
+                return None
+            if server.loaded(model):
+                return True
+            return False if model in server.models() else None
         local = self._local()
         return local.loaded() if local else None
 
     def warm_soon(self) -> None:
+        if self.aura.active_model.provider == "llamacpp" and self.aura.toolbox.local_server is not None:
+            self.aura.toolbox.local_server.touch()  # a turn ended: its idle time starts again
+            return
         local = self._local()
         if local:
             local.warm_soon()
@@ -378,20 +382,63 @@ def smallest_usable_ollama_model(sizes: dict[str, int]) -> ModelChoice | None:
     return ModelChoice("ollama", min(sizes, key=lambda name: (sizes[name], name)))
 
 
-def llamacpp_models(settings: Settings) -> list[str]:
-    """Models a running llama-server can answer with now; empty when it is down or still loading.
-
-    llama-server loads its model at start and answers 503 until it is ready, so a listed model
-    is a usable one. Aura never starts or stops llama-server: the user runs it."""
+def loaded_ollama_models(settings: Settings) -> list[str]:
+    """The models Ollama has in memory now (`ollama ps`); empty when it can't say."""
     try:
-        response = httpx.get(f"{llamacpp_root(settings)}/v1/models", timeout=2)
+        response = httpx.get(f"{ollama_root(settings)}/api/ps", timeout=2)
         response.raise_for_status()
-        listed = response.json().get("data", [])
-        # An un-aliased server names its model by file path, which is not a valid model name.
-        # scripts/llama-server-bonsai.sh passes --alias so the name is a short, stable one.
-        return sorted({name for item in listed if valid_model_name(name := str(item.get("id", "")))})
-    except (httpx.HTTPError, ValueError, TypeError, AttributeError):
+        names = {str(m.get("name") or m.get("model") or "") for m in response.json().get("models", [])}
+        return sorted(name for name in names if name)
+    except (OllamaModelError, httpx.HTTPError, ValueError, TypeError, AttributeError):
         return []
+
+
+class IdleSleep:
+    """After the idle time (AURA_MODEL_KEEP_ALIVE, 10 minutes) with nothing happening, free the
+    Mac's memory: unload every model (Ollama's and llama-server's). With Sleep Mode on, its model
+    is then loaded to stay resident; with it off, nothing stays loaded. The next activity (a
+    message, an approval, a pick in the chat box, any running turn) returns the Sleep model to the
+    ordinary idle lifetime, so it unloads like any model if it isn't used.
+
+    Each effect is a callable, so the policy is tested without a real Ollama or llama-server."""
+
+    def __init__(self, idle_after: float | None, busy: Callable[[], bool], sleep_mode: Callable[[], SleepMode],
+                 loaded: Callable[[], list[str]], unload: Callable[[str], None], keep: Callable[[str], None],
+                 release: Callable[[str], None], stop_llama: Callable[[str], None]):
+        self.idle_after = idle_after
+        self.busy, self.sleep_mode, self.loaded = busy, sleep_mode, loaded
+        self.unload, self.keep, self.release, self.stop_llama = unload, keep, release, stop_llama
+        self.last_active = time.monotonic()  # launching counts: the Startup model was just loaded
+        self.asleep = False
+
+    def active(self, now: float | None = None) -> None:
+        """Something happened: the idle time starts again, and a resident Sleep model returns to
+        the ordinary lifetime."""
+        self.last_active = time.monotonic() if now is None else now
+        if self.asleep:
+            self.asleep = False
+            sleep = self.sleep_mode()
+            if sleep.enabled:
+                self.release(sleep.model)
+
+    def check(self, now: float | None = None) -> bool:
+        """Go to sleep if Aura has been idle long enough. True when it just did."""
+        now = time.monotonic() if now is None else now
+        if self.busy():
+            self.active(now)
+            return False
+        if self.idle_after is None or self.asleep or now - self.last_active < self.idle_after:
+            return False
+        sleep = self.sleep_mode()
+        self.stop_llama("Aura was idle; Sleep Mode" if sleep.enabled else "Aura was idle")
+        for model in self.loaded():
+            if not (sleep.enabled and model == sleep.model):
+                self.unload(model)
+        if sleep.enabled:
+            self.keep(sleep.model)
+        self.asleep = True
+        log.info("idle: models unloaded%s", f"; Sleep Mode keeps {sleep.model}" if sleep.enabled else "")
+        return True
 
 
 def pull_ollama_model(settings: Settings, model: str) -> None:
@@ -442,7 +489,7 @@ def automatic_model_choice(
         fallback = routing.choice(fallback_role)
         if ready(fallback):
             if requested.provider == "llamacpp":
-                reason = f"llama-server is not serving the {role.replace('_', ' ')} model '{requested.model}'"
+                reason = f"the {role.replace('_', ' ')} llama.cpp model '{requested.model}' isn't available"
             elif requested.provider == "ollama":
                 reason = f"the {role.replace('_', ' ')} model '{requested.model}' is not installed"
             elif not anthropic_key_set:
@@ -463,8 +510,9 @@ def automatic_model_choice(
         )
     if requested.provider == "llamacpp":
         raise ValueError(
-            f"Auto mode cannot use the {role.replace('_', ' ')} model '{requested.model}' because llama-server "
-            "is not serving it. Start llama-server (scripts/llama-server-bonsai.sh) or choose another model in Settings."
+            f"Auto mode cannot use the {role.replace('_', ' ')} model '{requested.model}': its file isn't in "
+            "the llama.cpp models folder, or llama.cpp isn't installed (brew install llama.cpp). "
+            "Choose another model in Settings."
         )
     available = ", ".join(sorted(installed)) or "none"
     raise ValueError(
@@ -599,10 +647,14 @@ def stream_turn(
                     yield sse(*view.stopped())
                 elif vault_root is not None and (findings := verify_citations("".join(view.reply), vault_root)):
                     yield sse(*view.note(citation_warning(findings)))
+            except LocalModelError as e:  # Aura couldn't start llama-server: the message says why
+                state, error = "failed", str(e)
+                yield out("error", {"message": str(e)})
             except openai.APIConnectionError:
                 state, error = "failed", "the language model was unreachable"
-                service = "llama-server (scripts/llama-server-bonsai.sh)" if provider == "llamacpp" else "Ollama"
-                yield out("error", {"message": f"Aura can't reach its language model. Make sure {service} is running, then try again."})
+                hint = ("Aura's llama-server stopped. Try again, and Aura starts it again." if provider == "llamacpp"
+                        else "Make sure Ollama is running, then try again.")
+                yield out("error", {"message": f"Aura can't reach its language model. {hint}"})
             except Exception as e:
                 log.exception("turn failed: %s", e)  # the detail stays in server.log
                 state, error = "failed", f"{type(e).__name__}: {masker.mask(str(e))}"
@@ -826,12 +878,6 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
             return {choice.model for role in ROLES if (choice := routing.choice(role)).provider == provider}
         return usable_ollama_models(aura.settings) if provider == "ollama" else set(llamacpp_models(aura.settings))
 
-    def routed_llamacpp_models() -> set[str]:
-        """llama-server's models, probed only when some role is set to llama.cpp."""
-        if any(routing.choice(role).provider == "llamacpp" for role in ROLES):
-            return local_models("llamacpp")
-        return set()
-
     def startup_route() -> ModelChoice:
         choice, _ = automatic_model_choice(
             routing,
@@ -839,7 +885,7 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
             local_models("ollama"),
             aura.toolbox.secrets.get("anthropic_api_key") is not None,
             cloud_availability.unavailable_models(),
-            routed_llamacpp_models(),
+            local_models("llamacpp"),
         )
         return choice
 
@@ -856,6 +902,11 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
     app.add_middleware(Guard, token=token)
     turn = threading.Lock()  # one turn at a time: Aura has a single user and conversation
     app.state.turn = turn
+    if not supplied_keeper and not aura._injected_model:
+        # Aura runs llama-server itself for a llama.cpp model, and stops it when another model is
+        # chosen, when idle, and when Aura quits (docs/model-settings.md §11). Tests don't.
+        aura.toolbox.local_server = LlamaServer(aura.settings, aura.toolbox.audit, busy=turn.locked)
+    llama: LlamaServer | None = aura.toolbox.local_server
     broadcast = TurnBroadcast()  # every turn as shown, for the mirror feed (GET /v1/turns/live)
     app.state.broadcast = broadcast
     aura.toolbox.audit.listen(broadcast.publish_activity)  # and Aura's activity, for the Observer
@@ -864,29 +915,71 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
     app.state.lifecycle = lifecycle
     masker = aura.toolbox.masker
     app.state.last_active = 0.0  # time.monotonic() of the last chat or approval
+    sleeper: IdleSleep | None = None  # set below for the installed app (not tests)
+
+    def mark_active() -> None:
+        """A message, an approval or a model pick: Aura isn't idle."""
+        app.state.last_active = time.monotonic()
+        if sleeper is not None:
+            sleeper.active()
 
     def set_sleep_mode(previous: SleepMode, current: SleepMode) -> None:
-        """Apply a user's resident-model preference without changing Ollama's global defaults."""
+        """Apply a user's resident-model preference without changing Ollama's global defaults.
+        Sleep Mode takes effect after the idle time (IdleSleep), not when it is switched on;
+        while Aura is already asleep, the change applies at once."""
         normal = aura.settings.model_keep_alive
+        asleep = sleeper is not None and sleeper.asleep
         if previous.enabled and (not current.enabled or previous.model != current.model):
             # Disabling Sleep Mode returns the old model to Aura's ordinary idle lifecycle.
             ModelKeeper(aura.settings.base_url, previous.model, normal).warm_soon()
-        if current.enabled:
+        if current.enabled and asleep:
             # A negative keep_alive is Ollama's per-request "keep resident" setting.
             ModelKeeper(aura.settings.base_url, current.model, -1).warm_soon()
 
+    def load_local(choice: ModelChoice) -> None:
+        """Load a chosen local model now (at launch, or when the chat box picks one): a llama.cpp
+        model starts llama-server, and any other choice stops it. A problem is reported by the
+        next turn on that model. Never for a test's injected model (it has no real runtime)."""
+        if aura._injected_model:
+            return
+        try:
+            if llama is not None:
+                llama.prepare(choice)
+            if choice.provider == "ollama" and choice.model in local_models("ollama"):
+                ModelKeeper(aura.settings.base_url, choice.model, aura.settings.model_keep_alive).warm_soon()
+        except LocalModelError as e:
+            log.warning("couldn't load %s: %s", choice.model, e)
+
     def warm_startup_models() -> None:
-        """Preload a verified local startup choice; Sleep Mode may additionally keep one resident."""
-        if startup_choice is not None and startup_choice.provider == "ollama":
-            ModelKeeper(aura.settings.base_url, startup_choice.model, aura.settings.model_keep_alive).warm()
-        sleep = routing.sleep_mode()
-        if sleep.enabled and sleep.model in installed_ollama_models(aura.settings):
-            ModelKeeper(aura.settings.base_url, sleep.model, -1).warm()
+        """Preload a verified local startup choice. (Sleep Mode's model loads only once Aura has
+        been idle: IdleSleep.)"""
+        if startup_choice is not None:
+            load_local(startup_choice)
 
     # Do this in the server's background, not on the SwiftUI main thread. Test and injected
     # models deliberately skip it: only the installed app should reserve real model memory.
     if not supplied_keeper and not aura._injected_model:
         threading.Thread(target=warm_startup_models, name="aura-startup-model", daemon=True).start()
+
+        def ollama(keep_alive: str | int) -> Callable[[str], None]:
+            return lambda model: ModelKeeper(aura.settings.base_url, model, keep_alive).warm()
+
+        sleeper = IdleSleep(
+            keep_alive_seconds(aura.settings.model_keep_alive), busy=turn.locked, sleep_mode=routing.sleep_mode,
+            loaded=lambda: loaded_ollama_models(aura.settings), unload=ollama(0), keep=ollama(-1),
+            release=ollama(aura.settings.model_keep_alive),
+            stop_llama=lambda reason: llama.stop(reason) if llama is not None else None,
+        )
+
+        def sleep_when_idle() -> None:
+            while True:
+                time.sleep(15)
+                try:
+                    sleeper.check()
+                except Exception:  # noqa: BLE001 — keep watching after one failed sweep
+                    log.exception("idle sleep check failed")
+
+        threading.Thread(target=sleep_when_idle, name="aura-idle-sleep", daemon=True).start()
 
     def idle(quiet_for: float = 300) -> bool:
         """Low activity: no turn running, no audit in progress, and nothing asked for a while."""
@@ -925,6 +1018,9 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
         # Cloud providers have no free, provider-neutral readiness probe, so unknown stays honest.
         model_state = ("unavailable" if startup_problem or (aura.active_model.provider in LOCAL_PROVIDERS and loaded is None)
                        else "loaded" if loaded is True else "idle" if loaded is False else "unknown")
+        if (model_state == "idle" and aura.active_model.provider == "llamacpp" and llama is not None
+                and llama.loading(aura.active_model.model)):
+            model_state = "loading"
         optional = connections.public()
         connection_attention = [c["label"] for c in optional
                                 if c.get("problem") or (c.get("live") or {}).get("state") == "problem"]
@@ -942,7 +1038,8 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
             "runtime_health": {"state": model_state, "provider": aura.active_model.provider,
                                "model": aura.active_model.model,
                                "detail": (startup_problem or ("The local model service is unavailable." if model_state == "unavailable"
-                                          else "Model loaded." if model_state == "loaded" else "Model will load on the next turn." if model_state == "idle"
+                                          else "Model loaded." if model_state == "loaded" else "Loading the model." if model_state == "loading"
+                                          else "Model will load on the next turn." if model_state == "idle"
                                           else "Provider readiness cannot be checked without a model request."))},
             "governance_health": {"state": "attention" if governance_attention else "healthy",
                                   "agent": agent_health, "optional_connection_attention": connection_attention},
@@ -963,7 +1060,8 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
             if chosen.provider == "ollama" and chosen.model not in installed_ollama_models(aura.settings):
                 raise ValueError(f"Download the local model before using it: {chosen.model}.")
             if chosen.provider == "llamacpp" and chosen.model not in local_models("llamacpp"):
-                raise ValueError(f"Start llama-server before using {chosen.model} (scripts/llama-server-bonsai.sh).")
+                raise ValueError(f"Aura can't find the llama.cpp model {chosen.model} in "
+                                 f"{aura.settings.llamacpp_models_dir}, or llama.cpp isn't installed.")
             aura.select_model(chosen)
         else:
             role = infer_role(text, developer_choice)
@@ -995,7 +1093,7 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
                     local_models("ollama"),
                     aura.toolbox.secrets.get("anthropic_api_key") is not None,
                     cloud_availability.unavailable_models(),
-                    routed_llamacpp_models(),
+                    local_models("llamacpp"),
                 )
             aura.select_model(chosen)
             if developer is not None and chosen.provider == "ollama" and not aura._injected_model:
@@ -1011,7 +1109,7 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
         t = lifecycle.begin("chat", "mac", aura.thread_id)
         if t is None:
             return busy()
-        app.state.last_active = time.monotonic()
+        mark_active()
         try:
             chosen, route_notice, developer = choose_turn_model(body.text, body.developer, body.model)
             events = aura.stream(body.text, developer=developer, turn_id=t.id, cancel=t.cancel)
@@ -1030,7 +1128,7 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
         t = lifecycle.begin("approval", "mac", aura.thread_id)
         if t is None:
             return busy()
-        app.state.last_active = time.monotonic()
+        mark_active()
         on_end = None
         origin, reply_to = aura.pending_origin()  # before resume() clears it
         if origin == "slack" and reply_to and getattr(app.state, "remote", None) is not None:
@@ -1807,6 +1905,26 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
         keeper.warm_soon()
         return {"status": "warming"}
 
+    @app.post("/v1/models/prepare", status_code=202)
+    def prepare_model(body: ModelChoiceIn) -> Response:
+        """The chat box picked a model: load it now (a llama.cpp model starts llama-server), and
+        stop llama-server if another model was picked, so the first message doesn't wait. Never
+        during a turn: the next turn prepares its own model."""
+        try:
+            choice = ModelChoice(body.provider, body.model).validate()
+        except ValueError as e:
+            return _error(422, str(e))
+        if turn.locked():
+            return JSONResponse({"status": "busy"}, status_code=202)
+        mark_active()
+        # The chat box's model is the one the next message uses: health reports on it from now.
+        try:
+            aura.select_model(choice)
+        except ValueError as e:  # e.g. a Claude model with no API key: the message says so
+            return _error(422, str(e))
+        threading.Thread(target=load_local, args=(choice,), name="aura-prepare-model", daemon=True).start()
+        return JSONResponse({"status": "preparing"}, status_code=202)
+
     return app
 
 
@@ -1872,4 +1990,6 @@ def main() -> None:
         # reclaim every Docker resource in Aura's own namespace.
         aura.toolbox.developer.stop_tasks()
         aura.toolbox.live.stop()
+        if aura.toolbox.local_server is not None:
+            aura.toolbox.local_server.close()  # stops llama-server, unloading its model
         cleanup_aura_docker(aura.toolbox.audit)

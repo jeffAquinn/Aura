@@ -27,7 +27,7 @@ KINDS = (("containers", ("container_", "sandbox_", "docker_", "developer_image_"
                          "hol_terminal_stopped")), ("egress", ("egress_", "search_")),
          ("vault", ("vault_",)), ("connections", ("connection_", "secret_", "slack_", "developer_connection")),
          ("actions", ("approval", "code_run", "skill_", "agent_", "build_", "developer_run", "hol_", "continuous_",
-                      "persona_", "voice_", "capabilities_")))  # fmt: skip
+                      "persona_", "voice_", "capabilities_", "local_model_")))  # fmt: skip
 
 
 def category(event: str) -> str:

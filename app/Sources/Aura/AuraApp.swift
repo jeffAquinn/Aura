@@ -47,13 +47,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
         let avatar = Bundle.main.image(forResource: "Avatar").map { Image(nsImage: $0) }
         let starfield = Bundle.main.image(forResource: "Starfield").map { Image(nsImage: $0) }
+        let welcome = Bundle.main.image(forResource: "Welcome").map { Image(nsImage: $0) }
         // Aura's neural voices (Kokoro, via the local server) or macOS voices, chosen per voice.
         let neural = NeuralSpeechEngine { [weak self] in
             guard let transport = self?.store.transport else { return nil }
             return { text, profile in try await transport.speech(text, voice: profile.voice ?? "", speed: profile.speed) }
         }
         store.speech = SpeechController(engine: RoutingSpeechEngine(system: SystemSpeechEngine(), neural: neural))
-        let chat = ChatView(store: store, avatar: avatar, backdrop: starfield, onRestart: { [weak self] in
+        let chat = ChatView(store: store, avatar: avatar, backdrop: starfield, welcome: welcome, onRestart: { [weak self] in
             self?.restartServer()
         }, onOpenHOLTerminal: { [weak self] in
             self?.openHOLTerminal()
