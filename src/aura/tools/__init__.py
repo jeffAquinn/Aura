@@ -167,5 +167,10 @@ class Toolbox:
         connections = Connections(GoogleConnection(secrets, audit), slack, discord)
         inbox = Inbox()
         live = LiveMessages(inbox, SlackSocket(slack, inbox), DiscordGateway(discord, inbox))
-        return cls(audit, vault, search, sandbox, identity, voice, skills, workshop, continuous, secrets, developer,
-                   connections, tools, live, state, masker)  # fmt: skip
+        box = cls(audit, vault, search, sandbox, identity, voice, skills, workshop, continuous, secrets, developer,
+                  connections, tools, live, state, masker)  # fmt: skip
+        from aura.tools.models import model_tools
+
+        # What llama-server has loaded: the server sets local_server after the toolbox is built.
+        box.tools += model_tools(settings, lambda: getattr(box.local_server, "model", None), vault.root)
+        return box

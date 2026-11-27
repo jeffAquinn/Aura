@@ -153,7 +153,8 @@ def test_the_derived_tables_are_exactly_todays():
     assert set(NEEDS_APPROVAL) == NEEDS_APPROVAL_TODAY and len(NEEDS_APPROVAL) == len(set(NEEDS_APPROVAL))
     assert dict(EDITABLE) == EDITABLE_TODAY
     assert dict(GATED) == GATED_TODAY
-    assert dict(GROUP) == GROUP_TODAY | {"find_capabilities": "Capabilities"}  # T4: the Registry's own tool
+    # T4: the Registry's own tool; 2026-11-27: list_models (read-only, the Models family)
+    assert dict(GROUP) == GROUP_TODAY | {"find_capabilities": "Capabilities", "list_models": "Models_Tool"}
 
 
 def test_status_lines_are_unchanged():

@@ -644,7 +644,8 @@ def vault_tools(vault: Vault) -> list[BaseTool]:
 
     @tool
     def read_file(path: str) -> str:
-        """Read a text file from the Aura Vault. `path` is relative to the vault root."""
+        """Read a text file (a note, Markdown, CSV, code) from the Aura Vault and return its
+        contents, to open, quote or summarise it. `path` is relative to the vault root."""
         return _guard(vault, "read_file", path, lambda: vault.read(path))
 
     @tool
@@ -662,7 +663,8 @@ def vault_tools(vault: Vault) -> list[BaseTool]:
 
     @tool
     def create_folder(path: str) -> str:
-        """Create a folder in the Aura Vault. The user approves this before it runs."""
+        """Create a new folder (an area) in the Aura Vault, e.g. 'Ideas' or 'Projects/2027'. The
+        user approves this before it runs."""
         return _guard(vault, "create_folder", path, lambda: vault.make_folder(path))
 
     @tool

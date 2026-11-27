@@ -26,7 +26,7 @@ Floor = Literal["none", "ask", "egress"]
 Egress = Literal["none", "account", "internet"]
 Owner = Literal["core", "connection", "skill"]
 
-FAMILIES = ("Files", "Knowledge", "Web", "Code", "Voice", "Persona", "Workshop", "Developer",
+FAMILIES = ("Files", "Knowledge", "Web", "Code", "Voice", "Persona", "Models", "Workshop", "Developer",
             "Google", "Slack", "Discord", "Connections", "Skills", "Capabilities")  # fmt: skip
 # What find_capabilities says about each family (one line each, for a small local model).
 FAMILY_SUMMARY = {
@@ -36,6 +36,7 @@ FAMILY_SUMMARY = {
     "Code": "run Python in an offline sandbox, e.g. to calculate or chart",
     "Voice": "how Aura sounds: its voices and accents, or a new voice",
     "Persona": "view and change Aura's persona (tone, brevity, name)",
+    "Models": "AI models: what is loaded, what each role uses",
     "Workshop": "installed skills (add-ons) and agents; propose, audit, check a library",
     "Developer": "hand work to Claude Code or Codex",
     "Google": "Gmail, Google Calendar and Google Drive",
@@ -129,6 +130,9 @@ CAPABILITIES: tuple[Capability, ...] = (
     _c("list_voices", "Voice", "Voice_Tool", lambda a: "Looking through my voices..."),
     _c("set_voice", "Voice", "Voice_Tool", lambda a: "Adjusting my voice..."),
     _c("view_persona", "Persona", "Persona_Tool", lambda a: "Reviewing my persona..."),
+    # Models: read-only (what Aura can run and what is loaded; switching is in Settings)
+    _c("list_models", "Models", "Models_Tool", lambda a: "Checking my models...",
+       extra_cues=("model", "llm", "gemma", "qwen", "bonsai", "ollama")),
     _c("update_persona", "Persona", "Persona_Tool", lambda a: f"Updating my {a.get('field', 'persona')}...", floor="ask"),
     # Workshop: skills and agents (the Governor's checks query PyPI and OSV by package name)
     _c("check_library", "Workshop", "Governor", lambda a: f"Checking '{a.get('name')}' on PyPI and OSV...",
@@ -244,6 +248,7 @@ FAMILY_ALIASES = {
     "vault": "Files", "file": "Files", "folder": "Files", "notes": "Knowledge", "web search": "Web",
     "search": "Web", "internet": "Web", "python": "Code", "sandbox": "Code", "code interpreter": "Code",
     "voices": "Voice", "speech": "Voice", "personality": "Persona", "settings": "Persona", "skill": "Skills",
+    "llm": "Models", "llms": "Models", "ai models": "Models",
     "agents": "Workshop", "add-ons": "Workshop", "addons": "Workshop", "accent": "Voice", "accents": "Voice",
     "developers": "Developer", "claude code": "Developer", "codex": "Developer",
     "gmail": "Google", "email": "Google", "calendar": "Google", "drive": "Google", "accounts": "Connections",

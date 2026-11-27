@@ -19,8 +19,9 @@ from aura.governor.workshop import Workshop, WorkshopError
 def workshop_tools(workshop: Workshop, developer: Developer | None = None) -> list[BaseTool]:
     @tool
     def check_library(name: str, version: str = "") -> str:
-        """Check a Python package's provenance with fixed rules (PyPI history, known
-        vulnerabilities from OSV, typosquatting, ready-built packages). Facts only, never opinion."""
+        """Check whether a Python package (library) is safe to depend on: its PyPI history, known
+        vulnerabilities from OSV, typosquatting, and ready-built packages. Use it when the user asks
+        if a library is safe, trustworthy or has had security problems. Facts only, never opinion."""
         try:
             report = check_package(name, version or None)
         except Exception as e:  # noqa: BLE001
@@ -30,7 +31,9 @@ def workshop_tools(workshop: Workshop, developer: Developer | None = None) -> li
 
     @tool
     def list_skills() -> str:
-        """List installed skills and the ones waiting in the Skills Inbox."""
+        """List your installed skills (add-ons) with what each does and whether it is on, and the
+        skills waiting in the Skills Inbox for the user's approval. Use it when asked which skills
+        you have, whether one could do a job, or what is waiting to be approved."""
         installed = [s.public() for s in workshop.manager.scan()]
         waiting = workshop.inbox()
         lines = ["Installed:"] + [f"- {s['name']} {s['version']} ({s['status']}, {'on' if s['enabled'] else 'off'}): {s['purpose']}"
