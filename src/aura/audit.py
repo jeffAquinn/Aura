@@ -21,7 +21,7 @@ T = TypeVar("T")
 ALERTS = {"skill_flagged", "recursion_halted", "skill_rejected", "approval_unrecoverable", "sandbox_cleanup_failed",
           "path_blocked", "agent_audit_failed", "capabilities_not_published", "hol_agent_vault_drift",
           "continuous_audit_failed", "connection_sign_in_failed"}  # fmt: skip
-VAULT = {"deleted", "file_written", "folder_created", "generated_file_kept", "project_sandbox_seeded",
+VAULT = {"deleted", "trashed", "file_written", "folder_created", "generated_file_kept", "project_sandbox_seeded",
          "project_sandbox_workflow_seeded"}
 KINDS = (("containers", ("container_", "sandbox_", "docker_", "developer_image_", "hol_terminal_started",
                          "hol_terminal_stopped")), ("egress", ("egress_", "search_")),

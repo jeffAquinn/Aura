@@ -397,3 +397,19 @@ def test_the_brief_names_the_copied_folder_so_vault_paths_are_not_doubled():
     assert "for 'The_Interface_Many/notes/a.md', write 'notes/a.md'" in brief
     assert "Never create a folder of that name inside this one" in brief
     assert "the vault's top folder" in prompt("Tidy the root.", ".")
+
+
+def test_build_output_and_caches_are_never_handed_over_or_counted(tmp_path):
+    from aura.developer.vault_tasks import MAX_BYTES, _walk
+
+    root = tmp_path / "project"
+    (root / "app/.build/debug").mkdir(parents=True)
+    (root / "app/.build/debug/huge.o").write_bytes(b"x" * 1000)
+    (root / "src/__pycache__").mkdir(parents=True)
+    (root / "src/__pycache__/a.pyc").write_bytes(b"x")
+    (root / "src/a.py").write_text("print(1)\n")
+    (root / "build").mkdir()
+    (root / "build/notes.md").write_text("a user folder named build is kept\n")
+    files, folders = _walk(root)
+    assert sorted(f.relative_to(root).as_posix() for f in files) == ["build/notes.md", "src/a.py"]
+    assert MAX_BYTES == 300 * 1024 * 1024

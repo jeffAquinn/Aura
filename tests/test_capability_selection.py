@@ -17,7 +17,9 @@ from aura.capabilities import BY_NAME, select
 
 # fmt: off
 OLD_FAMILIES = (
-    ({"list_vault", "read_file", "search_knowledge", "write_file", "create_folder", "delete_path"},
+    # 2026-11-27: find_clutter and tidy_vault joined Files, so the same words show them too.
+    ({"list_vault", "read_file", "search_knowledge", "write_file", "create_folder", "delete_path", "find_clutter",
+      "tidy_vault"},
      re.compile(r"\b(vault|knowledge|wisdom|source|reference|document|docs?|file|folder|directory|path|read|save|delete|rename|notes?\.txt|\.csv|\.pdf)\b", re.I)),
     ({"web_search"}, re.compile(r"\b(search|web|internet|online|news|weather|latest|current|price|today|forecast)\b", re.I)),
     ({"run_python"}, re.compile(r"\b(python|calculate|compute|dataframe|chart|plot|dataset|spreadsheet)\b", re.I)),

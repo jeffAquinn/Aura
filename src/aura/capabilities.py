@@ -121,6 +121,10 @@ CAPABILITIES: tuple[Capability, ...] = (
     _c("write_file", "Files", "File_System_Tool", lambda a: f"Writing '{a.get('path')}'...", floor="ask"),
     _c("create_folder", "Files", "File_System_Tool", lambda a: f"Creating folder '{a.get('path')}'...", floor="ask"),
     _c("delete_path", "Files", "File_System_Tool", lambda a: f"Deleting '{a.get('path')}'...", floor="ask"),
+    # Tidying: listing clutter is read-only; moving it to the Trash is an R1 floor, one card for the list
+    _c("find_clutter", "Files", "File_System_Tool", lambda a: "Looking for clutter in the vault..."),
+    _c("tidy_vault", "Files", "File_System_Tool", lambda a: f"Moving {len(a.get('paths') or [])} item(s) to the Trash...",
+       floor="ask"),
     _c("search_knowledge", "Knowledge", "Knowledge", lambda a: f"Searching Knowledge for '{a.get('query')}'..."),
     # Web: the Egress Gatekeeper
     _c("web_search", "Web", "Web_Search_Tool", lambda a: f"Searching for '{a.get('query')}'...",

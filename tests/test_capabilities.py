@@ -150,11 +150,13 @@ def test_the_derived_tables_are_exactly_todays():
     from aura.tools import EDITABLE, GROUP, NEEDS_APPROVAL
     from aura.tools.egress import GATED
 
-    assert set(NEEDS_APPROVAL) == NEEDS_APPROVAL_TODAY and len(NEEDS_APPROVAL) == len(set(NEEDS_APPROVAL))
+    # 2026-11-27: tidy_vault (moving clutter to the Trash) is an R1 floor, like delete_path.
+    assert set(NEEDS_APPROVAL) == NEEDS_APPROVAL_TODAY | {"tidy_vault"} and len(NEEDS_APPROVAL) == len(set(NEEDS_APPROVAL))
     assert dict(EDITABLE) == EDITABLE_TODAY
     assert dict(GATED) == GATED_TODAY
     # T4: the Registry's own tool; 2026-11-27: list_models (read-only, the Models family)
-    assert dict(GROUP) == GROUP_TODAY | {"find_capabilities": "Capabilities", "list_models": "Models_Tool"}
+    assert dict(GROUP) == GROUP_TODAY | {"find_capabilities": "Capabilities", "list_models": "Models_Tool",
+                                         "find_clutter": "File_System_Tool", "tidy_vault": "File_System_Tool"}
 
 
 def test_status_lines_are_unchanged():
@@ -173,7 +175,7 @@ def test_the_cards_aura_raises_are_the_registrys_floors(settings):
 
     aura, _ = make_aura(settings)
     expected = {c.name for c in CAPABILITIES if c.floor != "none"}
-    assert set(aura._interrupt_on) == expected == NEEDS_APPROVAL_TODAY | set(GATED_TODAY)
+    assert set(aura._interrupt_on) == expected == NEEDS_APPROVAL_TODAY | set(GATED_TODAY) | {"tidy_vault"}
     assert aura._interrupt_on["develop_skill"]["allowed_decisions"] == ["approve", "edit", "reject"]
     assert aura._interrupt_on["web_search"]["allowed_decisions"] == ["approve", "reject"]
     assert "when" in aura._interrupt_on["web_search"] and "when" not in aura._interrupt_on["write_file"]

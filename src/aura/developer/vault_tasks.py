@@ -21,14 +21,18 @@ import shutil
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
-from aura.tools.vault import Vault, VaultError, human_size
+from aura.tools.vault import BUILD_OUTPUT, Vault, VaultError, human_size
 
 MAX_FILES = 2_000  # files copied into a task's workspace
-MAX_BYTES = 50 * 1024 * 1024  # ... and their total size
+MAX_BYTES = 300 * 1024 * 1024  # ... and their total size (the user's choice, 2026-11-27)
 MAX_CHANGES = 40  # changes one task may bring back for approval
 MAX_FILE_BYTES = 10 * 1024 * 1024  # a single file it may write
 DIFF_LINES = 60  # diff lines shown per change
 SKIP = {".DS_Store"}  # Finder's files: never copied, never compared
+# Build output and caches (tools/vault.BUILD_OUTPUT) are never copied, compared or written back, so
+# they can't fill a task's limits or clutter the vault (a stale app/.build once made the Aura sandbox
+# 397 MB).
+GENERATED = BUILD_OUTPUT
 # A task aimed at the whole Vault is for the user's content, not Aura's runtime machinery. A user
 # can still explicitly choose `Aura/` when they want a Developer to work on the project sandbox.
 SYSTEM_ROOTS = {"Aura", "Audit_Staging", "Audit_Temp", "Skills Inbox"}
@@ -90,7 +94,7 @@ def _walk(root: Path) -> tuple[list[Path], list[Path]]:
     for dirpath, dirnames, filenames in os.walk(root):  # followlinks=False: a linked folder isn't entered
         base = Path(dirpath)
         for d in list(dirnames):
-            if (base / d).is_symlink() or (base == root and d in SYSTEM_ROOTS):
+            if (base / d).is_symlink() or d in GENERATED or (base == root and d in SYSTEM_ROOTS):
                 dirnames.remove(d)
             else:
                 folders.append(base / d)
@@ -189,7 +193,8 @@ def prompt(task: str, folder: str = ".") -> str:
         f"vault. {where}; nothing else on the user's computer is available to you.\n\n"
         "The task, written by Aura from the user's request:\n"
         f"{task.strip()}\n\n"
-        "Make the changes directly in the files here. Afterwards the user sees every file you created, changed "
+        "Put a file that is only for this task (a plan, notes, a scratch script) in a `_scratch/` folder, so "
+        "it can be cleaned up later. Make the changes directly in the files here. Afterwards the user sees every file you created, changed "
         "or deleted, with its diff, and allows or denies each one, so change only what the task needs. Don't "
         "use the network.\n\n"
         "If AURA_ENGINEERING.md is present, this is an Aura project sandbox: read it before changing code and "
