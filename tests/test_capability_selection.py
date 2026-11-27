@@ -179,7 +179,7 @@ def test_find_capabilities_lists_then_loads_a_family_and_its_tool_runs(settings)
     list(aura.stream("Which accents can you do?"))  # no cue matches
     msgs = aura._agent.get_state(aura._config).values["messages"]
     listing, loaded, voices = [m for m in msgs if isinstance(m, ToolMessage)]
-    assert listing.text.startswith("Families you can load") and "- Voice: list and change" in listing.text
+    assert listing.text.startswith("Families you can load") and "- Voice: how Aura sounds" in listing.text
     assert "- Slack:" not in listing.text  # not connected: not offered
     assert loaded.text == "Loaded Voice: list_voices, set_voice. Call the one you need now."
     assert voices.status != "error" and "isn't available" not in voices.text

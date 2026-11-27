@@ -34,15 +34,15 @@ FAMILY_SUMMARY = {
     "Knowledge": "search the Knowledge notes, with citations",
     "Web": "search the internet (each query needs the user's approval)",
     "Code": "run Python in an offline sandbox, e.g. to calculate or chart",
-    "Voice": "list and change Aura's speaking voice",
+    "Voice": "how Aura sounds: its voices and accents, or a new voice",
     "Persona": "view and change Aura's persona (tone, brevity, name)",
-    "Workshop": "skills and agents: list, propose, audit, check a library",
+    "Workshop": "installed skills (add-ons) and agents; propose, audit, check a library",
     "Developer": "hand work to Claude Code or Codex",
     "Google": "Gmail, Google Calendar and Google Drive",
     "Slack": "read and send Slack messages",
     "Discord": "read and send Discord messages",
     "Connections": "list connected accounts and check new messages",
-    "Skills": "Aura's installed skills",
+    "Skills": "run an installed skill (Workshop lists them)",
 }
 
 
@@ -244,7 +244,8 @@ FAMILY_ALIASES = {
     "vault": "Files", "file": "Files", "folder": "Files", "notes": "Knowledge", "web search": "Web",
     "search": "Web", "internet": "Web", "python": "Code", "sandbox": "Code", "code interpreter": "Code",
     "voices": "Voice", "speech": "Voice", "personality": "Persona", "settings": "Persona", "skill": "Skills",
-    "agents": "Workshop", "developers": "Developer", "claude code": "Developer", "codex": "Developer",
+    "agents": "Workshop", "add-ons": "Workshop", "addons": "Workshop", "accent": "Voice", "accents": "Voice",
+    "developers": "Developer", "claude code": "Developer", "codex": "Developer",
     "gmail": "Google", "email": "Google", "calendar": "Google", "drive": "Google", "accounts": "Connections",
 }  # fmt: skip
 
