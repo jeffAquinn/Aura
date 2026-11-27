@@ -150,10 +150,10 @@ struct HeaderView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 0) {
             // Top to bottom: resource use; Aura's portrait and name (centered) with the panel's
             // controls; the current stage and its progress (only while something happens); then
-            // the status lights.
+            // the status lights. Spacing is set per row, so a hidden progress row leaves no gap.
             AuraUsageView(usage: usage, performance: store.localPerformance).task { usage.start() }
             ZStack {
                 HStack(spacing: 12) {
@@ -163,8 +163,9 @@ struct HeaderView: View {
                 AuraTitle(name: store.persona.name, avatar: avatar,
                           pulsing: store.phase == .waking || store.connection == .starting || speaking)
             }
+            .padding(.top, 6)
             TurnProgress(stage: TurnStage(store: store, speaking: speaking))
-            StatusChips(store: store)
+            StatusChips(store: store).padding(.top, 8)
         }
         .padding(.horizontal, 16)
         .padding(.top, 10)
@@ -329,6 +330,7 @@ struct TurnProgress: View {
             }
         }
         .frame(height: shown == nil ? 0 : 14, alignment: .leading)
+        .padding(.top, shown == nil ? 0 : 8)
         .clipped()
         .animation(.smooth(duration: 0.35), value: shown)
         .onChange(of: stage) { previous, next in
@@ -514,6 +516,24 @@ struct TranscriptView: View {
     }
 }
 
+/// A new bubble fades in as it rises a little into place. Only the newest one animates, and only
+/// itself: the bubbles already shown never fade, move or redraw when one is added.
+struct Arrival: ViewModifier {
+    @State private var shown: Bool
+
+    init(animated: Bool) { _shown = State(initialValue: !animated) }
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(shown ? 1 : 0)
+            .offset(y: shown ? 0 : 8)
+            .onAppear {
+                guard !shown else { return }
+                withAnimation(.smooth(duration: 0.25)) { shown = true }
+            }
+    }
+}
+
 /// The messages themselves (separate from the scroll view so snapshot tests can render them).
 struct TranscriptContent: View {
     let store: ChatStore
@@ -522,19 +542,19 @@ struct TranscriptContent: View {
 
     var body: some View {
         let rows = Group {
+            let vaultRoot = store.health?.vault
+            let newest = store.items.last?.id
             ForEach(Array(store.items.enumerated()), id: \.element.id) { index, item in
-                ItemView(item: item, store: store, avatar: avatar)
+                ItemView(item: item, store: store, avatar: avatar, vaultRoot: vaultRoot)
+                    .modifier(Arrival(animated: item.id == newest))
                     .padding(.top, spacing(before: index))
-                    .transition(Self.arrival)
             }
             if store.phase == .thinking || store.phase == .waking {
                 TypingIndicator(waking: store.phase == .waking, avatar: avatar).padding(.top, 10)
-                    .transition(.opacity)
             } else if store.phase == .stopping {
                 TypingIndicator(waking: false, stopping: true, avatar: avatar)
                     .accessibilityLabel("Stopping the current task")
                     .padding(.top, 10)
-                    .transition(.opacity)
             }
         }
         Group {
@@ -542,13 +562,7 @@ struct TranscriptContent: View {
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
-        // New bubbles fade and rise into place; text streaming into a bubble isn't animated.
-        .animation(.smooth(duration: 0.28), value: store.items.count)
-        .animation(.smooth(duration: 0.2), value: store.phase)
     }
-
-    /// How a new bubble arrives: it fades in as it rises a little; a removed one simply fades.
-    static let arrival: AnyTransition = .asymmetric(insertion: .opacity.combined(with: .offset(y: 10)), removal: .opacity)
 
     /// Generous space between turns, tight space between a tool line and what it belongs to.
     private func spacing(before index: Int) -> CGFloat {
@@ -564,6 +578,7 @@ struct ItemView: View {
     let item: ChatStore.Item
     let store: ChatStore
     let avatar: Image?
+    var vaultRoot: String? = nil  // a value, so a status refresh doesn't redraw every bubble
     @Environment(\.chatText) private var chat
     @Environment(\.bubbles) private var bubbles
     @AppStorage(ChatAppearance.avatarSizeKey) private var avatarSize = "small"
@@ -602,7 +617,7 @@ struct ItemView: View {
                 }
             }
         case .aura:
-            AuraMessage(item: item, store: store, avatar: avatar)
+            AuraMessage(item: item, store: store, avatar: avatar, vaultRoot: vaultRoot)
         case .status:
             ToolStatusView(text: item.text)
                 .contextMenu { MessageMenu(item: item, store: store) }
@@ -732,10 +747,20 @@ struct IncomingMessageCard: View {
 
 /// Aura's reply: in its bubble (violet unless the user chose another color), with a copy button
 /// on hover and Copy Message / Copy Conversation on right-click.
+/// A reply's Markdown, parsed again only when its own text changes: a long reply isn't re-parsed
+/// (and its text laid out again) because something else in the panel changed.
+struct ParsedMarkdown: View, Equatable {
+    let text: String
+    let vaultRoot: String?
+
+    var body: some View { MarkdownView(text, vaultRoot: vaultRoot) }
+}
+
 struct AuraMessage: View {
     let item: ChatStore.Item
     let store: ChatStore
     let avatar: Image?
+    var vaultRoot: String? = nil
     @Environment(\.bubbles) private var bubbles
     @AppStorage(ChatAppearance.avatarSizeKey) private var avatarSize = "small"
     @AppStorage(ChatAppearance.textPaddingKey) private var textPadding = ChatAppearance.defaultTextPadding
@@ -746,7 +771,7 @@ struct AuraMessage: View {
         HStack(alignment: .bottom, spacing: 6) {
             HStack(alignment: .center, spacing: 10) {
                 AvatarView(image: avatar, size: ChatAppearance.avatarSize(avatarSize))
-                MarkdownView(item.text, vaultRoot: store.health?.vault)
+                ParsedMarkdown(text: item.text, vaultRoot: vaultRoot).equatable()
                     .foregroundStyle(bubbles.auraText)
                     .tint(bubbles.auraText)  // links: underlined, in the bubble's text color
                     .padding(.horizontal, ChatAppearance.textPadding(textPadding))
@@ -1109,10 +1134,11 @@ struct DeveloperChip: View {
     }
 }
 
-/// An icon and its text, close together (the top row is narrow).
+/// An icon and its text, close together (the top row is narrow). Every icon gets the same width,
+/// so the gaps between items are the same whatever the symbol's shape.
 private struct CompactLabel: LabelStyle {
     func makeBody(configuration: Configuration) -> some View {
-        HStack(spacing: 2) { configuration.icon; configuration.title }
+        HStack(spacing: 3) { configuration.icon.frame(width: 12); configuration.title }
     }
 }
 
@@ -1123,7 +1149,7 @@ private struct AuraUsageView: View {
     let performance: LocalModelPerformance?
 
     var body: some View {
-        HStack(spacing: 9) {
+        HStack(spacing: 10) {
             Label(usage.cpuText, systemImage: "gauge.with.dots.needle.50percent")
                 .help("CPU currently used by Aura's macOS app process.")
             Label(usage.memoryText, systemImage: "memorychip")
