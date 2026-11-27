@@ -145,6 +145,23 @@ public enum ChatFontStyle: String, CaseIterable, Sendable {
         case .helvetica: .custom("Helvetica Neue", size: size).weight(weight)
         }
     }
+
+    /// The same typeface as AppKit draws it (for measuring text, e.g. the chat box's line height).
+    func nsFont(size: CGFloat) -> NSFont {
+        let system = NSFont.systemFont(ofSize: size)
+        func designed(_ design: NSFontDescriptor.SystemDesign) -> NSFont {
+            system.fontDescriptor.withDesign(design).flatMap { NSFont(descriptor: $0, size: size) } ?? system
+        }
+        return switch self {
+        case .system: system
+        case .rounded: designed(.rounded)
+        case .serif: designed(.serif)
+        case .monospaced: .monospacedSystemFont(ofSize: size, weight: .regular)
+        case .avenir: NSFont(name: "Avenir Next", size: size) ?? system
+        case .georgia: NSFont(name: "Georgia", size: size) ?? system
+        case .helvetica: NSFont(name: "Helvetica Neue", size: size) ?? system
+        }
+    }
 }
 
 /// The chat's text: a base size and a typeface; headings, code and status lines scale from it.
@@ -161,6 +178,11 @@ public struct ChatTextStyle: Equatable, Sendable {
 
     public func font(_ scale: CGFloat = 1, weight: Font.Weight = .regular) -> Font {
         style.font(size: (size * scale).rounded(), weight: weight)
+    }
+
+    /// The height of one line of body text, in the typeface the chat draws.
+    public var lineHeight: CGFloat {
+        NSLayoutManager().defaultLineHeight(for: style.nsFont(size: size.rounded()))
     }
 
     /// Code stays monospaced whatever the chat's typeface.

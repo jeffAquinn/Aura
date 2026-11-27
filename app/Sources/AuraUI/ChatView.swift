@@ -843,6 +843,7 @@ struct TypingIndicator: View {
 struct InputBar: View {
     let store: ChatStore
     @State private var draft = ""
+    @State private var fieldHeight: CGFloat = 0  // the text's full height (it can exceed what's shown)
     @FocusState private var focused: Bool
     @Environment(\.chatText) private var chat
     @Environment(\.bubbles) private var bubbles
@@ -865,21 +866,36 @@ struct InputBar: View {
                 .padding(.horizontal, 5)
                 .accessibilityHidden(true)
 
-            TextField(placeholder, text: $draft, axis: .vertical)
-                .textFieldStyle(.plain)
-                .font(chat.font())
-                .foregroundStyle(bubbles.userText)
-                // Keep writing assistance local to macOS.  Suggestions and spell checking use
-                // the person's own Writing Tools settings; draft text is never sent anywhere
-                // until they press Send.
-                .autocorrectionDisabled(false)
-                .lineLimit(1...15)
-                .focused($focused)
-                .onSubmit(send)
-                .disabled(store.transport == nil || store.phase == .awaitingApproval)
-                .padding(.vertical, 4)
-                .layoutPriority(1)
-                .help("Spell checking and text completion follow your Mac’s Writing Tools settings.")
+            // The field is always as tall as its text; the box shows up to `maxLines` of it and
+            // scrolls the rest, kept at the bottom where the typing is. (A capped field alone
+            // drew lines past the cap over the border: the bigger the font, the sooner.)
+            ScrollView(.vertical) {
+                TextField(placeholder, text: $draft, axis: .vertical)
+                    .textFieldStyle(.plain)
+                    .font(chat.font())
+                    .foregroundStyle(bubbles.userText)
+                    // Keep writing assistance local to macOS.  Suggestions and spell checking use
+                    // the person's own Writing Tools settings; draft text is never sent anywhere
+                    // until they press Send.
+                    .autocorrectionDisabled(false)
+                    .lineLimit(1...)
+                    .focused($focused)
+                    .onSubmit(send)
+                    .disabled(store.transport == nil || store.phase == .awaitingApproval)
+                    .padding(.vertical, Self.fieldPadding)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { fieldHeight = $0 }
+                    .help("Spell checking and text completion follow your Mac’s Writing Tools settings.")
+            }
+            .scrollIndicators(fieldHeight > cap ? .automatic : .never)
+            .defaultScrollAnchor(.bottom)
+            .frame(height: min(max(fieldHeight, chat.lineHeight + 2 * Self.fieldPadding), cap))  // one line until measured
+            // The field's editor only scrolls its own clip view: when the caret moves above or below
+            // what the box shows (arrow keys, a click, ⌘↑), scroll the box to it.
+            .onReceive(NotificationCenter.default.publisher(for: NSTextView.didChangeSelectionNotification)) { note in
+                guard focused, let editor = note.object as? NSTextView else { return }
+                Self.reveal(editor)
+            }
+            .layoutPriority(1)
             if store.isBusy {
                 RoundButton(symbol: store.isStopping ? "hourglass" : "stop.fill", enabled: !store.isStopping, action: store.stop)
                     .help(store.isStopping ? "Stopping current task" : "Stop")
@@ -898,6 +914,28 @@ struct InputBar: View {
 
     private var canSend: Bool {
         store.canSend && !draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    static let maxLines: CGFloat = 15
+    static let fieldPadding: CGFloat = 4  // above and below the text
+
+    /// The box's tallest: `maxLines` lines in the chat's typeface, plus the field's padding.
+    static func maxHeight(_ chat: ChatTextStyle) -> CGFloat {
+        chat.lineHeight * maxLines + 2 * fieldPadding
+    }
+
+    private var cap: CGFloat { Self.maxHeight(chat) }
+
+    /// Scroll the box (the closest scroll view around the field) so the caret is in view.
+    static func reveal(_ editor: NSTextView) {
+        guard let layout = editor.layoutManager, let container = editor.textContainer,
+              let document = editor.enclosingScrollView?.documentView else { return }
+        let at = min(editor.selectedRange().location, max(layout.numberOfGlyphs - 1, 0))
+        var caret = layout.numberOfGlyphs == 0 ? .zero
+            : layout.boundingRect(forGlyphRange: NSRange(location: at, length: 1), in: container)
+        caret.origin.x += editor.textContainerOrigin.x
+        caret.origin.y += editor.textContainerOrigin.y
+        document.scrollToVisible(editor.convert(caret, to: document).insetBy(dx: 0, dy: -4))
     }
 
     private var placeholder: String {
