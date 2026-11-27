@@ -157,12 +157,12 @@ struct HeaderView: View {
     var body: some View {
         // Aura's name in stars sits at the exact center of the header, horizontally and
         // vertically. The status column (resource use, the status lights, and the current stage
-        // with its progress) has the left half of what remains, its rows centered in it; the
-        // panel's controls have the right half.
+        // with its progress) has the left half of what remains, its rows against the left edge;
+        // the panel's controls have the right half.
         let side = max(110, (width - HeaderWordmark.width) / 2 - 10)
         ZStack {
             HStack(alignment: .center, spacing: 0) {
-                statusColumn(side).frame(width: side)
+                statusColumn(side).frame(width: side, alignment: .leading)
                 Spacer(minLength: 0)
                 controls.frame(width: side, alignment: .trailing)
             }
@@ -183,7 +183,7 @@ struct HeaderView: View {
     static let rowGap: CGFloat = 7
 
     private func statusColumn(_ side: CGFloat) -> some View {
-        VStack(alignment: .center, spacing: 0) {
+        VStack(alignment: .leading, spacing: 0) {
             AuraUsageView(usage: usage, performance: store.localPerformance).task { usage.start() }
             StatusChips(store: store).padding(.top, Self.rowGap)
             TurnProgress(stage: TurnStage(store: store, speaking: speaking), width: min(TurnProgress.width, side))
