@@ -132,6 +132,7 @@ struct HeaderView: View {
     @State private var showSettings = false
     @State private var confirmRestart = false
     @StateObject private var usage = AuraRuntimeUsage()
+    @State private var width: CGFloat = 388  // the header's inner width, measured
     @Environment(\.rendersOffscreen) private var offscreen
     @Environment(\.openWorkshop) private var openWorkshop
     @Environment(\.openConnections) private var openConnections
@@ -154,28 +155,24 @@ struct HeaderView: View {
     }
 
     var body: some View {
-        VStack(alignment: .center, spacing: 0) {
-            // Everything centered, top to bottom: Aura's name written in stars (the panel's controls
-            // at the right of that row); resource use; the status lights; then the current stage
-            // and its progress, only while something happens. Every row is the same distance
-            // apart, and a hidden progress row leaves no gap.
-            ZStack {
-                HeaderWordmark(image: wordmark, name: store.persona.name, avatar: avatar,
-                               pulsing: store.phase == .waking || store.connection == .starting || speaking)
-                HStack(spacing: 12) {
-                    Spacer(minLength: 0)
-                    controls
-                }
+        // Aura's name in stars sits at the exact center of the header, horizontally and
+        // vertically. The status column (resource use, the status lights, and the current stage
+        // with its progress) has the left half of what remains, its rows centered in it; the
+        // panel's controls have the right half.
+        let side = max(110, (width - HeaderWordmark.width) / 2 - 10)
+        ZStack {
+            HStack(alignment: .center, spacing: 0) {
+                statusColumn(side).frame(width: side)
+                Spacer(minLength: 0)
+                controls.frame(width: side, alignment: .trailing)
             }
-            AuraUsageView(usage: usage, performance: store.localPerformance).task { usage.start() }
-                .padding(.top, Self.rowGap + 2)
-            StatusChips(store: store).padding(.top, Self.rowGap)
-            TurnProgress(stage: TurnStage(store: store, speaking: speaking))
+            HeaderWordmark(image: wordmark, name: store.persona.name, avatar: avatar,
+                           pulsing: store.phase == .waking || store.connection == .starting || speaking)
         }
         .frame(maxWidth: .infinity)
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { width = $0 }
         .padding(.horizontal, 16)
-        .padding(.top, 8)
-        .padding(.bottom, 10)
+        .padding(.vertical, 10)
         .background { HeaderSurface() }
         // The panel moves by its header (its empty parts; the buttons stay buttons). Elsewhere,
         // drags select text.
@@ -185,28 +182,27 @@ struct HeaderView: View {
 
     static let rowGap: CGFloat = 7
 
+    private func statusColumn(_ side: CGFloat) -> some View {
+        VStack(alignment: .center, spacing: 0) {
+            AuraUsageView(usage: usage, performance: store.localPerformance).task { usage.start() }
+            StatusChips(store: store).padding(.top, Self.rowGap)
+            TurnProgress(stage: TurnStage(store: store, speaking: speaking), width: min(TurnProgress.width, side))
+        }
+    }
+
     private var controls: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
             Button {
                 if speaking { store.speech?.stop() }
                 Task { await store.updateVoice(VoicePatch(speak: !store.voice.speak)) }
             } label: {
-                Image(systemName: store.voice.speak ? "speaker.wave.2.fill" : "speaker.slash")
+                HeaderIcon(symbol: store.voice.speak ? "speaker.wave.2.fill" : "speaker.slash")
                     .symbolEffect(.variableColor.iterative, isActive: speaking)
             }
             .buttonStyle(.plain)
-            .foregroundStyle(store.voice.speak ? Color.accentColor : .secondary)
             .help(store.voice.speak ? "Spoken replies are on" : "Spoken replies are off")
             .disabled(store.transport == nil)
-            Button {
-                Task { await store.newConversation() }
-            } label: {
-                Image(systemName: "square.and.pencil")
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .help("New conversation")
-            .disabled(store.isBusy || store.transport == nil || store.items.isEmpty)
+            ChatsMenu(store: store)
             Menu {
                 Button("Settings…") { showSettings = true }
                 Divider()
@@ -221,12 +217,12 @@ struct HeaderView: View {
                 Divider()
                 Button("Restart Aura Server") { confirmRestart = true }
             } label: {
-                Image(systemName: "ellipsis.circle")
+                HeaderIcon(symbol: "ellipsis.circle")
             }
-            .menuStyle(.borderlessButton)
+            .menuStyle(.button)
+            .buttonStyle(.plain)
             .menuIndicator(.hidden)
             .fixedSize()
-            .foregroundStyle(.secondary)
             .help("Open settings and Aura panels")
             .popover(isPresented: $showSettings, arrowEdge: .bottom) { SettingsView(store: store) }
             .confirmationDialog("Restart Aura Server?", isPresented: $confirmRestart, titleVisibility: .visible) {
@@ -236,6 +232,70 @@ struct HeaderView: View {
                 Text("This temporarily disconnects Aura and interrupts active sessions.")
             }
         }
+    }
+}
+
+/// One of the header's controls: every icon the same size, weight and color.
+struct HeaderIcon: View {
+    let symbol: String
+
+    var body: some View {
+        Image(systemName: symbol)
+            .font(.system(size: 15, weight: .regular))
+            .foregroundStyle(.primary.opacity(0.72))
+            .frame(width: 24, height: 24)
+            .contentShape(.rect)
+    }
+}
+
+/// The new-chat menu, as in Claude: New Chat, then the recent chats saved in the vault's Chats
+/// folder (title and when it was last used; the open one is ticked). Choosing one opens it, and
+/// the next message carries on from it.
+struct ChatsMenu: View {
+    let store: ChatStore
+    static let recents = 15
+
+    var body: some View {
+        Menu {
+            Button {
+                Task { await store.newConversation() }
+            } label: {
+                Label("New Chat", systemImage: "square.and.pencil")
+            }
+            .disabled(store.isBusy || store.transport == nil)
+            if let saved = store.savedChats, !saved.chats.isEmpty {
+                Section("Recents") {
+                    ForEach(saved.chats.prefix(Self.recents)) { chat in
+                        Button {
+                            Task { await store.openChat(chat.id) }
+                        } label: {
+                            if chat.id == saved.current {
+                                Label(chat.title, systemImage: "checkmark")
+                            } else {
+                                Text(chat.title)
+                            }
+                            Text(chat.when)
+                        }
+                        .disabled(store.isBusy)
+                    }
+                }
+            }
+            Divider()
+            Button("Show All Chats in Finder") {
+                guard let vault = store.health?.vault else { return }
+                let folder = URL(fileURLWithPath: vault).appending(path: "Chats", directoryHint: .isDirectory)
+                NSWorkspace.shared.open(FileManager.default.fileExists(atPath: folder.path) ? folder : URL(fileURLWithPath: vault))
+            }
+            .disabled(store.health?.vault == nil)
+        } label: {
+            HeaderIcon(symbol: "square.and.pencil")
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("New chat, or open a recent one")
+        .task { await store.loadChats() }
     }
 }
 
@@ -272,6 +332,7 @@ struct HeaderWordmark: View {
     @Environment(\.colorScheme) private var scheme
 
     static let height: CGFloat = 46
+    static let width: CGFloat = 92  // the image is about 2:1
 
     var body: some View {
         if let image {
@@ -369,6 +430,7 @@ struct TurnStage: Equatable {
 /// ends, then fades away. Nothing is shown while Aura is idle.
 struct TurnProgress: View {
     let stage: TurnStage?
+    var width: CGFloat = TurnProgress.width
     @State private var done: TurnStage?  // the full bar after a turn, while it fades
     @State private var fading: Task<Void, Never>?
 
@@ -399,7 +461,7 @@ struct TurnProgress: View {
                     }
                     .frame(height: 3)
                 }
-                .frame(width: Self.width)
+                .frame(width: width)
                 .transition(.opacity)
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("\(shown.label), \(Int(shown.progress * 100)) percent")
@@ -427,12 +489,18 @@ struct StatusChips: View {
     let store: ChatStore
 
     var body: some View {
-        HStack(spacing: 10) {
-            StatusLight(label: connection.label, color: connection.color, detail: connection.detail)
-            StatusLight(label: model.label, color: model.color, detail: model.detail)
-            StatusLight(label: safeguards.label, color: safeguards.color, detail: safeguards.detail)
+        // One line when there's room; otherwise one light per line, their dots aligned.
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 10) { lights }
+            VStack(alignment: .leading, spacing: 4) { lights }
         }
         .accessibilityElement(children: .combine)
+    }
+
+    @ViewBuilder private var lights: some View {
+        StatusLight(label: connection.label, color: connection.color, detail: connection.detail)
+        StatusLight(label: model.label, color: model.color, detail: model.detail)
+        StatusLight(label: safeguards.label, color: safeguards.color, detail: safeguards.detail)
     }
 
     typealias Light = (label: String, color: Color, detail: String)
@@ -1223,29 +1291,46 @@ private struct AuraUsageView: View {
     let performance: LocalModelPerformance?
 
     var body: some View {
-        HStack(spacing: 10) {
-            Label(usage.cpuText, systemImage: "gauge.with.dots.needle.50percent")
-                .help("CPU currently used by Aura's macOS app process.")
-            Label(usage.memoryText, systemImage: "memorychip")
-                .help(usage.memoryDetail)
-            Label(usage.storageText, systemImage: "internaldrive")
-                .help("Aura app bundle, application data and logs. Local model downloads and disposable developer workspaces are excluded.")
-            if let performance {
-                Label("\(performance.outputTokensPerSecond.formatted(.number.precision(.fractionLength(1)))) tok/s",
-                      systemImage: "speedometer")
-                    .help(Self.detail(performance))
-                    .transition(.opacity)
+        // One line when there's room; otherwise two (CPU and memory over storage and speed).
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: 10) { cpu; memory; storage; speed }
+            Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 3) {
+                GridRow { cpu; memory }
+                GridRow { storage; speed }
             }
         }
         .labelStyle(CompactLabel())
         .font(.system(size: 10, weight: .medium, design: .rounded).monospacedDigit())
         .foregroundStyle(.secondary)
         .lineLimit(1)
-        .fixedSize()
+        .fixedSize(horizontal: false, vertical: true)  // wraps to two lines in a narrow column
         .animation(.smooth(duration: 0.3), value: performance == nil)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("Resource use: CPU \(usage.cpuText), memory \(usage.memoryText), storage \(usage.storageText)"
                             + (performance.map { ", \(Self.detail($0))" } ?? ""))
+    }
+
+    private var cpu: some View {
+        Label(usage.cpuText, systemImage: "gauge.with.dots.needle.50percent")
+            .help("CPU currently used by Aura's macOS app process.")
+    }
+
+    private var memory: some View {
+        Label(usage.memoryText, systemImage: "memorychip").help(usage.memoryDetail)
+    }
+
+    private var storage: some View {
+        Label(usage.storageText, systemImage: "internaldrive")
+            .help("Aura app bundle, application data and logs. Local model downloads and disposable developer workspaces are excluded.")
+    }
+
+    @ViewBuilder private var speed: some View {
+        if let performance {
+            Label("\(performance.outputTokensPerSecond.formatted(.number.precision(.fractionLength(1)))) tok/s",
+                  systemImage: "speedometer")
+                .help(Self.detail(performance))
+                .transition(.opacity)
+        }
     }
 
     static func detail(_ performance: LocalModelPerformance) -> String {

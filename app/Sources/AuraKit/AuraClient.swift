@@ -78,6 +78,10 @@ public protocol AuraTransport: Sendable {
     func activity(limit: Int) async throws -> ActivityPage
     /// The conversation the server kept (after a restart: the history, and any approval still waiting).
     func conversation() async throws -> ConversationInfo
+    /// The saved chats (vault Chats/), newest first, and which is open.
+    func chats() async throws -> SavedChats
+    /// Make a saved chat the current conversation again.
+    func openChat(_ id: String) async throws -> ConversationInfo
     func retryBuild(_ id: String) async throws -> BuildInfo
     func dismissRecovery(_ id: String) async throws
     func hol() async throws -> HOLOverview
@@ -158,6 +162,8 @@ extension AuraTransport {
     }
     public func activity(limit: Int) async throws -> ActivityPage { ActivityPage(entries: [], latest: -1) }
     public func conversation() async throws -> ConversationInfo { throw AuraClientError.badResponse }
+    public func chats() async throws -> SavedChats { throw AuraClientError.badResponse }
+    public func openChat(_ id: String) async throws -> ConversationInfo { throw AuraClientError.badResponse }
     public func retryBuild(_ id: String) async throws -> BuildInfo { throw AuraClientError.badResponse }
     public func dismissRecovery(_ id: String) async throws {}
     public func hol() async throws -> HOLOverview { throw AuraClientError.badResponse }
@@ -256,6 +262,17 @@ public final class AuraClient: AuraTransport {
 
     public func conversation() async throws -> ConversationInfo {
         let info = try Self.decoder.decode(ConversationInfo.self, from: await send(request("/v1/conversation")))
+        ids.approval = info.pending?.approvalId
+        return info
+    }
+
+    public func chats() async throws -> SavedChats {
+        try Self.decoder.decode(SavedChats.self, from: await send(request("/v1/chats")))
+    }
+
+    public func openChat(_ id: String) async throws -> ConversationInfo {
+        let info = try Self.decoder.decode(ConversationInfo.self,
+                                           from: await send(request("/v1/chats/open", body: ["id": id])))
         ids.approval = info.pending?.approvalId
         return info
     }

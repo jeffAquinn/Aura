@@ -597,6 +597,14 @@ class Aura:
         self.recovery_note = None
         self.toolbox.state.set_meta(f"conversation:{self.role}", self.thread_id)
 
+    def seed(self, messages: list[dict[str, str]]) -> None:
+        """Give a fresh conversation an opened chat's messages (yours and Aura's replies), so the
+        next turn carries on from them. Tool calls and results aren't part of a saved chat."""
+        history = [HumanMessage(m["text"]) if m["role"] == "user" else AIMessage(m["text"])
+                   for m in messages if m.get("text", "").strip()]
+        if history:
+            self._agent.update_state(self._config, {"messages": history})
+
     # ── durability: restart recovery and runs cut short ────────────────────────────────────
 
     def _restore(self) -> None:
@@ -735,9 +743,9 @@ class Aura:
         record = self.toolbox.state.approval(self.approval_id) if self.approval_id else None
         return (record["origin"], record["reply_to"]) if record else ("mac", None)
 
-    def transcript(self, limit: int = 200) -> list[dict[str, str]]:
+    def transcript(self, limit: int = 200, full: bool = False) -> list[dict[str, str]]:
         """The conversation as the user saw it: their messages and Aura's replies (no tool calls,
-        no memory summaries). Long messages are cut with a marker."""
+        no memory summaries). Long messages are cut with a marker, unless `full` (a saved chat)."""
         out: list[dict[str, str]] = []
         for m in self._agent.get_state(self._config).values.get("messages", []):
             origin = None
@@ -748,7 +756,7 @@ class Aura:
                 role, text = "aura", m.text
             else:
                 continue
-            if len(text) > TRANSCRIPT_CHARS:
+            if len(text) > TRANSCRIPT_CHARS and not full:
                 text = text[:TRANSCRIPT_CHARS] + f"\n… [cut: {len(text) - TRANSCRIPT_CHARS} more characters]"
             out.append({"role": role, "text": text, **({"origin": origin} if origin else {})})
         return out[-limit:]

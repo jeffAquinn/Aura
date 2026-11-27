@@ -107,6 +107,15 @@ other program or web page can use it. If a llama.cpp model can't run, the automa
 back to another local role, never to a cloud model. Sleep Mode, model downloads and the
 Developer's final handoff use Ollama only.
 
+### Saved chats
+
+The new-chat button in the panel's header opens a menu, as in Claude: **New Chat**, then
+**Recents**, the chats saved in the vault's `Chats` folder (title and when each was last used).
+Every Mac conversation is saved there as a readable Markdown file after each turn, and before a
+new chat starts or an old one opens, so starting a new chat no longer forgets the last one. Text
+that looks like a secret is masked before it's written. Opening a chat makes it the current
+conversation again, and the next message carries on from it. Delete a chat by deleting its file.
+
 ### The Observer
 
 **Open Observer…** in the menu bar (or the panel's header menu) opens a live, read-only log of

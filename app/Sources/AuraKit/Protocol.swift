@@ -221,6 +221,37 @@ public struct LocalModelPerformance: Codable, Equatable, Sendable {
 }
 
 /// The conversation as the server keeps it: it survives a restart of the server.
+/// A chat saved in the vault's Chats folder (the new-chat menu's Recents).
+public struct SavedChat: Codable, Sendable, Equatable, Identifiable {
+    public let id: String
+    public let title: String
+    public let updated: String  // ISO 8601
+    public let file: String  // vault-relative
+
+    public init(id: String, title: String, updated: String, file: String) {
+        self.id = id
+        self.title = title
+        self.updated = updated
+        self.file = file
+    }
+
+    /// "2 hours ago", for the menu.
+    public var when: String {
+        guard let date = ISO8601DateFormatter().date(from: updated) else { return "" }
+        return RelativeDateTimeFormatter().localizedString(for: date, relativeTo: Date())
+    }
+}
+
+public struct SavedChats: Codable, Sendable, Equatable {
+    public let current: String
+    public let chats: [SavedChat]
+
+    public init(current: String, chats: [SavedChat]) {
+        self.current = current
+        self.chats = chats
+    }
+}
+
 public struct ConversationInfo: Codable, Sendable, Equatable {
     public struct Message: Codable, Sendable, Equatable {
         public let role: String  // "user" | "aura"

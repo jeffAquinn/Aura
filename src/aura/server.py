@@ -39,6 +39,7 @@ from aura.brain import ApprovalNeeded, Aura, Event, StaleApproval, Status
 from aura.broadcast import TurnBroadcast, TurnView, frame
 from aura.citations import verify_citations, warning as citation_warning
 from aura.agents import AgentError
+from aura.chats import ChatArchive
 from aura.lifecycle import Lifecycle, Turn
 from aura.llama_server import LlamaServer, LocalModelError, keep_alive_seconds, llamacpp_models
 from aura.masking import PATTERNS_ONLY, Masker
@@ -796,6 +797,10 @@ class ApprovalsIn(BaseModel):
     approval_id: str | None = Field(default=None, max_length=64)  # binds the answer to the card it answers
 
 
+class ChatOpenIn(BaseModel):
+    id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
+
+
 class StopIn(BaseModel):
     turn_id: str | None = Field(default=None, max_length=64)  # None: whatever turn is running
 
@@ -914,6 +919,18 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
     lifecycle = Lifecycle(aura.toolbox.state, turn, on_cancel=aura.toolbox.developer.stop_tasks)
     app.state.lifecycle = lifecycle
     masker = aura.toolbox.masker
+    # Saved chats (vault Chats/): the Mac conversation is kept after every turn, and before a new
+    # chat starts or an old one opens, so nothing is forgotten until the user deletes its file.
+    archive = ChatArchive(aura.toolbox.vault.root, masker.mask)
+
+    def chat_id() -> str:
+        return aura.toolbox.state.get_meta("chat:mac") or aura.thread_id
+
+    def save_chat() -> None:
+        try:
+            archive.save(chat_id(), aura.transcript(limit=100_000, full=True))
+        except OSError:
+            log.exception("couldn't save the chat")
     app.state.last_active = 0.0  # time.monotonic() of the last chat or approval
     sleeper: IdleSleep | None = None  # set below for the installed app (not tests)
 
@@ -1121,7 +1138,8 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
         return stream_turn(events, lifecycle, t, keeper, check_cold=True, masker=masker,
                            selected_model=chosen if body.model is None else None,
                            cloud_availability=cloud_availability, vault_root=aura.settings.vault_dir,
-                           broadcast=broadcast, said=body.text, provider=chosen.provider)
+                           broadcast=broadcast, said=body.text, provider=chosen.provider,
+                           on_end=lambda *_: save_chat())
 
     @app.post("/v1/approvals")
     def approvals(body: ApprovalsIn) -> Response:
@@ -1136,6 +1154,12 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
             # turn goes back to the Slack thread once, at the end (docs/unified-command-stream.md §4.4).
             def on_end(state: str, reply: str, card: ApprovalNeeded | None) -> None:
                 app.state.remote.deliver(reply_to, reply, card, state)
+        deliver = on_end
+
+        def on_end(state: str, reply: str, card: ApprovalNeeded | None) -> None:  # noqa: F811
+            if deliver is not None:
+                deliver(state, reply, card)
+            save_chat()
         try:
             events = aura.resume([a.model_dump() if isinstance(a, EditedApproval) else a for a in body.approvals],
                                  approval_id=body.approval_id, turn_id=t.id, cancel=t.cancel)  # fmt: skip
@@ -1208,10 +1232,36 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
         if not turn.acquire(blocking=False):
             return busy()
         try:
+            save_chat()  # the chat being left stays in Chats/
             aura.new_conversation()
+            aura.toolbox.state.set_meta("chat:mac", aura.thread_id)
         finally:
             turn.release()
         return Response(status_code=204)
+
+    @app.get("/v1/chats")
+    def chats() -> dict:
+        """The saved chats, newest first, and which one is open (saved first, so it is current)."""
+        if not turn.locked():
+            save_chat()
+        return {"current": chat_id(), "chats": archive.list()}
+
+    @app.post("/v1/chats/open")
+    def open_chat(body: ChatOpenIn) -> Response:
+        """Make a saved chat the current conversation again: the one being left is saved first."""
+        if not turn.acquire(blocking=False):
+            return busy()
+        try:
+            messages = archive.load(body.id)
+            if messages is None:
+                return _error(404, "There's no saved chat with that id.")
+            save_chat()
+            aura.new_conversation()
+            aura.seed(messages)
+            aura.toolbox.state.set_meta("chat:mac", body.id)
+        finally:
+            turn.release()
+        return JSONResponse(conversation())
 
     # ── voice and persona (the user acting directly: no approval needed) ──────────────────────
 

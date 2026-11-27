@@ -84,6 +84,8 @@ public final class ChatStore {
     public private(set) var voices: [VoiceInfo] = []
     /// Server-owned model role choices. API keys themselves are never sent back to the app.
     public private(set) var modelCatalog: ModelCatalog?
+    /// The saved chats for the new-chat menu (vault Chats/), newest first.
+    public private(set) var savedChats: SavedChats?
     /// Developer account readiness, including the result of an explicit isolated connection check.
     public private(set) var developerInfo: DeveloperInfo?
     /// Speaks replies and approval requests when spoken replies are on.
@@ -387,6 +389,7 @@ public final class ChatStore {
         persona = settings.persona
         if let catalog = try? await transport?.models() { adopt(catalog) }
         developerInfo = try? await transport?.developer()
+        await loadChats()
     }
 
     /// The user picked a model in the chat box: load it now, so the next message doesn't wait for
@@ -561,6 +564,22 @@ public final class ChatStore {
         try? await transport?.newConversation()
         items.removeAll()
         phase = .idle
+        await loadChats()
+    }
+
+    /// Refresh the new-chat menu's list (the server saves the open chat first).
+    public func loadChats() async {
+        if let chats = try? await transport?.chats() { savedChats = chats }
+    }
+
+    /// Open a saved chat: it becomes the conversation, and the next message carries on from it.
+    public func openChat(_ id: String) async {
+        guard !isBusy, id != savedChats?.current, let transport, let info = try? await transport.openChat(id) else { return }
+        flushPendingText()
+        items.removeAll()  // another chat: none of the bubbles carry over
+        phase = .idle
+        show(info)  // a card still waiting in it waits again
+        await loadChats()
     }
 
     // MARK: - events
@@ -690,7 +709,10 @@ public final class ChatStore {
     }
 
     private func endTurn() {
-        Task { await refreshHealth() }  // the model's state just changed (loaded, or done): show it now
+        Task {
+            await refreshHealth()  // the model's state just changed (loaded, or done): show it now
+            await loadChats()  // the chat was just saved: its title and time are current
+        }
         flushPendingText()
         if phase != .awaitingApproval {
             finishSpokenSegment()
