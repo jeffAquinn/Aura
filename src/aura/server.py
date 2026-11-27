@@ -59,6 +59,7 @@ from aura.secrets import KEYS, SecretError
 from aura.skills import SkillError
 from aura.speech import Kokoro, SpeechUnavailable
 from aura.tools.sandbox import cleanup_aura_docker, find_docker
+from aura.tools.vault import SCRATCH
 from aura.tools import vault_map
 from aura.voice import VoiceError
 
@@ -997,6 +998,20 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
                     log.exception("idle sleep check failed")
 
         threading.Thread(target=sleep_when_idle, name="aura-idle-sleep", daemon=True).start()
+
+        def sweep_temporary_files() -> None:
+            """The temporary folder's cadence: shortly after launch, then once a day."""
+            (aura.toolbox.vault.root / SCRATCH).mkdir(exist_ok=True)  # the vault's temporary folder
+            time.sleep(60)
+            while True:
+                try:
+                    if swept := aura.toolbox.vault.sweep_scratch():
+                        log.info("moved %d stale temporary item(s) to the Trash", len(swept))
+                except Exception:  # noqa: BLE001 — try again tomorrow
+                    log.exception("temporary folder sweep failed")
+                time.sleep(24 * 3600)
+
+        threading.Thread(target=sweep_temporary_files, name="aura-scratch-sweep", daemon=True).start()
 
     def idle(quiet_for: float = 300) -> bool:
         """Low activity: no turn running, no audit in progress, and nothing asked for a while."""

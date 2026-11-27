@@ -205,7 +205,7 @@ def test_read_truncates_long_files_and_refuses_binary(env):
     (root / "img.bin").write_bytes(b"\x89PNG\x00\x00binary")
 
     long = use(tools, "read_file", path="long.txt")
-    assert long.startswith("x" * READ_LIMIT) and "[truncated" in long
+    assert long.startswith("x" * READ_LIMIT) and "The rest: read_file(" in long
     assert "binary file" in use(tools, "read_file", path="img.bin")
 
 
@@ -325,3 +325,22 @@ def test_approval_descriptions(env):
     )
     assert "will be refused" in d("write_file", {"path": "old.txt", "content": "x"})
     assert "will be blocked" in d("delete_path", {"path": "../secret.txt"})
+
+
+def test_a_long_file_is_read_in_parts_each_saying_how_to_read_the_next(tmp_path):
+    # 2026-11-27: a 16k-character spec came back cut at 12k with no way on, and Aura asked for the
+    # same part three times until its loop guard stopped it.
+    from aura.audit import AuditLog
+    from aura.tools.vault import READ_LIMIT, Vault
+
+    vault = Vault(tmp_path / "v", AuditLog(tmp_path / "a.jsonl"))
+    vault.ensure_exists()
+    text = "".join(f"{i:05d}\n" for i in range(3000))  # 18,000 characters
+    (vault.root / "spec.md").write_text(text)
+    first = vault.read("spec.md")
+    assert first.startswith(text[:READ_LIMIT]) and f"read_file(path='spec.md', offset={READ_LIMIT})" in first
+    second = vault.read("spec.md", READ_LIMIT)
+    assert second.startswith(text[READ_LIMIT:]) and "the end of the file" in second
+    assert "past its end" in vault.read("spec.md", 99_999)
+    (vault.root / "short.md").write_text("short")
+    assert vault.read("short.md") == "short"  # a short file: no note

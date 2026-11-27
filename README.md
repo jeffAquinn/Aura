@@ -107,6 +107,14 @@ other program or web page can use it. If a llama.cpp model can't run, the automa
 back to another local role, never to a cloud model. Sleep Mode, model downloads and the
 Developer's final handoff use Ollama only.
 
+### The temporary folder
+
+Temporary files (plans, notes, drafts) go in `_scratch/`, at the top of the vault; a Developer task
+uses its folder's own `_scratch/`. Once a day Aura moves anything in a `_scratch` folder that hasn't
+changed for a week to the macOS Trash, where it can still be recovered. Nothing outside a `_scratch`
+folder is touched. Build output and caches are never copied into the vault, and Aura can list other
+clutter (`find_clutter`) and move it to the Trash with one approval (`tidy_vault`).
+
 ### Saved chats
 
 The new-chat button in the panel's header opens a menu, as in Claude: **New Chat**, then

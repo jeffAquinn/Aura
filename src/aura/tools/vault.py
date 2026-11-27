@@ -40,8 +40,8 @@ KNOWLEDGE_SNIPPET = 400
 # listed: in a notes vault those may be the user's own folders.)
 BUILD_OUTPUT = frozenset({".build", ".swiftpm", ".venv", "node_modules", "__pycache__", ".pytest_cache",
                           ".ruff_cache", ".mypy_cache", "DerivedData"})
-SCRATCH = "_scratch"  # a folder for files made for one task (plans, notes, drafts): cleaned up later
-STALE_DAYS = 7  # a scratch file unchanged this long is offered for cleanup
+SCRATCH = "_scratch"  # the temporary folder: plans, notes, drafts; swept by sweep_scratch
+STALE_DAYS = 7  # a temporary file or folder unchanged this long is moved to the Trash (once a day)
 
 
 class VaultError(Exception):
@@ -420,7 +420,10 @@ class Vault:
         more = f"\n  ... and {len(entries) - LIST_LIMIT} more" if len(entries) > LIST_LIMIT else ""
         return f"Contents of '{self.rel(d)}' ({len(entries)} items):\n" + "\n".join(lines) + more
 
-    def read(self, path: str) -> str:
+    def read(self, path: str, offset: int = 0) -> str:
+        """The file's text from character `offset`, at most READ_LIMIT of it. A longer file says
+        exactly how to read its next part, so a model reads on instead of asking again for the
+        same part (a 16k-character spec once stopped Aura's loop guard that way)."""
         f = self.resolve(path)
         if not f.is_file():
             return f"'{path}' is a folder; use list_vault." if f.is_dir() else f"'{path}' does not exist."
@@ -428,9 +431,15 @@ class Vault:
         if b"\x00" in data[:8192]:
             return f"'{self.rel(f)}' is a binary file ({human_size(len(data))}); it can't be shown as text."
         text = data.decode("utf-8", errors="replace")
-        if len(text) > READ_LIMIT:
-            return text[:READ_LIMIT] + f"\n\n[truncated: showing the first {READ_LIMIT} of {len(text)} characters]"
-        return text
+        offset = max(0, int(offset))
+        if offset >= len(text) and text:
+            return f"'{self.rel(f)}' has {len(text)} characters; offset {offset} is past its end."
+        part, end = text[offset:offset + READ_LIMIT], min(len(text), offset + READ_LIMIT)
+        if offset == 0 and end == len(text):
+            return part
+        note = (f"[characters {offset}-{end} of {len(text)}. The rest: read_file(path='{self.rel(f)}', offset={end})]"
+                if end < len(text) else f"[characters {offset}-{end} of {len(text)}: the end of the file]")
+        return f"{part}\n\n{note}"
 
     def search_knowledge(self, query: str, limit: int = 5) -> str:
         """Return bounded local matches from user-provided Markdown or text sources.
@@ -614,8 +623,9 @@ class Vault:
                 rel = self.rel(target)
                 # Only clutter: a build-output or cache folder, or a file in a _scratch folder. Any
                 # other path is refused even when approved: tidying must never sweep up the user's work.
+                parts = target.relative_to(self.root).parts
                 clutter = (target.is_dir() and target.name in BUILD_OUTPUT) or (
-                    target.is_file() and SCRATCH in target.relative_to(self.root).parts)
+                    SCRATCH in parts[:-1])  # anything inside a _scratch folder (not the folder itself)
                 if not clutter:
                     raise VaultError("not clutter: only build output, caches and _scratch files are tidied")
                 destination = trash_dir / target.name
@@ -632,6 +642,30 @@ class Vault:
         if refused:
             lines.append("Left as they were: " + "; ".join(refused))
         return "\n".join(lines)
+
+    def sweep_scratch(self, now: float | None = None, trash_dir: Path | None = None) -> list[str]:
+        """The temporary folders' cadence: every item directly inside a `_scratch` folder (the
+        vault's own, or one inside a project) that hasn't changed for STALE_DAYS goes to the Trash,
+        where the user can still recover it. The user chose this cleanup to run by itself
+        (2026-11-27); nothing outside a `_scratch` folder is touched."""
+        import time
+
+        now = time.time() if now is None else now
+        stale = []
+        for folder in sorted(self.root.rglob(SCRATCH)):
+            if not folder.is_dir() or folder.is_symlink() or any(p.name in BUILD_OUTPUT for p in folder.parents):
+                continue
+            for item in sorted(folder.iterdir()):
+                if item.is_symlink():
+                    continue
+                times = [item.stat().st_mtime] + [f.stat().st_mtime for f in item.rglob("*")
+                                                  if not f.is_symlink()] if item.is_dir() else [item.stat().st_mtime]
+                if (now - max(times)) / 86400 >= STALE_DAYS:
+                    stale.append(self.rel(item).rstrip("/"))
+        if stale:
+            self.trash(stale, trash_dir)
+            self.audit.record("scratch_swept", items=len(stale), paths=stale[:50])
+        return stale
 
     def delete(self, path: str) -> str:
         candidate = self._candidate(path)
@@ -717,10 +751,11 @@ def vault_tools(vault: Vault) -> list[BaseTool]:
         return _guard(vault, "list_vault", path, lambda: vault.list(path))
 
     @tool
-    def read_file(path: str) -> str:
+    def read_file(path: str, offset: int = 0) -> str:
         """Read a text file (a note, Markdown, CSV, code) from the Aura Vault and return its
-        contents, to open, quote or summarise it. `path` is relative to the vault root."""
-        return _guard(vault, "read_file", path, lambda: vault.read(path))
+        contents, to open, quote or summarise it. `path` is relative to the vault root. A long file
+        comes in parts: its note gives the `offset` that reads the next part."""
+        return _guard(vault, "read_file", path, lambda: vault.read(path, offset))
 
     @tool
     def search_knowledge(query: str, limit: int = 5) -> str:
@@ -731,9 +766,9 @@ def vault_tools(vault: Vault) -> list[BaseTool]:
     @tool
     def write_file(path: str, content: str, overwrite: bool = False, expected_sha256: str | None = None) -> str:
         """Create a text file in the Aura Vault; missing parent folders are created. Set
-        overwrite=true only to replace an existing file. A file only needed for one task (a plan,
-        notes, a draft) goes in a `_scratch/` folder, so it can be cleaned up later. The user
-        approves this before it runs."""
+        overwrite=true only to replace an existing file. A temporary file (a plan, notes, a draft)
+        goes in `_scratch/`, the temporary folder, cleared a week after it was last changed. The
+        user approves this before it runs."""
         return _guard(vault, "write_file", path,
                       lambda: vault.write_atomic(path, content, overwrite, expected_sha256))
 

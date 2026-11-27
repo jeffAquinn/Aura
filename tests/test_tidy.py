@@ -55,3 +55,39 @@ def test_tidy_vault_asks_first_with_one_card_for_the_whole_list(settings):
     events = list(aura.stream("Tidy my vault."))
     card = events[-1]
     assert type(card).__name__ == "ApprovalNeeded" and [a.tool for a in card.actions] == ["tidy_vault"]
+
+
+def test_the_temporary_folder_is_swept_of_what_went_unchanged_for_a_week(tmp_path):
+    vault = Vault(tmp_path / "vault", AuditLog(tmp_path / "audit.jsonl"))
+    vault.ensure_exists()
+    root, old = vault.root, time.time() - (STALE_DAYS + 1) * 86400
+
+    def aged(path):
+        os.utime(path, (old, old))
+        return path
+
+    (root / "_scratch/plans").mkdir(parents=True)
+    (root / "_scratch/plans/models-window.md").write_text("an old plan")
+    aged(root / "_scratch/plans/models-window.md")
+    aged(root / "_scratch/plans")
+    (root / "_scratch/draft.md").write_text("old draft")
+    aged(root / "_scratch/draft.md")
+    (root / "_scratch/today.md").write_text("still in use")
+    (root / "_scratch/mixed").mkdir()
+    (root / "_scratch/mixed/old.md").write_text("old")
+    aged(root / "_scratch/mixed/old.md")
+    (root / "_scratch/mixed/new.md").write_text("new")  # one recent file keeps its folder
+    (root / "Aura/_scratch").mkdir(parents=True)
+    (root / "Aura/_scratch/notes.md").write_text("a Developer's notes")
+    aged(root / "Aura/_scratch/notes.md")
+    (root / "Notes.md").write_text("the user's own, however old")
+    aged(root / "Notes.md")
+    trash = tmp_path / "Trash"
+    trash.mkdir()
+
+    swept = vault.sweep_scratch(trash_dir=trash)
+    assert sorted(swept) == ["Aura/_scratch/notes.md", "_scratch/draft.md", "_scratch/plans"]
+    assert sorted(p.name for p in trash.iterdir()) == ["draft.md", "notes.md", "plans"]  # recoverable
+    assert (root / "_scratch/today.md").exists() and (root / "_scratch/mixed/old.md").exists()
+    assert (root / "Notes.md").exists() and (root / "_scratch").is_dir()
+    assert vault.sweep_scratch(trash_dir=trash) == []  # nothing left to sweep
