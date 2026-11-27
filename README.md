@@ -162,8 +162,13 @@ Aura can commission a skill instead of waiting for one to appear in the Inbox. A
 Claude Code build a skill that…"), or click **New Skill** in the Workshop (right-click an installed
 skill to **Improve** it).
 
-1. **Specification.** Aura writes a Technical Specification with six sections (Goal, Inputs, Output,
-   Steps, Acceptance tests, Constraints). The **Specification Approval card** shows the Developer,
+1. **Specification.** Aura writes a Technical Specification with seven sections (Goal, Inputs,
+   Output, Steps, Mechanics, Acceptance tests, Constraints). **Mechanics** says what the skill relies
+   on, in five lines: Network, Processes, Native code and Dynamic code must say `none`, and Files
+   names the places it uses (the vault, read-only, and /tmp). Aura refuses a specification that
+   leaves one out or claims what the Security Governor would block. After the build, the audit
+   compares the Files line with the code and shows any difference as a yellow finding. See
+   `docs/mechanics.md`. The **Specification Approval card** shows the Developer,
    the hard limits, exactly what is sent and to whom, and the specification itself. You can edit the
    specification or switch the Developer, then **Approve & Build**. Return denies.
 2. **Developer.** Claude Code (your Claude plan) or Codex (your ChatGPT plan) works in the **Developer

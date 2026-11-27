@@ -115,8 +115,11 @@ def workshop_tools(workshop: Workshop, developer: Developer | None = None) -> li
     def develop_skill(name: str, specification: str, engine: str = "claude", improve: bool = False) -> str:
         """Have a Developer (engine "claude" for Claude Code, or "codex" for Codex) build a new skill,
         or improve an installed one (improve=true), from a Technical Specification you write. The
-        specification must have these sections: Goal, Inputs, Output, Steps, Acceptance tests,
-        Constraints. The user sees and approves it first; it is all the Developer receives. The
+        specification must have these sections: Goal, Inputs, Output, Steps, Mechanics, Acceptance
+        tests, Constraints. Mechanics is five lines: "Network: none", "Processes: none", "Native code:
+        none", "Dynamic code: none", and "Files:" naming which of the vault (read-only) and /tmp the
+        skill uses (or none), and why. The user sees and approves it first; it is all the Developer
+        receives. The
         result must pass the Security Governor, and the user reviews it in the Workshop."""
         if developer is None:
             return "The Developer isn't available."

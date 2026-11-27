@@ -373,6 +373,7 @@ def test_propose_audit_approve_deploy(env):
     task = workshop.propose("pdf_text", wait=True)
     assert task.stage == "awaiting" and not task.report.blocked and task.report.risk == "green"
     assert [f.check for f in task.report.findings][:3] == ["write-scope", "protected", "manifest"]
+    assert "mechanics" not in {f.check for f in task.report.findings}  # an inbox skill: no specification to compare
     assert task.worktree.exists() and not (settings.skills_dir / "pdf_text").exists()  # not live yet
     diff = workshop.diff(task.id)
     assert {d["file"] for d in diff} == {"skill.toml", "skill.py", "test_skill.py"}

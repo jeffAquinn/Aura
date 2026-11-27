@@ -28,7 +28,8 @@ from aura.agents import AgentError, AgentRegistry, load_manifest as load_agent_m
 from aura.config import Settings
 from aura.governor import AuditReport, Finding
 from aura.governor.provenance import check_package, resolve
-from aura.governor.scan import scan_skill
+from aura.governor.mechanics import compare as compare_mechanics
+from aura.governor.scan import FileUse, scan_skill
 from aura.skills import SkillError, SkillManager, content_hash, dependency_image_for, dockerfile, load_manifest
 from aura.tools.sandbox import Sandbox, SandboxUnavailable
 
@@ -236,7 +237,12 @@ class Workshop:
         add(Finding("manifest", "pass", f"valid manifest; vault access: {manifest['permissions']['vault']}; network: none"))
 
         self._checkpoint(task, 42, "Statically scanning the skill code…")
-        report.findings += scan_skill(folder)
+        uses: list[FileUse] = []
+        scanned = scan_skill(folder, uses)
+        if task.origin and task.origin.get("build"):  # a Developer build: compare its declared Mechanics
+            marked, declared = compare_mechanics(str(task.origin.get("specification") or ""), manifest, scanned, uses)
+            scanned = marked + declared
+        report.findings += scanned
 
         self._checkpoint(task, 52, "Resolving pinned dependencies…")
         try:

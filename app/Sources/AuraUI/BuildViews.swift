@@ -312,7 +312,7 @@ struct NewBuildSheet: View {
             }
             VStack(alignment: .leading, spacing: 4) {
                 Text("Technical Specification").font(.headline)
-                Text("Six sections: \(Specification.sections.joined(separator: ", ")). It's all the Developer is told about the task.")
+                Text("Sections: \(Specification.sections.joined(separator: ", ")). It's all the Developer is told about the task.")
                     .font(.caption).foregroundStyle(.secondary)
                 TextEditor(text: $spec)
                     .font(.system(.callout, design: .monospaced))

@@ -215,18 +215,31 @@ public struct BuildAlert: Codable, Sendable, Equatable, Identifiable {
     public var menuTitle: String { "\(skill): ready for your review…" }
 }
 
-/// The Technical Specification: the six sections the server requires, and a starting template.
+/// The Technical Specification: the sections the server requires, and a starting template.
+/// (tests/test_mechanics.py checks this list matches the server's, Aura's prompt and the tool's.)
 public enum Specification {
-    public static let sections = ["Goal", "Inputs", "Output", "Steps", "Acceptance tests", "Constraints"]
+    public static let sections = ["Goal", "Inputs", "Output", "Steps", "Mechanics", "Acceptance tests", "Constraints"]
+    /// Mechanics' five lines (docs/mechanics.md): the first four must say "none".
+    public static let mechanics = ["Network", "Processes", "Native code", "Dynamic code", "Files"]
     public static let minimumLength = 150
     public static let maximumLength = 12_000
 
-    public static let template = sections.map { "## \($0)\n" }.joined(separator: "\n")
+    public static let template = sections.map { section in
+        section == "Mechanics"
+            ? "## Mechanics\n" + mechanics.map { "- \($0): \($0 == "Files" ? "" : "none")\n" }.joined()
+            : "## \(section)\n"
+    }.joined(separator: "\n")
 
     /// What's missing before the server would accept it (empty: complete), in the same terms.
     public static func problems(_ spec: String) -> [String] {
         var out: [String] = []
-        let length = spec.trimmingCharacters(in: .whitespacesAndNewlines).count
+        // Mechanics' fixed "…: none" lines don't count, so a blank template stays too short (the
+        // server's rule: workspace.BOILERPLATE).
+        let none = mechanics.dropLast().joined(separator: "|")  // every line but Files says "none"
+        let counted = spec.replacingOccurrences(
+            of: #"(?im)^\s*(#+\s*)?Mechanics\s*$|^\s*[-*•]?\s*("# + none + #")\s*:\s*none\.?\s*$"#,
+            with: "", options: .regularExpression)
+        let length = counted.trimmingCharacters(in: .whitespacesAndNewlines).count
         if length < minimumLength || length > maximumLength {
             out.append("it must be \(minimumLength)–\(maximumLength) characters (now \(length))")
         }
@@ -241,6 +254,45 @@ public enum Specification {
             }
         }
         if !missing.isEmpty { out.append("missing sections: " + missing.joined(separator: ", ")) }
+        return out + mechanicsProblems(spec)
+    }
+
+    /// The server's Mechanics checks (workspace.check_specification), in its words: all five
+    /// lines, the first four "none", and an answer for Files.
+    static func mechanicsProblems(_ spec: String) -> [String] {
+        let lines = spec.components(separatedBy: .newlines)
+        func title(_ line: String, _ names: [String]) -> Bool {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if t.hasPrefix("#") { return names.contains { t.drop { $0 == "#" || $0 == " " }.lowercased().hasPrefix($0.lowercased()) } }
+            let bare = t.hasSuffix(":") ? String(t.dropLast()).trimmingCharacters(in: .whitespaces) : t
+            return names.contains { $0.lowercased() == bare.lowercased() }
+        }
+        guard let start = lines.firstIndex(where: { title($0, ["Mechanics"]) }) else { return [] }
+        let others = sections.filter { $0 != "Mechanics" }
+        var found: [String: String] = [:]
+        var current: String?
+        for line in lines[(start + 1)...] {
+            let t = line.trimmingCharacters(in: .whitespaces)
+            if t.hasPrefix("#") || title(line, others) { break }
+            let item = t.drop { "-*•".contains($0) }.trimmingCharacters(in: .whitespaces)
+            if let colon = item.firstIndex(of: ":"),
+               let label = mechanics.first(where: { $0.lowercased() == item[..<colon].lowercased() }) {
+                current = label
+                found[label] = item[item.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+            } else if let label = current, !t.isEmpty {
+                found[label] = (found[label, default: ""] + " " + t).trimmingCharacters(in: .whitespaces)
+            }
+        }
+        var out: [String] = []
+        let absent = mechanics.filter { found[$0] == nil }
+        if !absent.isEmpty { out.append("Mechanics is missing: " + absent.joined(separator: ", ")) }
+        for label in mechanics.dropLast() {
+            if let answer = found[label],
+               answer.range(of: #"^(?i)none\.?(\s*\([^()]{0,120}\))?\.?$"#, options: .regularExpression) == nil {
+                out.append("Mechanics: \(label) must be 'none'")
+            }
+        }
+        if found["Files"]?.isEmpty == true { out.append("Mechanics: Files needs an answer: the vault, /tmp, or none, and why") }
         return out
     }
 

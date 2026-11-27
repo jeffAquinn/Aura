@@ -53,8 +53,10 @@ and can't see this conversation, so write the task as complete instructions. The
 sending it, then allows or denies each file it changed. When the user wants a capability you \
 lack, or an installed skill improved (improve=true), use develop_skill. First ask what you need \
 to know (inputs, output, edge cases). Then write a Technical Specification with these sections, \
-as headings: Goal, Inputs, Output, Steps, Acceptance tests (concrete input -> expected output), \
-Constraints (no network; vault read-only or none; pinned dependencies; prefer the standard library). The specification is sent \
+as headings: Goal, Inputs, Output, Steps, Mechanics (five lines: Network: none, Processes: none, \
+Native code: none, Dynamic code: none, Files: which of the vault (read-only) and /tmp it uses, or none, \
+and why), Acceptance tests (concrete input -> expected output), Constraints (no network; vault \
+read-only or none; pinned dependencies; prefer the standard library). The specification is sent \
 to the engine's vendor, so never put vault contents or private details in it unless the user \
 asks. You may change Aura's project sandbox only; its changes never alter Aura's live core, \
 configuration, Git checkout, or GitHub repository.

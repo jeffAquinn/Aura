@@ -13,7 +13,21 @@ from pathlib import Path
 
 from aura.skills import MAX_BYTES, TESTS
 
-SECTIONS = ("Goal", "Inputs", "Output", "Steps", "Acceptance tests", "Constraints")
+SECTIONS = ("Goal", "Inputs", "Output", "Steps", "Mechanics", "Acceptance tests", "Constraints")
+# Pillar 2 (docs/mechanics.md, approved by Aura 2026-11-26): what a skill relies on, one line each.
+# The first four must say "none": the Security Governor already blocks any skill that does them.
+MUST_BE_NONE = {
+    "Network": "skills never use the network",
+    "Processes": "skills can't start other programs (subprocess, os.system)",
+    "Native code": "skills can't call native code (ctypes)",
+    "Dynamic code": "skills can't run text as code (eval, exec)",
+}
+MECHANICS = (*MUST_BE_NONE, "Files")
+_LABEL = re.compile(rf"(?i)^\s*[-*•]?\s*({'|'.join(map(re.escape, MECHANICS))})\s*:\s*(.*)$")
+_CANON = {m.casefold(): m for m in MECHANICS}
+# Mechanics' fixed "…: none" lines, left out of the length limits so a blank template stays too short.
+BOILERPLATE = re.compile(rf"(?im)^\s*(#+\s*)?Mechanics\s*$|^\s*[-*•]?\s*({'|'.join(map(re.escape, MUST_BE_NONE))})"
+                         r"\s*:\s*none\.?\s*$")  # fmt: skip
 SPEC_LIMITS = (150, 12_000)  # characters
 
 SKILL_FORMAT = f"""\
@@ -65,15 +79,73 @@ need a third-party package will fail here; that's expected, the Governor install
 RUN_TESTS = TESTS.replace('sys.path.insert(0, "/skill")', 'sys.path.insert(0, "skill")')
 
 
-def check_specification(spec: str) -> list[str]:
-    """What's wrong with a Technical Specification (empty: fine)."""
+def _heading(section: str) -> str:
+    return rf"(?im)^\s*(#+\s*)?{re.escape(section)}\b"
+
+
+def _title(names: str) -> str:
+    """A line that starts a section: a Markdown heading, or a section name alone on its line."""
+    return rf"(?im)^\s*(#+\s*({names})\b.*|({names})\s*:?\s*)$"
+
+
+def mechanics(spec: str) -> dict[str, str] | None:
+    """The Mechanics section's lines (label: answer, e.g. "Files": "reads the vault file…"), or
+    None when there's no Mechanics section. An answer may wrap onto the lines below it."""
+    start = re.search(_title("Mechanics"), spec)
+    if start is None:
+        return None
+    body = spec[start.end():]
+    others = "|".join(re.escape(s) for s in SECTIONS if s != "Mechanics")
+    end = re.search(rf"(?im)^\s*(#+\s*\S.*|({others})\s*:?\s*)$", body)  # any heading, or a section name alone
+    found: dict[str, str] = {}
+    current = None
+    for line in body[: end.start() if end else None].splitlines():
+        if (m := _LABEL.match(line)) and (label := _CANON.get(m.group(1).casefold())):
+            current = label
+            found[current] = m.group(2).strip()
+        elif current and line.strip():
+            found[current] = f"{found[current]} {line.strip()}".strip()
+    return found
+
+
+def _counted(spec: str) -> str:
+    """The text the length limits apply to: without Mechanics' fixed "…: none" lines, so a blank
+    template stays too short to send."""
+    return BOILERPLATE.sub("", spec).strip()
+
+
+def says_none(answer: str) -> bool:
+    """Just "none", with at most a full stop or a short note in brackets: "none, except it fetches…"
+    is not none."""
+    return re.fullmatch(r"(?i)none\.?(\s*\([^()]{0,120}\))?\.?", answer.strip()) is not None
+
+
+def check_specification(spec: str, require_mechanics: bool = True) -> list[str]:
+    """What's wrong with a Technical Specification (empty: fine). `require_mechanics` False: one
+    approved before Mechanics existed (a retry), checked as it was then."""
     problems = []
-    if not SPEC_LIMITS[0] <= len(spec.strip()) <= SPEC_LIMITS[1]:
+    if not SPEC_LIMITS[0] <= len(_counted(spec)) <= SPEC_LIMITS[1]:
         problems.append(f"it must be {SPEC_LIMITS[0]}-{SPEC_LIMITS[1]} characters")
-    missing = [s for s in SECTIONS if not re.search(rf"(?im)^\s*(#+\s*)?{re.escape(s)}\b", spec)]
+    missing = [s for s in SECTIONS if not re.search(_heading(s), spec) and (require_mechanics or s != "Mechanics")]
     if missing:
         problems.append("missing sections: " + ", ".join(missing))
+    declared = mechanics(spec)
+    if declared is not None:
+        if absent := [m for m in MECHANICS if m not in declared]:
+            problems.append("Mechanics is missing: " + ", ".join(absent))
+        for label, why in MUST_BE_NONE.items():
+            if label in declared and not says_none(declared[label]):
+                problems.append(f"Mechanics: {label} must be 'none': {why}, and the Security Governor blocks any "
+                                "skill that does")  # fmt: skip
+        if "Files" in declared and not declared["Files"]:
+            problems.append("Mechanics: Files needs an answer: the vault, /tmp, or none, and why")
     return problems
+
+
+def declared_places(files: str) -> set[str]:
+    """Which of a skill's places a Files answer mentions: "vault" (/vault) and "tmp" (/tmp)."""
+    words = {"vault": r"\bvault\b", "tmp": r"\btmp\b|\bscratch\b"}
+    return {place for place, rx in words.items() if re.search("(?i)" + rx, files)}
 
 
 def prepare(workspace: Path, spec: str, example: Path, current: Path | None) -> None:

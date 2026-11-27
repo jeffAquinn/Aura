@@ -340,7 +340,8 @@ class Developer:
         old = self.builds.get(build_id)
         if old is None or not old.recoverable:
             raise DeveloperError("only an interrupted build can be retried")
-        build = self.start(old.skill, old.specification, old.engine, old.improve)
+        build = self.start(old.skill, old.specification, old.engine, old.improve,
+                           legacy=ws.mechanics(old.specification) is None)  # approved before Mechanics existed
         self.dismiss(build_id)
         return build
 
@@ -432,13 +433,14 @@ class Developer:
 
     # ── start / stop ────────────────────────────────────────────────────────────────────────
 
-    def check(self, skill: str, specification: str, engine: str, improve: bool) -> Engine:
-        """Every reason a build can't start, raised before anything leaves this Mac."""
+    def check(self, skill: str, specification: str, engine: str, improve: bool, legacy: bool = False) -> Engine:
+        """Every reason a build can't start, raised before anything leaves this Mac. `legacy`: a
+        retry of a specification approved before Mechanics was required (the audit notes it)."""
         if not NAME.match(skill):
             raise DeveloperError("the skill name must be lowercase letters, digits and underscores (2-40 characters)")
         if engine not in self.engines:
             raise DeveloperError(f"unknown developer '{engine}' (choose: {', '.join(self.engines)})")
-        if problems := ws.check_specification(specification):
+        if problems := ws.check_specification(specification, require_mechanics=not legacy):
             raise DeveloperError("the specification isn't complete: " + "; ".join(problems))
         installed = (self.settings.skills_dir / skill).is_dir()
         if improve and not installed:
@@ -455,8 +457,8 @@ class Developer:
         return e
 
     def start(self, skill: str, specification: str, engine: str = "claude", improve: bool = False,
-              wait: bool = False) -> Build:  # fmt: skip
-        e = self.check(skill, specification, engine, improve)
+              wait: bool = False, legacy: bool = False) -> Build:  # fmt: skip
+        e = self.check(skill, specification, engine, improve, legacy)
         build = Build(id="b-" + uuid.uuid4().hex[:8], skill=skill, engine=engine, specification=specification.strip(),
                       improve=improve, budget_usd=self.budget_usd if e.caps_cost else 0.0,
                       max_rounds=1 + self.repair_rounds)  # fmt: skip

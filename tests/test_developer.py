@@ -38,6 +38,12 @@ path: the PDF's path in the vault.
 The text, with a '--- page N ---' line before each page.
 ## Steps
 Open the file under /vault, read each page with pypdf, join the pages.
+## Mechanics
+- Network: none
+- Processes: none
+- Native code: none
+- Dynamic code: none
+- Files: reads the PDF given as path from the vault; writes nothing
 ## Acceptance tests
 A two-page PDF with 'Hello' and 'World' gives both words, in order, under page headings.
 ## Constraints
@@ -174,6 +180,8 @@ def test_a_passing_build_reaches_code_review_and_nothing_else_happens(env):  # n
     assert build.stage == "ready" and build.round == 1 and build.cost_usd == pytest.approx(0.42)
     task = task_of(build, env)
     assert task.stage == "awaiting" and not task.report.blocked and task.report.risk == "green"
+    # Pillar 2: the audit compared the declared Mechanics with the code (docs/mechanics.md).
+    assert [f.severity for f in task.report.findings if f.check == "mechanics"] == ["pass"]
     assert task.origin == {"build": build.id, "engine": "Claude Code", "round": 1, "cost_usd": 0.42,
                            "specification": SPEC.strip(), "improve": False}  # fmt: skip
     assert not (env[0].skills_dir / "pdf_text").exists()  # nothing deployed: that's the user's click
@@ -634,6 +642,12 @@ path: the file's path relative to the vault, e.g. 'notes/todo.txt'.
 One line: "<lines> lines, <words> words, <characters> characters".
 ## Steps
 Resolve the path under /vault, refuse anything outside it, read the text, count, format.
+## Mechanics
+- Network: none
+- Processes: none
+- Native code: none
+- Dynamic code: none
+- Files: reads the text file given as path from the vault; writes nothing
 ## Acceptance tests
 "a b\\nc\\n" gives "2 lines, 3 words, 6 characters". A path like '../etc/passwd' raises ValueError.
 ## Constraints

@@ -13,6 +13,12 @@ path: the PDF's path in the vault.
 The text, with a '--- page N ---' line before each page.
 ## Steps
 Open the file under /vault, read each page with pypdf, join the pages.
+## Mechanics
+- Network: none
+- Processes: none
+- Native code: none
+- Dynamic code: none
+- Files: reads the PDF given as path from the vault
 ## Acceptance tests
 A two-page PDF with 'Hello' and 'World' gives both words, in order.
 ## Constraints
@@ -138,14 +144,21 @@ struct SpecificationApprovalTests {
         #expect(followed == ["b-1234abcd"])
     }
 
-    @Test func theSpecificationNeedsAllSixSections() {
+    @Test func theSpecificationNeedsAllItsSections() {
         #expect(Specification.problems(spec).isEmpty)
         #expect(Specification.problems(Specification.template).first?.hasPrefix("it must be 150–12000 characters") == true)
+        #expect(Specification.template.contains("## Mechanics\n- Network: none\n") && Specification.template.contains("- Files: \n"))
         let noTests = spec.replacingOccurrences(of: "## Acceptance tests", with: "## Checks")
         #expect(Specification.problems(noTests) == ["missing sections: Acceptance tests"])
         let goalkeeper = spec.replacingOccurrences(of: "## Goal\n", with: "## Goalkeeper\n")
         #expect(Specification.problems(goalkeeper) == ["missing sections: Goal"])  // a whole word, like the server's \b
         #expect(Specification.problems(spec.replacingOccurrences(of: "## ", with: "")).isEmpty)  // headings optional
+        // Mechanics, as the server checks it (workspace.check_specification)
+        #expect(Specification.problems(spec.replacingOccurrences(of: "- Network: none", with: "- Network: fetches a URL"))
+            == ["Mechanics: Network must be 'none'"])
+        #expect(Specification.problems(spec.replacingOccurrences(of: "- Files: reads the PDF given as path from the vault", with: "- Files:"))
+            == ["Mechanics: Files needs an answer: the vault, /tmp, or none, and why"])
+        #expect(Specification.problems(spec.replacingOccurrences(of: "- Native code: none\n", with: "")) == ["Mechanics is missing: Native code"])
         #expect(Specification.validName("pdf_text") && !Specification.validName("PDF text") && !Specification.validName("x"))
     }
 }

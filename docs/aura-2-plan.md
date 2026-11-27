@@ -18,7 +18,11 @@ Two findings in the code shaped the plan:
 ## Status
 
 - **Pillar 1, Registry: built, not committed (2026-11-26).** Tickets T1 to T5 and T7 are done. T6, the live gemma4 evaluation, reached 70% against the 85% bar; Aura accepted 70% as the baseline and kept the bar (see below). Aura's architect review comes before tagging. One change from the spec: `Capabilities.md` is at the vault root, not `Aura/Capabilities.md`, because `Aura/` in the vault is the editable copy of Aura's source (the user's choice).
-- **Pillars 2 and 3:** not started.
+- **Pillar 2, Mechanics:** built 2026-11-26 to `docs/mechanics.md`, which Aura approved.
+  - Developer builds only. A Technical Specification must include five Mechanics lines; the first four must say `none`.
+  - The audit compares the Files line with `skill.toml` and the code, and shows differences as yellow findings, never blocking.
+  - A test keeps the server, the prompt, the tool and the app listing the same sections.
+- **Pillar 3:** not started.
 
 ## The pillars, in order
 
@@ -34,7 +38,7 @@ Two findings in the code shaped the plan:
 | D2 | Registry boundary | Resolved (Pillar 1 spec, 2026-11-26): every core, connection and skill tool gets a row. Skill rows are derived from `skill.toml`, so no skill files change. Each row carries its floor and default setting for the later Permissions screen. No Swift changes. |
 | D3 | Constraints | Resolved: the Integrity Rule, approval cards defaulting to Deny, R1/R2/R5, the Egress Gatekeeper, no floor or default changes, and the prompt saving for local models kept. |
 | D4 | Approach | Resolved: the three pillars above. |
-| D5 | Evidence | Resolved for Pillar 1: about 60 recorded prompts offline, derived approval and egress sets equal to today's, and a live gemma4 run on about 20 unmatched prompts that must load the right family in at least 85%. Then Aura's architect review. Pillars 2 and 3 define their own. |
+| D5 | Evidence | Resolved for Pillar 1: about 60 recorded prompts offline, derived approval and egress sets equal to today's, and a live gemma4 run on about 20 unmatched prompts that must load the right family in at least 85%. Then Aura's architect review. Pillar 2 (`docs/mechanics.md`): offline tests for the check and the audit comparison, plus a live gemma4 run whose drafted specification passes. Pillar 3 defines its own. |
 | D6 | Registry source of truth | Resolved (Aura): code. A vault file could be changed by one approved `write_file` and alter Aura's security posture. |
 | D7 | Observer scope | Resolved (Aura): Aura's own activity only. Watching the wider Mac needs a separate, audited design. |
 | D8 | Adopt rea or other outside MCP servers | Deferred: depends on Sprint 7's MCP-in-Workshop work and R3 pinning. |
