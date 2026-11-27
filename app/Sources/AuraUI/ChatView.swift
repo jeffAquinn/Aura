@@ -9,6 +9,7 @@ public struct ChatView: View {
     let avatar: Image?
     let backdrop: Image?
     let welcome: Image?  // shown while Aura starts and while the conversation is empty
+    let wordmark: Image?  // Aura's name written in stars, at the top of the header
     let onRestart: () -> Void
     let onOpenHOLTerminal: () -> Void
     let onOpenWorkstation: () -> Void
@@ -32,7 +33,7 @@ public struct ChatView: View {
     @AppStorage(ChatAppearance.userAvatarBorderTransparencyKey) private var userAvatarBorderTransparency = 0.55
     @AppStorage(ChatAppearance.auraAvatarBorderTransparencyKey) private var auraAvatarBorderTransparency = 0.5
 
-    public init(store: ChatStore, avatar: Image?, backdrop: Image? = nil, welcome: Image? = nil, onRestart: @escaping () -> Void,
+    public init(store: ChatStore, avatar: Image?, backdrop: Image? = nil, welcome: Image? = nil, wordmark: Image? = nil, onRestart: @escaping () -> Void,
                 onOpenHOLTerminal: @escaping () -> Void = {}, onOpenWorkstation: @escaping () -> Void = {},
                 onOpenVault: @escaping () -> Void = {}, onOpenAuditLog: @escaping () -> Void = {},
                 onOpenObserver: @escaping () -> Void = {}) {
@@ -40,6 +41,7 @@ public struct ChatView: View {
         self.avatar = avatar
         self.backdrop = backdrop
         self.welcome = welcome
+        self.wordmark = wordmark
         self.onRestart = onRestart
         self.onOpenHOLTerminal = onOpenHOLTerminal
         self.onOpenWorkstation = onOpenWorkstation
@@ -50,7 +52,7 @@ public struct ChatView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
-            HeaderView(store: store, avatar: avatar, onRestart: onRestart, onOpenHOLTerminal: onOpenHOLTerminal,
+            HeaderView(store: store, avatar: avatar, wordmark: wordmark, onRestart: onRestart, onOpenHOLTerminal: onOpenHOLTerminal,
                        onOpenWorkstation: onOpenWorkstation, onOpenVault: onOpenVault, onOpenAuditLog: onOpenAuditLog,
                        onOpenObserver: onOpenObserver)
             if case let .offline(message) = store.connection {
@@ -120,6 +122,7 @@ struct AvatarView: View {
 struct HeaderView: View {
     let store: ChatStore
     let avatar: Image?
+    var wordmark: Image? = nil
     let onRestart: () -> Void
     let onOpenHOLTerminal: () -> Void
     let onOpenWorkstation: () -> Void
@@ -135,12 +138,13 @@ struct HeaderView: View {
 
     private var speaking: Bool { store.speech?.isSpeaking == true }
 
-    init(store: ChatStore, avatar: Image?, onRestart: @escaping () -> Void = {},
+    init(store: ChatStore, avatar: Image?, wordmark: Image? = nil, onRestart: @escaping () -> Void = {},
          onOpenHOLTerminal: @escaping () -> Void = {}, onOpenWorkstation: @escaping () -> Void = {},
          onOpenVault: @escaping () -> Void = {}, onOpenAuditLog: @escaping () -> Void = {},
          onOpenObserver: @escaping () -> Void = {}) {
         self.store = store
         self.avatar = avatar
+        self.wordmark = wordmark
         self.onRestart = onRestart
         self.onOpenHOLTerminal = onOpenHOLTerminal
         self.onOpenWorkstation = onOpenWorkstation
@@ -150,26 +154,27 @@ struct HeaderView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Top to bottom: Aura's portrait and name (centered) with the panel's controls; then,
-            // on the left, resource use above the status lights, and below them the current stage
-            // and its progress (only while something happens). Every row is the same distance
+        VStack(alignment: .center, spacing: 0) {
+            // Everything centered, top to bottom: Aura's name written in stars (the panel's controls
+            // at the right of that row); resource use; the status lights; then the current stage
+            // and its progress, only while something happens. Every row is the same distance
             // apart, and a hidden progress row leaves no gap.
             ZStack {
+                HeaderWordmark(image: wordmark, name: store.persona.name, avatar: avatar,
+                               pulsing: store.phase == .waking || store.connection == .starting || speaking)
                 HStack(spacing: 12) {
                     Spacer(minLength: 0)
                     controls
                 }
-                AuraTitle(name: store.persona.name, avatar: avatar,
-                          pulsing: store.phase == .waking || store.connection == .starting || speaking)
             }
             AuraUsageView(usage: usage, performance: store.localPerformance).task { usage.start() }
                 .padding(.top, Self.rowGap + 2)
             StatusChips(store: store).padding(.top, Self.rowGap)
             TurnProgress(stage: TurnStage(store: store, speaking: speaking))
         }
+        .frame(maxWidth: .infinity)
         .padding(.horizontal, 16)
-        .padding(.top, 10)
+        .padding(.top, 8)
         .padding(.bottom, 10)
         .background { HeaderSurface() }
         // The panel moves by its header (its empty parts; the buttons stay buttons). Elsewhere,
@@ -241,7 +246,7 @@ struct HeaderSurface: View {
     var body: some View {
         Rectangle()
             .fill(.ultraThinMaterial)
-            .opacity(0.55)
+            .opacity(0.15)  // 85% transparent: the panel's background shows through
             .overlay(alignment: .bottom) {
                 VStack(spacing: 0) {
                     Rectangle().fill(.white.opacity(0.16)).frame(height: 0.5)
@@ -250,6 +255,46 @@ struct HeaderSurface: View {
             }
             .shadow(color: .black.opacity(0.10), radius: 8, y: 3)
             .ignoresSafeArea()
+    }
+}
+
+/// Aura's name written in stars, centered at the top of the header. Drawn in screen blend mode with
+/// its edges feathered away, so only the stars' light shows on the panel's background, never the
+/// dark oval behind them. It glows softly while the model wakes or Aura speaks. Without the image
+/// (tests, an unbundled build), the portrait and name stand in.
+struct HeaderWordmark: View {
+    let image: Image?
+    let name: String
+    let avatar: Image?
+    var pulsing = false
+    @State private var glow = false
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorScheme) private var scheme
+
+    static let height: CGFloat = 46
+
+    var body: some View {
+        if let image {
+            image.resizable().scaledToFit()
+                .frame(height: Self.height)
+                .mask(EllipticalGradient(colors: [.black, .black.opacity(0.9), .clear], center: .center,
+                                         startRadiusFraction: 0.18, endRadiusFraction: 0.5))
+                // Dark: only the stars' light shows. Light: screen would wash it out, so it shows as
+                // a small, feathered patch of night sky instead.
+                .blendMode(scheme == .dark ? .screen : .normal)
+                .brightness(glow ? 0.12 : 0)
+                .accessibilityLabel(name)
+                .accessibilityAddTraits(.isHeader)
+                .onChange(of: pulsing, initial: true) { _, isPulsing in
+                    if isPulsing && !reduceMotion {
+                        withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) { glow = true }
+                    } else {
+                        withAnimation(.smooth(duration: 0.4)) { glow = false }
+                    }
+                }
+        } else {
+            AuraTitle(name: name, avatar: avatar, pulsing: pulsing)
+        }
     }
 }
 

@@ -1,6 +1,6 @@
 #!/bin/sh
 # Derive Aura's UI assets from assets/Aura.jpeg (the source of truth, never shipped as is).
-#   scripts/build-assets.sh <output-dir>   ->  Avatar.png, Starfield.png, Welcome.jpg, AppIcon.icns
+#   scripts/build-assets.sh <output-dir>   ->  Avatar.png, Starfield.png, Welcome.jpg, Header.png, AppIcon.icns
 set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 OUT="$1"
@@ -21,6 +21,10 @@ sips -Z 900 "$TMP/stars.png" --out "$OUT/Starfield.png" >/dev/null
 
 # Welcome: shown while Aura starts and whenever the conversation is empty (assets/Welcome.jpeg).
 sips -s format jpeg -s formatOptions 85 -Z 900 "$ROOT/assets/Welcome.jpeg" --out "$OUT/Welcome.jpg" >/dev/null
+
+# Header: Aura's name written in stars, centered at the top of the panel (assets/Header.png).
+# 480 px wide is enough for its ~80 pt width at 2x; the alpha channel is kept.
+sips -s format png -Z 480 "$ROOT/assets/Header.png" --out "$OUT/Header.png" >/dev/null
 
 # App icon (Finder, permission prompts, Activity Monitor).
 ICONSET="$TMP/AppIcon.iconset"

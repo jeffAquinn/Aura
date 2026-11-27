@@ -29,6 +29,8 @@ struct SnapshotTests {
         .map { Image(decorative: $0, scale: 1) }
     static let welcome: Image? = NSImage(contentsOf: repo.appending(path: "assets/Welcome.jpeg"))
         .map { Image(nsImage: $0) }
+    static let wordmark: Image? = NSImage(contentsOf: repo.appending(path: "assets/Header.png"))
+        .map { Image(nsImage: $0) }
 
     static let reply = """
     ## London right now
@@ -53,7 +55,7 @@ struct SnapshotTests {
     private func render(_ name: String, _ store: ChatStore, dark: Bool = false, theme: Theme = .glass,
                         text: ChatTextStyle = .standard, bubbles: BubbleColors = .standard) throws -> CGSize {
         let panel = VStack(spacing: 0) {
-            HeaderView(store: store, avatar: Self.avatar)
+            HeaderView(store: store, avatar: Self.avatar, wordmark: Self.wordmark)
             if case let .offline(message) = store.connection {
                 OfflineBanner(message: message, onRestart: {})
             }
