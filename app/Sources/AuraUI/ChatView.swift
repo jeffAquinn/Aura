@@ -151,10 +151,10 @@ struct HeaderView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Top to bottom: resource use; Aura's portrait and name (centered) with the panel's
-            // controls; the current stage and its progress (only while something happens); then
-            // the status lights. Spacing is set per row, so a hidden progress row leaves no gap.
-            AuraUsageView(usage: usage, performance: store.localPerformance).task { usage.start() }
+            // Top to bottom: Aura's portrait and name (centered) with the panel's controls; then,
+            // on the left, resource use above the status lights, and below them the current stage
+            // and its progress (only while something happens). Every row is the same distance
+            // apart, and a hidden progress row leaves no gap.
             ZStack {
                 HStack(spacing: 12) {
                     Spacer(minLength: 0)
@@ -163,18 +163,22 @@ struct HeaderView: View {
                 AuraTitle(name: store.persona.name, avatar: avatar,
                           pulsing: store.phase == .waking || store.connection == .starting || speaking)
             }
-            .padding(.top, 6)
+            AuraUsageView(usage: usage, performance: store.localPerformance).task { usage.start() }
+                .padding(.top, Self.rowGap + 2)
+            StatusChips(store: store).padding(.top, Self.rowGap)
             TurnProgress(stage: TurnStage(store: store, speaking: speaking))
-            StatusChips(store: store).padding(.top, 8)
         }
         .padding(.horizontal, 16)
         .padding(.top, 10)
-        .padding(.bottom, 8)
+        .padding(.bottom, 10)
+        .background { HeaderSurface() }
         // The panel moves by its header (its empty parts; the buttons stay buttons). Elsewhere,
         // drags select text.
         .background { if !offscreen { WindowDragArea() } }
         .help("Drag to move")
     }
+
+    static let rowGap: CGFloat = 7
 
     private var controls: some View {
         HStack(spacing: 12) {
@@ -227,6 +231,25 @@ struct HeaderView: View {
                 Text("This temporarily disconnects Aura and interrupts active sessions.")
             }
         }
+    }
+}
+
+/// The header's surface: a faint layer of material over the panel's glass, closed by a hairline
+/// (a light edge over a dark one, like a bevel) and a soft shadow, so the header reads as sitting
+/// just above the conversation.
+struct HeaderSurface: View {
+    var body: some View {
+        Rectangle()
+            .fill(.ultraThinMaterial)
+            .opacity(0.55)
+            .overlay(alignment: .bottom) {
+                VStack(spacing: 0) {
+                    Rectangle().fill(.white.opacity(0.16)).frame(height: 0.5)
+                    Rectangle().fill(.black.opacity(0.14)).frame(height: 0.5)
+                }
+            }
+            .shadow(color: .black.opacity(0.10), radius: 8, y: 3)
+            .ignoresSafeArea()
     }
 }
 
@@ -305,16 +328,23 @@ struct TurnProgress: View {
     @State private var fading: Task<Void, Never>?
 
     private var shown: TurnStage? { stage ?? done }
+    static let width: CGFloat = 220
 
     var body: some View {
         Group {
             if let shown {
-                HStack(spacing: 8) {
-                    Text(shown.label)
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .contentTransition(.opacity)
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text(shown.label)
+                            .lineLimit(1)
+                            .contentTransition(.opacity)
+                        Spacer(minLength: 8)
+                        Text("\(Int((shown.progress * 100).rounded()))%")
+                            .monospacedDigit()
+                            .contentTransition(.numericText(value: shown.progress))
+                    }
+                    .font(.caption2.weight(.medium))
+                    .foregroundStyle(.secondary)
                     GeometryReader { geometry in
                         ZStack(alignment: .leading) {
                             Capsule().fill(.quaternary)
@@ -322,16 +352,15 @@ struct TurnProgress: View {
                                 .frame(width: max(3, geometry.size.width * shown.progress))
                         }
                     }
-                    .frame(width: 96, height: 3)
+                    .frame(height: 3)
                 }
+                .frame(width: Self.width)
                 .transition(.opacity)
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("\(shown.label), \(Int(shown.progress * 100)) percent")
             }
         }
-        .frame(height: shown == nil ? 0 : 14, alignment: .leading)
-        .padding(.top, shown == nil ? 0 : 8)
-        .clipped()
+        .padding(.top, shown == nil ? 0 : HeaderView.rowGap + 2)
         .animation(.smooth(duration: 0.35), value: shown)
         .onChange(of: stage) { previous, next in
             fading?.cancel()
