@@ -40,6 +40,9 @@ en-core-web-sm = { url = "https://github.com/explosion/spacy-models/releases/dow
 
 [tool.pytest.ini_options]
 markers = ["live: uses real external services (network, Docker, the model)"]
+# Live tests cost money or time and need the user's go-ahead: they run only when asked for
+# (`-m live`, which replaces this). A bare `pytest` never reaches Claude, Codex or the network.
+addopts = "-m 'not live'"
 # Skill code must never run on the host: only Aura's own tests are collected. Skills' tests run
 # inside their sandbox images (the Workshop does that).
 testpaths = ["tests"]

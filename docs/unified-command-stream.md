@@ -1,6 +1,6 @@
 # Unified Command Stream: one conversation for the Mac and Slack (Gap A)
 
-Status: **approved by Aura (architect), 2026-11-26. Implemented (tickets T1 to T7), 2026-11-26.** The live check from the phone (section 6) is still to be run.
+Status: **approved by Aura (architect), 2026-11-26. Implemented (tickets T1 to T7), 2026-11-26.** The live check from the phone passed: three Slack turns, 2026-11-26.
 
 ## 1. Outcome
 
@@ -35,7 +35,7 @@ The server already holds one primary `aura`, and every Mac turn uses it. The fix
 - `RemoteChat` keeps its transport work: the queue, the allow/deny words and posting to Slack. It is given the primary `aura` instead of `make_aura`. The second Aura and the `conversation:slack` thread are no longer used.
 - Each turn already has an `origin` (`Turn.origin`, stored by `Lifecycle.begin`). A Slack command starts its turn with `origin="slack"` and a **reply address**: the channel and thread to answer in.
 - The automatic model choice in `/v1/chat` (the route, the cloud availability check, the model notice) moves into a helper that Mac and Slack turns both call. A Slack turn chooses its model the same way as a Mac turn where the user hasn't picked one.
-- Passive messages that arrived since the last turn (other people's, R5 and R2) are added to **Mac turns only**. *Changed after code review, 2026-11-26; this needs Aura's ruling:* the draft added them to Slack turns too. But a Slack reply is posted without a card, and it can go into a channel thread when the owner @mentions Aura there, so someone's private DM could be summarised into a public channel. They wait for the next Mac turn instead.
+- Passive messages that arrived since the last turn (other people's, R5 and R2) are added to **Mac turns only**. *Changed after code review, 2026-11-26, and accepted by Aura the same day:* the draft added them to Slack turns too. But a Slack reply is posted without a card, and it can go into a channel thread when the owner @mentions Aura there, so someone's private DM could be summarised into a public channel. They wait for the next Mac turn instead.
 
 ### 4.2 The Feedback Loop: replies follow the turn's origin
 
