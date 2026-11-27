@@ -525,7 +525,7 @@ class Developer:
                 elif event.kind == "message" and event.text:
                     said.append(event.text)
 
-            outcome = self.container.run(e, root / "work", root, vt.prompt(t.task), 0.0, self.timeout, on_event, t.stop)
+            outcome = self.container.run(e, root / "work", root, vt.prompt(t.task, t.copy.folder), 0.0, self.timeout, on_event, t.stop)
             t.stopped, t.timed_out, t.error = outcome.stopped or t.stop.is_set(), outcome.timed_out, outcome.error
             t.error = self.masker.mask(t.error) if t.error else None
             t.summary = cap(self.masker.mask(outcome.result if outcome.result not in ("", "done")

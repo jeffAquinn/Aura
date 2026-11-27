@@ -385,3 +385,15 @@ def test_live_claude_code_does_a_job_in_the_vault_on_the_users_plan(settings):
     from aura.developer.engines import ClaudeCode
 
     _live_task(settings, ClaudeCode(), _claude_secrets())
+
+
+def test_the_brief_names_the_copied_folder_so_vault_paths_are_not_doubled():
+    from aura.developer.vault_tasks import prompt
+
+    # 2026-11-27: "Create The_Interface_Many/models/" on a copy of The_Interface_Many was created as
+    # The_Interface_Many/The_Interface_Many/models. The brief now says which folder is here.
+    brief = prompt("Create The_Interface_Many/models/registry.md.", "The_Interface_Many")
+    assert "the vault folder 'The_Interface_Many'" in brief
+    assert "for 'The_Interface_Many/notes/a.md', write 'notes/a.md'" in brief
+    assert "Never create a folder of that name inside this one" in brief
+    assert "the vault's top folder" in prompt("Tidy the root.", ".")

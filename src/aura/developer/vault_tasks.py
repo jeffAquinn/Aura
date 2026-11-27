@@ -175,10 +175,18 @@ def baseline_drift(vault: Vault, copy: Copy) -> list[str]:
     return findings[:8]
 
 
-def prompt(task: str) -> str:
+def prompt(task: str, folder: str = ".") -> str:
+    """The Developer's brief. `folder`: the vault folder copied as the current directory, so a
+    vault path in the task ("The_Interface_Many/models/") lands where it belongs instead of one
+    level too deep (seen 2026-11-27: The_Interface_Many/The_Interface_Many/models)."""
+    where = ("It is the current directory, and it is the vault's top folder"
+             if folder in ("", ".") else
+             f"It is the current directory, and it is the vault folder '{folder}'. A path in the task that starts "
+             f"with '{folder}/' means the same place here without that prefix: for '{folder}/notes/a.md', write "
+             "'notes/a.md'. Never create a folder of that name inside this one")
     return (
         "You are working for Aura, the user's personal AI agent, on a copy of a folder from the user's notes "
-        "vault. It is the current directory; nothing else on the user's computer is available to you.\n\n"
+        f"vault. {where}; nothing else on the user's computer is available to you.\n\n"
         "The task, written by Aura from the user's request:\n"
         f"{task.strip()}\n\n"
         "Make the changes directly in the files here. Afterwards the user sees every file you created, changed "
