@@ -21,7 +21,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import AsyncIterator, Iterator
+from collections.abc import AsyncIterator, Callable, Iterator
 from dataclasses import asdict
 from itertools import chain
 from pathlib import Path
@@ -36,7 +36,8 @@ from fastapi import FastAPI
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
-from aura.brain import Aura, Changed, Event, StaleApproval, Status, Text
+from aura.brain import ApprovalNeeded, Aura, Event, StaleApproval, Status
+from aura.broadcast import TurnBroadcast, TurnView, frame
 from aura.citations import verify_citations, warning as citation_warning
 from aura.agents import AgentError
 from aura.lifecycle import Lifecycle, Turn
@@ -474,13 +475,7 @@ def sse(kind: str, data: dict | None = None) -> str:
 
 
 def encode(ev: Event) -> str:
-    if isinstance(ev, Text):
-        return sse("text", {"text": ev.text})
-    if isinstance(ev, Status):
-        return sse("status", {"text": ev.text})
-    if isinstance(ev, Changed):
-        return sse(ev.kind, ev.data)  # "voice" or "persona"
-    return sse("approval", {"actions": [asdict(a) for a in ev.actions], "approval_id": ev.approval_id})
+    return sse(*frame(ev))
 
 
 _END = object()
@@ -493,25 +488,55 @@ def stream_turn(
     events: Iterator[Event], lifecycle: Lifecycle, turn: Turn, keeper: Keeper, check_cold: bool,
     masker: Masker = PATTERNS_ONLY, selected_model: ModelChoice | None = None,
     cloud_availability: CloudModelAvailability | None = None, vault_root: Path | None = None,
+    broadcast: TurnBroadcast | None = None, said: str | None = None,
+    on_end: Callable[[str, str, ApprovalNeeded | None], None] | None = None,
 ) -> StreamingResponse:
     """Stream a turn's events as SSE. The turn ends (and its lock is released) exactly once: when
     the run ends, when it is stopped (POST /v1/stop: a `stopped` event, then `done`), or when the
     client leaves. In every case the step in progress is allowed to end before the run is closed,
-    so no worker is left running behind a released turn."""
+    so no worker is left running behind a released turn.
+
+    `broadcast`: every event sent is also published, exactly as sent (masked), to the mirror feed,
+    after a `turn` frame with `said` (the user's message; None when answering a card).
+
+    `on_end(state, reply, card)`: called once as the turn ends, before its lock is released, with
+    the masked reply and the card it raised, if any (a Slack card answered on the Mac: the rest
+    goes back to Slack). Its failure is logged and never stops the turn from ending."""
+
+    view = TurnView(turn, masker, broadcast.publish if broadcast is not None else None)
+    ended = threading.Event()
+
+    async def finish(state: str | None) -> None:
+        """Before the turn's lock is released, so replies in a Slack thread keep their order. A
+        failure is logged; the turn ends either way."""
+        if on_end is None or ended.is_set():
+            return
+        ended.set()
+
+        def run() -> None:
+            try:
+                on_end(state or ("stopped" if turn.cancelled else "done"), "".join(view.reply), view.card)
+            except Exception:  # noqa: BLE001
+                log.exception("couldn't send the rest of the turn back to where it began")
+
+        with anyio.CancelScope(shield=True):
+            await anyio.to_thread.run_sync(run)
+
+    def out(kind: str, data: dict | None = None) -> str:
+        return sse(*view.show(kind, data))
 
     async def body() -> AsyncIterator[str]:
+        view.show("turn", {"kind": turn.kind, "text": masker.mask(said) if said else None})
         pending: asyncio.Future | None = None
         state, error = None, None
-        reply: list[str] = []
-        texts = masker.stream()  # a secret split across two chunks is still caught
         try:
             if selected_model is not None:
                 # The model choice is an ordinary preference, not a secret.  Sending it before
                 # `thinking` lets the Mac label an automatic turn immediately, without a poll.
-                yield sse("model", selected_model.public())
-            yield sse("thinking", {"turn_id": turn.id})
+                yield out("model", selected_model.public())
+            yield out("thinking", {"turn_id": turn.id})
             if check_cold and await anyio.to_thread.run_sync(keeper.loaded) is False:
-                yield sse("waking")
+                yield out("waking")
             try:
                 # The agent loop is synchronous; step it in a worker thread, one event at a time.
                 # A step can take minutes (Claude Code at work): keep the connection alive meanwhile.
@@ -524,29 +549,18 @@ def stream_turn(
                     ev, pending = pending.result(), None
                     if ev is _END:
                         break
-                    if isinstance(ev, Text):
-                        turn.chars += len(ev.text)
-                        if safe := texts.feed(ev.text):
-                            reply.append(safe)
-                            yield sse("text", {"text": safe})
-                        continue
-                    if rest := texts.flush():
-                        reply.append(rest)
-                        yield sse("text", {"text": rest})
-                    if isinstance(ev, Status):
-                        turn.tools += 1
-                    yield encode(ev)
-                if rest := texts.flush():
-                    reply.append(rest)
-                    yield sse("text", {"text": rest})
+                    for shown in view.event(ev):
+                        yield sse(*shown)
+                for shown in view.flush():
+                    yield sse(*shown)
                 if turn.cancelled:
                     state = "stopped"
-                    yield sse("stopped", {"turn_id": turn.id, "tools": turn.tools, "partial": bool(turn.tools or turn.chars)})
-                elif vault_root is not None and (findings := verify_citations("".join(reply), vault_root)):
-                    yield sse("text", {"text": citation_warning(findings)})
+                    yield sse(*view.stopped())
+                elif vault_root is not None and (findings := verify_citations("".join(view.reply), vault_root)):
+                    yield sse(*view.note(citation_warning(findings)))
             except openai.APIConnectionError:
                 state, error = "failed", "the language model was unreachable"
-                yield sse("error", {"message": "Aura can't reach its language model. Make sure Ollama is running, then try again."})
+                yield out("error", {"message": "Aura can't reach its language model. Make sure Ollama is running, then try again."})
             except Exception as e:
                 log.exception("turn failed: %s", e)  # the detail stays in server.log
                 state, error = "failed", f"{type(e).__name__}: {masker.mask(str(e))}"
@@ -554,22 +568,25 @@ def stream_turn(
                         and cloud_availability is not None and is_cloud_capacity_refusal(e)):
                     retry = cloud_availability.record_capacity_refusal(selected_model, e)
                     minutes = max(1, round(retry / 60))
-                    yield sse("error", {"message": (
+                    yield out("error", {"message": (
                         f"{selected_model.model} has no account capacity right now. Aura will skip it in Auto "
                         f"for about {minutes} minutes and use an available local model instead."
                     )})
                 else:
-                    yield sse("error", {"message": "Something went wrong while Aura was working. Please try again."})
+                    yield out("error", {"message": "Something went wrong while Aura was working. Please try again."})
             await _close(events, pending)
+            await finish(state)
             lifecycle.end(turn, state, error)
-            yield sse("done")
+            yield out("done")
         finally:
             if not turn.released.is_set():  # the client went away mid-turn (e.g. Stop): same as a stop
                 turn.cancel.set()
                 lifecycle.on_cancel()
                 with anyio.CancelScope(shield=True):  # let the step end before closing the run
                     await _close(events, pending)
+                    await finish("abandoned")
                 lifecycle.end(turn, "abandoned")
+                view.show("done", {"state": "abandoned"})  # the mirror feed still sees the turn end
             keeper.warm_soon()  # the turn used the model: restart its 30-minute timer
 
     return StreamingResponse(
@@ -785,6 +802,8 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
     app.add_middleware(Guard, token=token)
     turn = threading.Lock()  # one turn at a time: Aura has a single user and conversation
     app.state.turn = turn
+    broadcast = TurnBroadcast()  # every turn as shown, for the mirror feed (GET /v1/turns/live)
+    app.state.broadcast = broadcast
     app.state.model_pull = threading.Lock()  # one disk-heavy Ollama pull at a time
     lifecycle = Lifecycle(aura.toolbox.state, turn, on_cancel=aura.toolbox.developer.stop_tasks)
     app.state.lifecycle = lifecycle
@@ -866,6 +885,60 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
             **lifecycle_state(),
         }
 
+    def choose_turn_model(text: str, developer_choice: str | None, model: ModelChoiceIn | None,
+                          ) -> tuple[ModelChoice, str | None, str | None]:
+        """The model for one turn, the same way for the Mac panel and Slack: the user's pick, or
+        automatic routing by role (a code request goes to the preferred Developer). Selects it on
+        Aura and returns (chosen, the notice to show, the Developer if any)."""
+        route_notice: str | None = None
+        developer = developer_choice
+        if model is not None:
+            if developer_choice is not None:
+                raise ValueError("Choose either an Aura chat model or a Developer, not both.")
+            chosen = ModelChoice(model.provider, model.model).validate()
+            if chosen.provider == "ollama" and chosen.model not in installed_ollama_models(aura.settings):
+                raise ValueError(f"Download the local model before using it: {chosen.model}.")
+            aura.select_model(chosen)
+        else:
+            role = infer_role(text, developer_choice)
+            # A code request is delegated through the user's preferred Developer harness.
+            # Use the smallest ready local model while the Developer works. The Developer
+            # itself remains the coding agent; a cloud chat model is never substituted for it.
+            if role == "coding" and developer is None:
+                developer = routing.coding_engine()
+            if developer is not None:
+                if aura._injected_model:
+                    # Offline embeddings do not have an Ollama catalog.  Their configured
+                    # local choices stand in for it so tests never contact a real daemon.
+                    sizes = {name: 0 for name in installed_for_automatic_routing()}
+                else:
+                    sizes = usable_ollama_model_sizes(aura.settings)
+                chosen = smallest_usable_ollama_model(sizes)
+                if chosen is None:
+                    raise ValueError(
+                        "Claude Code and Codex need a usable local Ollama model for Aura's final handoff. "
+                        "Start Ollama and download a local model, then try again."
+                    )
+                developer_label = "Claude Code" if developer == "claude" else "Codex"
+                route_notice = (f"Aura will preload the smallest available local model '{chosen.model}' "
+                                f"while {developer_label} works.")
+            else:
+                chosen, route_notice = automatic_model_choice(
+                    routing,
+                    role,
+                    installed_for_automatic_routing(),
+                    aura.toolbox.secrets.get("anthropic_api_key") is not None,
+                    cloud_availability.unavailable_models(),
+                )
+            aura.select_model(chosen)
+            if developer is not None and chosen.provider == "ollama" and not aura._injected_model:
+                # A Developer can work for a while before Aura needs its local model, so it
+                # is useful to preload it in parallel.  A normal Aura turn begins inference
+                # immediately; a second empty generation there competes for the same local
+                # runtime and makes the visible reply slower.
+                ModelKeeper(aura.settings.base_url, chosen.model, aura.settings.model_keep_alive).warm_soon()
+        return chosen, route_notice, developer
+
     @app.post("/v1/chat")
     def chat(body: ChatIn) -> Response:
         t = lifecycle.begin("chat", "mac", aura.thread_id)
@@ -873,53 +946,7 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
             return busy()
         app.state.last_active = time.monotonic()
         try:
-            route_notice: str | None = None
-            developer = body.developer
-            if body.model is not None:
-                if body.developer is not None:
-                    raise ValueError("Choose either an Aura chat model or a Developer, not both.")
-                chosen = ModelChoice(body.model.provider, body.model.model).validate()
-                if chosen.provider == "ollama" and chosen.model not in installed_ollama_models(aura.settings):
-                    raise ValueError(f"Download the local model before using it: {chosen.model}.")
-                aura.select_model(chosen)
-            else:
-                role = infer_role(body.text, body.developer)
-                # A code request is delegated through the user's preferred Developer harness.
-                # Use the smallest ready local model while the Developer works. The Developer
-                # itself remains the coding agent; a cloud chat model is never substituted for it.
-                if role == "coding" and developer is None:
-                    developer = routing.coding_engine()
-                if developer is not None:
-                    if aura._injected_model:
-                        # Offline embeddings do not have an Ollama catalog.  Their configured
-                        # local choices stand in for it so tests never contact a real daemon.
-                        sizes = {name: 0 for name in installed_for_automatic_routing()}
-                    else:
-                        sizes = usable_ollama_model_sizes(aura.settings)
-                    chosen = smallest_usable_ollama_model(sizes)
-                    if chosen is None:
-                        raise ValueError(
-                            "Claude Code and Codex need a usable local Ollama model for Aura's final handoff. "
-                            "Start Ollama and download a local model, then try again."
-                        )
-                    developer_label = "Claude Code" if developer == "claude" else "Codex"
-                    route_notice = (f"Aura will preload the smallest available local model '{chosen.model}' "
-                                    f"while {developer_label} works.")
-                else:
-                    chosen, route_notice = automatic_model_choice(
-                        routing,
-                        role,
-                        installed_for_automatic_routing(),
-                        aura.toolbox.secrets.get("anthropic_api_key") is not None,
-                        cloud_availability.unavailable_models(),
-                    )
-                aura.select_model(chosen)
-                if developer is not None and chosen.provider == "ollama" and not aura._injected_model:
-                    # A Developer can work for a while before Aura needs its local model, so it
-                    # is useful to preload it in parallel.  A normal Aura turn begins inference
-                    # immediately; a second empty generation there competes for the same local
-                    # runtime and makes the visible reply slower.
-                    ModelKeeper(aura.settings.base_url, chosen.model, aura.settings.model_keep_alive).warm_soon()
+            chosen, route_notice, developer = choose_turn_model(body.text, body.developer, body.model)
             events = aura.stream(body.text, developer=developer, turn_id=t.id, cancel=t.cancel)
             if route_notice:
                 events = chain((Status(route_notice),), events)
@@ -928,7 +955,8 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
             return _error(409, str(e))
         return stream_turn(events, lifecycle, t, keeper, check_cold=True, masker=masker,
                            selected_model=chosen if body.model is None else None,
-                           cloud_availability=cloud_availability, vault_root=aura.settings.vault_dir)
+                           cloud_availability=cloud_availability, vault_root=aura.settings.vault_dir,
+                           broadcast=broadcast, said=body.text)
 
     @app.post("/v1/approvals")
     def approvals(body: ApprovalsIn) -> Response:
@@ -936,6 +964,13 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
         if t is None:
             return busy()
         app.state.last_active = time.monotonic()
+        on_end = None
+        origin, reply_to = aura.pending_origin()  # before resume() clears it
+        if origin == "slack" and reply_to and getattr(app.state, "remote", None) is not None:
+            # A Slack card answered on the Mac: the Mac streams it as usual, and the rest of the
+            # turn goes back to the Slack thread once, at the end (docs/unified-command-stream.md §4.4).
+            def on_end(state: str, reply: str, card: ApprovalNeeded | None) -> None:
+                app.state.remote.deliver(reply_to, reply, card, state)
         try:
             events = aura.resume([a.model_dump() if isinstance(a, EditedApproval) else a for a in body.approvals],
                                  approval_id=body.approval_id, turn_id=t.id, cancel=t.cancel)  # fmt: skip
@@ -949,7 +984,7 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
             lifecycle.end(t, "refused", str(e))
             return _error(422, str(e))
         return stream_turn(events, lifecycle, t, keeper, check_cold=False, masker=masker,
-                           vault_root=aura.settings.vault_dir)
+                           vault_root=aura.settings.vault_dir, broadcast=broadcast, on_end=on_end)
 
     @app.post("/v1/stop")
     def stop(body: StopIn) -> dict:
@@ -957,6 +992,30 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
         up: the step in progress ends, a Developer's container is stopped, the turn is released.
         Idempotent: stopping nothing, or a turn that already ended, changes nothing."""
         return lifecycle.stop(body.turn_id)
+
+    @app.get("/v1/turns/live")
+    async def turns_live(after: int = -1, hold: float = 600.0) -> StreamingResponse:
+        """The mirror feed (SSE): every turn's frames as they happen, each with its `seq`,
+        `turn_id` and `origin`. The app draws the turns it didn't start (a Slack command) from it.
+        `after`: the last seq seen (reconnecting: what was missed comes first, or a `reset` when
+        it's gone); -1 starts from now. The stream ends after `hold` seconds; reconnect then."""
+        start = broadcast.latest if after < 0 else after
+
+        async def body() -> AsyncIterator[str]:
+            seen, ends = start, time.monotonic() + min(max(hold, 0.0), 600.0)
+            yield sse("ready", {"seq": seen})
+            while (left := ends - time.monotonic()) > 0:
+                frames = await anyio.to_thread.run_sync(broadcast.wait, seen, min(KEEPALIVE, left),
+                                                        abandon_on_cancel=True)  # a closed feed returns at once
+                if not frames:
+                    yield ": waiting\n\n"
+                for f in frames:
+                    seen = f["seq"]
+                    yield sse(f["event"], {**f["data"], "seq": f["seq"], "turn_id": f.get("turn_id"),
+                                           "origin": f.get("origin")})  # fmt: skip
+
+        return StreamingResponse(body(), media_type="text/event-stream",
+                                 headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})  # fmt: skip
 
     @app.get("/v1/approvals/pending")
     def pending_approval() -> dict:
@@ -1391,15 +1450,14 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
     connections = aura.toolbox.connections
     live = aura.toolbox.live
 
-    # Talking to Aura from Slack (remote.py): the owner's messages, answered by a second Aura with
-    # its own conversation, taking turns with the Mac panel under the same lock.
-    from aura.brain import Aura as _Aura
+    # Talking to Aura from Slack (remote.py): the owner's messages run in the Mac panel's own
+    # conversation (the Unified Command Stream), taking turns with the Mac under the same lock.
     from aura.connections.remote import RemoteChat
 
     slack_connection = connections.all.get("slack")
     slack_listener = live.listeners.get("slack")
     remote = RemoteChat(
-        make_aura=lambda: _Aura(settings=aura.settings, model=aura.llm, toolbox=aura.toolbox, primary=False),
+        aura=aura, choose_model=lambda text: choose_turn_model(text, None, None)[2], broadcast=broadcast,
         turn=turn, post=lambda channel, text, thread: slack_connection.post_as_bot(channel, text, thread),
         inbox=live.inbox, settings_path=aura.settings.data_dir / "slack_chat.json", lifecycle=lifecycle,
         masker=masker)  # fmt: skip

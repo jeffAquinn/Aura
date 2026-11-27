@@ -239,10 +239,15 @@ token rotation on, also give it the Refresh Token and the app's Client Secret; A
 
 **Talking to Aura from Slack (your phone):** switch on **Talk to Aura from Slack**. Then Aura
 answers your own messages: DMs to Aura, @Aura mentions, and anything you write in its channel
-(#aura-chat by default). It answers as the Aura bot, in a conversation of its own. Everyone else's
-messages stay notifications and are never treated as instructions. Anything that sends, posts or
-writes still asks first, right in Slack (reply **allow** or **deny**). Your Mac shows a
-notification when Aura answers you.
+(#aura-chat by default). Your Slack messages join the same conversation as the Mac panel, so Aura
+remembers what you said in either place. It answers in Slack as the Aura bot, once each turn ends,
+and the Mac panel shows the turn as it runs, marked "From Slack", with a Stop button. Everyone
+else's messages stay notifications and are never treated as instructions.
+
+Anything that sends, posts or writes still asks first. A request from a Slack turn asks in Slack
+(reply **allow** or **deny**) and can also be answered on the Mac; then the rest of the answer
+still goes to Slack. A request raised at the Mac can only be answered on the Mac. Your Mac shows a
+notification when Aura answers you in Slack. See `docs/unified-command-stream.md`.
 
 ## Layout
 

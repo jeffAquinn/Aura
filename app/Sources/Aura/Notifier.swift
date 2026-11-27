@@ -14,6 +14,7 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
         Bundle.main.bundleURL.pathExtension == "app" ? UNUserNotificationCenter.current() : nil
     }
 
+    /// Aura's answer to the owner's Slack command (from the mirror feed).
     func post(_ message: IncomingMessage) {
         guard let center else { return }
         center.delegate = self
@@ -25,8 +26,8 @@ final class Notifier: NSObject, UNUserNotificationCenterDelegate {
                 AppLog.write("notifications: \(granted ? "allowed" : "not allowed")")
             }
             let content = UNMutableNotificationContent()
-            content.title = message.kind == "reply" ? "Aura answered you in \(message.source)" : message.heading
-            content.subtitle = message.kind == "reply" ? message.heading : message.author
+            content.title = "Aura answered you in \(message.source)"  // only Aura's answers notify
+            content.subtitle = message.heading
             content.body = message.text.replacingOccurrences(of: "**", with: "")  // Markdown marks read as noise
             content.sound = .default
             content.threadIdentifier = message.heading  // one stack per channel

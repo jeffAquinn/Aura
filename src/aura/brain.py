@@ -426,6 +426,10 @@ class Aura:
         self._checkpointer = self.toolbox.checkpointer()
         self.role = role or ("mac" if primary else "slack")
         self.turn_id: str | None = None  # the server's correlation id for the turn running now
+        # Where the running turn began ("mac" or "slack") and, for Slack, where its reply goes. A
+        # card raised in the turn keeps both (docs/unified-command-stream.md §4.4).
+        self.origin: str = "mac"
+        self.reply_to: dict[str, Any] | None = None
         self.recovery_note: str | None = None  # what a restart left unfinished (shown once by the app)
 
         def build(tools: list) -> Any:
@@ -685,31 +689,40 @@ class Aura:
         digest = hashlib.sha256(json.dumps([self.thread_id, interrupt.id, [(a.tool, a.args) for a in actions]],
                                            sort_keys=True, default=str).encode()).hexdigest()  # fmt: skip
         self.toolbox.state.add_approval(approval_id, self.turn_id, self.thread_id, interrupt.id, digest,
-                                        [a.tool for a in actions], self._permissions())  # fmt: skip
+                                        [a.tool for a in actions], self._permissions(),
+                                        origin=self.origin, reply_to=self.reply_to)  # fmt: skip
         return approval_id
 
     def pending(self) -> dict[str, Any] | None:
         """The approval waiting now (for the app to show again after a restart), or None."""
         if self._pending is None:
             return None
-        return {"approval_id": self.approval_id,
+        return {"approval_id": self.approval_id, "origin": self.pending_origin()[0],
                 "actions": [{"tool": a.tool, "args": a.args, "description": a.description}
                             for a in self._actions(self._pending)]}  # fmt: skip
+
+    def pending_origin(self) -> tuple[str, dict[str, Any] | None]:
+        """Where the waiting card's turn began, and where its reply goes (from the durable record,
+        so it holds after a restart). A card with no record counts as the Mac's."""
+        record = self.toolbox.state.approval(self.approval_id) if self.approval_id else None
+        return (record["origin"], record["reply_to"]) if record else ("mac", None)
 
     def transcript(self, limit: int = 200) -> list[dict[str, str]]:
         """The conversation as the user saw it: their messages and Aura's replies (no tool calls,
         no memory summaries). Long messages are cut with a marker."""
         out: list[dict[str, str]] = []
         for m in self._agent.get_state(self._config).values.get("messages", []):
+            origin = None
             if isinstance(m, HumanMessage) and m.additional_kwargs.get("lc_source") != "summarization":
                 role, text = "user", m.text.split("\n\n[I chose ", 1)[0]
+                origin = m.additional_kwargs.get("origin")  # "slack": the owner wrote it from Slack
             elif isinstance(m, AIMessage) and m.text:
                 role, text = "aura", m.text
             else:
                 continue
             if len(text) > TRANSCRIPT_CHARS:
                 text = text[:TRANSCRIPT_CHARS] + f"\n… [cut: {len(text) - TRANSCRIPT_CHARS} more characters]"
-            out.append({"role": role, "text": text})
+            out.append({"role": role, "text": text, **({"origin": origin} if origin else {})})
         return out[-limit:]
 
     @property
@@ -726,13 +739,15 @@ class Aura:
     # (e.g. the HTTP server) learns about a bad request before it starts streaming a reply.
 
     def stream(self, text: str, developer: str | None = None, turn_id: str | None = None,
-               cancel: threading.Event | None = None) -> Iterator[Event]:
+               cancel: threading.Event | None = None, origin: str = "mac",
+               reply_to: dict[str, Any] | None = None) -> Iterator[Event]:
         """Send a message; yield Aura's reply, tool status lines, and possibly a final
         ApprovalNeeded (answer it with `resume`). `developer` ("claude" or "codex"): the user chose
         that Developer in the chat box, so Aura hands the message to it (ask_developer)."""
         if self._pending:
             raise RuntimeError("An approval is pending; answer it with resume() first.")
         self.turn_id = turn_id
+        self.origin, self.reply_to = origin, reply_to
         self._circuit_breaker.reset()
         self._settle()  # the last turn was stopped mid-way: give its open tool calls a result
         self._turn_notices: set[str] = set()  # each notice is said once per turn
@@ -766,13 +781,19 @@ class Aura:
                 "name": "ask_developer", "args": {"task": task, "engine": engine.name, "folder": folder},
                 "id": call_id,
             }])
-            self._agent.update_state(self._config, {"messages": [HumanMessage(content=task), direct]}, as_node="model")
+            self._agent.update_state(self._config, {"messages": [self._said(task), direct]}, as_node="model")
             return self._run(None, cancel=cancel)
-        messages: list[Any] = [{"role": "user", "content": text}]
-        fresh = self.toolbox.live.inbox.unseen_by_model() if self.primary else []
+        messages: list[Any] = [self._said(text)]
+        # Other people's live messages (R2 private reads) join Mac turns only: a Slack turn's reply
+        # is posted without a card, possibly in a channel thread, so it must not carry them there.
+        fresh = self.toolbox.live.inbox.unseen_by_model() if self.primary and self.origin == "mac" else []
         if fresh:  # live messages since the last turn: a private read (R2), framed as untrusted (R5)
             messages += inbox_exchange(fresh)
         return self._run({"messages": messages}, cancel=cancel)
+
+    def _said(self, text: str) -> HumanMessage:
+        """The user's message, marked with where it came from when that isn't the Mac panel."""
+        return HumanMessage(content=text, additional_kwargs={"origin": self.origin} if self.origin != "mac" else {})
 
     def resume(self, approvals: Sequence[bool | dict[str, Any]], approval_id: str | None = None,
                turn_id: str | None = None, cancel: threading.Event | None = None) -> Iterator[Event]:
@@ -798,9 +819,11 @@ class Aura:
             raise StaleApproval("Your permissions changed since Aura asked, so that request was cancelled. Ask again.")
         calls = self._interrupted_calls(actions)  # before the claim: a failure here leaves the card answerable
         answering = self.approval_id
+        origin, reply_to = self.pending_origin()  # the continuation belongs to the card's turn
         if answering and not self.toolbox.state.claim_approval(answering):  # exactly one answer runs
             raise StaleApproval("That approval was already answered.")
         self.turn_id = turn_id
+        self.origin, self.reply_to = origin, reply_to
         self._pending, self.approval_id = None, None  # only once the answer is known to be valid
         # An approved continuation can legitimately need a follow-up capability that was not
         # relevant to the initial plain-language request. Restore every schema before resuming;

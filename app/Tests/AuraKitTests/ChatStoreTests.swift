@@ -55,6 +55,26 @@ final class FakeTransport: AuraTransport, @unchecked Sendable {
     func newConversation() async throws { newConversations += 1 }
     func warmup() async throws {}
     func health() async throws -> Health { throw URLError(.notConnectedToInternet) }
+
+    // The mirror feed (MirrorTests): each connection plays one script, then drops; when the
+    // scripts run out, the connection stays open and quiet.
+    var mirrorScripts: [[MirrorFrame]] = []
+    private(set) var mirrorAfters: [Int] = []
+    private(set) var stoppedTurns: [String] = []
+
+    func mirror(after: Int) -> AsyncThrowingStream<MirrorFrame, Error> {
+        mirrorAfters.append(after)
+        let (stream, continuation) = AsyncThrowingStream<MirrorFrame, Error>.makeStream()
+        guard !mirrorScripts.isEmpty else { return stream }
+        mirrorScripts.removeFirst().forEach { continuation.yield($0) }
+        continuation.finish(throwing: URLError(.networkConnectionLost))
+        return stream
+    }
+
+    func stopTurn(id: String) async throws -> Bool {
+        stoppedTurns.append(id)
+        return true
+    }
 }
 
 @MainActor

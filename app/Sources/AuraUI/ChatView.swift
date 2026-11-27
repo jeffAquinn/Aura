@@ -212,10 +212,11 @@ struct HeaderView: View {
 
     private var subtitle: String? {
         switch store.connection {
-        case .starting: "Starting Aura…"
-        case .offline: "Aura is offline"
+        case .starting: return "Starting Aura…"
+        case .offline: return "Aura is offline"
         case .connected:
-            switch store.phase {
+            if store.isAnsweringElsewhere { return "Answering from Slack…" }
+            return switch store.phase {
             case .idle: speaking ? "Speaking a reply" : nil
             case .thinking: "Thinking through your request"
             case .waking: "Waking the selected model"
@@ -481,6 +482,13 @@ struct ItemView: View {
                         .overlay(RoundedRectangle(cornerRadius: 16).strokeBorder(bubbles.userBorder, lineWidth: 1))
                         .contextMenu { MessageMenu(item: item, store: store) }
                 }
+                if item.origin == "slack" {  // the owner wrote it in Slack (the Unified Command Stream)
+                    Label("From Slack", systemImage: "iphone")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .padding(.trailing, 6)
+                        .accessibilityLabel("Sent from Slack")
+                }
                 if let developer = item.developer {  // handed to Claude Code or Codex in the chat box
                     Label("To \(EngineInfo.named(developer)?.label ?? developer)", systemImage: DeveloperPicker.symbol)
                         .font(.caption2)
@@ -571,21 +579,13 @@ struct IncomingMessageCard: View {
     let message: IncomingMessage
     @Environment(\.chatText) private var chat
 
-    /// Aura's own answers are Markdown (bold, links); other people's words are shown as written.
-    private var messageText: AttributedString {
-        if message.kind == "reply",
-           let rich = try? AttributedString(markdown: message.text,
-                                            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)) {
-            return rich
-        }
-        return AttributedString(message.text)
-    }
+    /// People's words, shown as written.
+    private var messageText: AttributedString { AttributedString(message.text) }
 
     private var badge: String? {
         switch message.kind {
         case "mention": "mentions Aura"
-        case "command": "you, to Aura"
-        case "reply": "Aura answered"
+        case "reply": "not posted"
         default: nil
         }
     }
@@ -782,7 +782,7 @@ struct ApprovalCard: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             if let decisions = item.decisions {
-                Label(Self.outcome(decisions), systemImage: decisions.contains(true) ? "checkmark.circle" : "xmark.circle")
+                Label(Self.outcome(decisions, elsewhere: item.answeredElsewhere), systemImage: decisions.contains(true) ? "checkmark.circle" : "xmark.circle")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
@@ -801,7 +801,8 @@ struct ApprovalCard: View {
         .padding(.leading, 32)
     }
 
-    static func outcome(_ decisions: [Bool]) -> String {
+    static func outcome(_ decisions: [Bool], elsewhere: String? = nil) -> String {
+        if decisions.isEmpty, elsewhere == "slack" { return "Answered in Slack" }
         if decisions.isEmpty { return "Expired: Aura restarted before you answered" }
         if decisions.allSatisfy({ $0 }) { return "Allowed" }
         return decisions.contains(true) ? "Partly allowed" : "Denied"
@@ -901,6 +902,7 @@ struct InputBar: View {
 
     private var placeholder: String {
         if store.transport == nil { return "Aura is offline" }
+        if store.isAnsweringElsewhere { return "Aura is answering from Slack…" }
         if store.phase == .awaitingApproval { return "Answer the approval request first" }
         if let developer = store.developer, let engine = EngineInfo.named(developer) {
             return "Ask \(engine.label), through \(store.persona.name)…"
@@ -1089,7 +1091,7 @@ struct DeveloperTaskCard: View {
             .foregroundStyle(.secondary)
             .fixedSize(horizontal: false, vertical: true)
             if let decisions = item.decisions {
-                Label(decisions.isEmpty ? ApprovalCard.outcome(decisions) : decisions.contains(true) ? "Sent to \(label)" : "Denied: nothing was sent",
+                Label(decisions.isEmpty ? ApprovalCard.outcome(decisions, elsewhere: item.answeredElsewhere) : decisions.contains(true) ? "Sent to \(label)" : "Denied: nothing was sent",
                       systemImage: decisions.contains(true) ? "checkmark.circle" : "xmark.circle")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -1169,7 +1171,7 @@ struct FileChangesCard: View {
                 row(i, change)
             }
             if let decisions = item.decisions {
-                Label(decisions.isEmpty ? ApprovalCard.outcome(decisions)
+                Label(decisions.isEmpty ? ApprovalCard.outcome(decisions, elsewhere: item.answeredElsewhere)
                       : "Allowed \(decisions.filter { $0 }.count) of \(decisions.count)",
                       systemImage: decisions.contains(true) ? "checkmark.circle" : "xmark.circle")
                     .font(.caption)

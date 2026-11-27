@@ -199,6 +199,8 @@ public struct ConversationInfo: Codable, Sendable, Equatable {
     public struct Message: Codable, Sendable, Equatable {
         public let role: String  // "user" | "aura"
         public let text: String
+        /// Where the user wrote it, when that wasn't this Mac ("slack").
+        public var origin: String? = nil
     }
 
     public let messages: [Message]
@@ -210,6 +212,8 @@ public struct ConversationInfo: Codable, Sendable, Equatable {
 public struct PendingApproval: Codable, Sendable, Equatable {
     public let approvalId: String?
     public let actions: [PendingAction]
+    /// Where the card's turn began ("mac" or "slack").
+    public var origin: String? = nil
 }
 
 /// Work a restart interrupted: a build (retry or dismiss) or a vault job (dismiss).
@@ -386,7 +390,13 @@ public struct AgentGovernanceHealth: Codable, Sendable, Equatable {
 /// Line-oriented SSE parser. The server sends exactly one `event:` line and one `data:` line
 /// per event, so an event is complete at its data line; blank lines are not needed (some line
 /// readers drop them).
-public struct SSEParser: Sendable {
+/// Parses a stream one line at a time (AuraClient's SSE responses).
+public protocol LineParser: Sendable {
+    associatedtype Output: Sendable
+    mutating func feed(_ line: String) -> Output?
+}
+
+public struct SSEParser: LineParser {
     private var kind = "message"
     /// The correlation id of the turn being streamed (from its `thinking` event).
     public private(set) var turnID: String?
@@ -439,5 +449,52 @@ public struct SSEParser: Sendable {
             return (try? json.decode(PersonaBody.self, from: data)).map { .persona(name: $0.name) }
         default: return nil  // unknown event types are ignored (forward compatibility)
         }
+    }
+}
+
+/// One frame of the mirror feed (GET /v1/turns/live): every turn's events as the server showed
+/// them, already masked, so the panel can draw a turn it didn't start (a Slack command).
+public struct MirrorFrame: Sendable, Equatable {
+    public let kind: String  // "ready", "turn", "reset", "done", or any turn event's kind
+    public let seq: Int
+    public let turnID: String?
+    public let origin: String?  // "mac" | "slack"
+    /// The `turn` frame: what the user said (nil when the turn answers a card), and where.
+    public let said: String?
+    public let place: String?
+    /// The turn event this frame carries, if it is one.
+    public let event: AuraEvent?
+    /// The `approval` frame: the id binding the card, so an answer here can't approve another.
+    public let approvalID: String?
+}
+
+/// Parses the mirror feed: the same event lines as a turn's stream, each with `seq`, `turn_id`
+/// and `origin` in its data.
+public struct MirrorParser: LineParser {
+    private var kind = "message"
+
+    public init() {}
+
+    public mutating func feed(_ line: String) -> MirrorFrame? {
+        if line.hasPrefix("event:") {
+            kind = line.dropFirst(6).trimmingCharacters(in: .whitespaces)
+            return nil
+        }
+        guard line.hasPrefix("data:") else { return nil }  // blank lines, keepalive comments
+        defer { kind = "message" }
+        let data = Data(line.dropFirst(5).utf8)
+        struct Envelope: Decodable {
+            let seq: Int?
+            let turn_id: String?
+            let origin: String?
+            let text: String?
+            let place: String?
+            let approval_id: String?
+        }
+        guard let envelope = try? JSONDecoder().decode(Envelope.self, from: data), let seq = envelope.seq else { return nil }
+        let isTurn = kind == "turn"
+        return MirrorFrame(kind: kind, seq: seq, turnID: envelope.turn_id, origin: envelope.origin,
+                           said: isTurn ? envelope.text : nil, place: isTurn ? envelope.place : nil,
+                           event: isTurn ? nil : SSEParser.decode(kind, data), approvalID: envelope.approval_id)
     }
 }

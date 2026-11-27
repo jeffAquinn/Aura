@@ -67,6 +67,11 @@ public protocol AuraTransport: Sendable {
     /// Stop the turn being streamed. Returns once the server has cleaned it up (true), or false
     /// when nothing was stopped (the caller then closes the stream, which the server treats as a stop).
     func stopTurn() async throws -> Bool
+    /// Stop a turn this app didn't start (a Slack command shown from the mirror feed).
+    func stopTurn(id: String) async throws -> Bool
+    /// The mirror feed: every turn's frames from `after` (-1: from now). Ends after a while, or
+    /// when the connection drops: call again with the last seq seen.
+    func mirror(after: Int) -> AsyncThrowingStream<MirrorFrame, Error>
     /// The conversation the server kept (after a restart: the history, and any approval still waiting).
     func conversation() async throws -> ConversationInfo
     func retryBuild(_ id: String) async throws -> BuildInfo
@@ -142,6 +147,10 @@ extension AuraTransport {
     public func setChat(_ id: String, _ chat: ChatSwitch) async throws -> ConnectionInfo { throw AuraClientError.badResponse }
     public func messages(after: Int, wait: Int) async throws -> MessagesPage { MessagesPage(messages: [], latest: after) }
     public func stopTurn() async throws -> Bool { false }
+    public func stopTurn(id: String) async throws -> Bool { false }
+    public func mirror(after: Int) -> AsyncThrowingStream<MirrorFrame, Error> {
+        AsyncThrowingStream { $0.finish() }
+    }
     public func conversation() async throws -> ConversationInfo { throw AuraClientError.badResponse }
     public func retryBuild(_ id: String) async throws -> BuildInfo { throw AuraClientError.badResponse }
     public func dismissRecovery(_ id: String) async throws {}
@@ -227,9 +236,13 @@ public final class AuraClient: AuraTransport {
     }
 
     public func stopTurn() async throws -> Bool {
+        guard let turn = ids.turn else { return false }
+        return try await stopTurn(id: turn)
+    }
+
+    public func stopTurn(id turn: String) async throws -> Bool {
         struct Body: Encodable { let turn_id: String? }
         struct Reply: Decodable { let stopped: Bool }
-        guard let turn = ids.turn else { return false }
         var r = request("/v1/stop", body: Body(turn_id: turn))
         r.timeoutInterval = 45  // the server waits for the turn's cleanup (up to 30 s)
         return try Self.decoder.decode(Reply.self, from: await send(r)).stopped
@@ -545,6 +558,18 @@ public final class AuraClient: AuraTransport {
         return try Self.decoder.decode(MessagesPage.self, from: await send(r))
     }
 
+    public func mirror(after: Int) -> AsyncThrowingStream<MirrorFrame, Error> {
+        var r = request("/v1/turns/live")
+        r.url = r.url?.appending(queryItems: [URLQueryItem(name: "after", value: String(after)),
+                                              URLQueryItem(name: "hold", value: "600")])
+        r.timeoutInterval = 120  // the server sends a keepalive every 20 s
+        let ids = ids
+        return lines(r, MirrorParser()) { _, frame in
+            if frame.kind == "approval", frame.origin != "mac" { ids.approval = frame.approvalID }
+            return true
+        }
+    }
+
     private static var decoder: JSONDecoder {
         let d = JSONDecoder()
         d.keyDecodingStrategy = .convertFromSnakeCase
@@ -582,9 +607,21 @@ public final class AuraClient: AuraTransport {
     }
 
     private func stream(_ path: String, body: some Encodable & Sendable) -> AsyncThrowingStream<AuraEvent, Error> {
-        let request = request(path, body: body)
-        let session = session
         let ids = ids
+        return lines(request(path, body: body), SSEParser()) { parser, event in
+            if event == .thinking { ids.turn = parser.turnID }
+            if case .approval = event { ids.approval = parser.approvalID }
+            if event == .done { ids.turn = nil }
+            return event != .done
+        }
+    }
+
+    /// An SSE response, parsed line by line. `onEach` sees the parser and each value it yields,
+    /// and returns false to end the stream there. Cancelling the stream (Stop, a dropped consumer)
+    /// cancels the request; the server then frees what it held.
+    private func lines<P: LineParser>(_ request: URLRequest, _ start: P,
+                                      onEach: @escaping @Sendable (P, P.Output) -> Bool) -> AsyncThrowingStream<P.Output, Error> {
+        let session = session
         return AsyncThrowingStream { continuation in
             let task = Task {
                 do {
@@ -594,21 +631,18 @@ public final class AuraClient: AuraTransport {
                         for try await byte in bytes { data.append(byte) }
                         try Self.check(response, data)
                     }
-                    var parser = SSEParser()
+                    var parser = start
                     for try await line in bytes.lines {
-                        guard let event = parser.feed(line) else { continue }
-                        if event == .thinking { ids.turn = parser.turnID }
-                        if case .approval = event { ids.approval = parser.approvalID }
-                        if event == .done { ids.turn = nil }
-                        continuation.yield(event)
-                        if event == .done { break }
+                        guard let value = parser.feed(line) else { continue }
+                        let more = onEach(parser, value)
+                        continuation.yield(value)
+                        if !more { break }
                     }
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
                 }
             }
-            // Stop (or a dropped consumer) cancels the request; the server then frees the turn.
             continuation.onTermination = { _ in task.cancel() }
         }
     }

@@ -58,7 +58,7 @@ class Incoming:
     place: str  # "#aura-chat", "#general in Aura HQ", "a direct message"
     author: str
     text: str
-    kind: str  # "dm", "mention", "channel"; the owner's Slack chat with Aura: "command", "reply"
+    kind: str  # "dm", "mention", "channel"; "reply": a Slack answer Aura couldn't post
     at: float
 
     def public(self) -> dict[str, Any]:
@@ -113,9 +113,10 @@ class Inbox:
 
     def unseen_by_model(self, n: int = 10) -> list[Incoming]:
         """What arrived since the model last looked (the newest n), now marked as shown. The
-        owner's Slack chat with Aura (commands and replies) has its own conversation: not here."""
+        owner's Slack commands are turns of their own (remote.py), and a failed-post notice
+        ("reply") is for the Mac panel only: neither is here."""
         with self._changed:
-            fresh = [m for m in self._items if m.id > self._given and m.kind not in ("command", "reply")]
+            fresh = [m for m in self._items if m.id > self._given and m.kind != "reply"]
             self._given = self._next - 1
             return fresh[-n:]
 
@@ -491,9 +492,8 @@ class SlackSocket(Listener):
         files = len(e.get("files") or [])
         text = self._plain(raw, bot_user) + (f" ({files} file{'s' if files != 1 else ''})" if files else "")
         ask = self._ask(e, user, place, kind, text)
-        if ask is not None:  # the owner talking to Aura: Aura answers in Slack
-            self.inbox.add("Slack", place, self._name(str(user)), ask.text, "command")
-            self.chat.submit(ask)
+        if ask is not None:  # the owner talking to Aura: a turn in the Mac conversation, answered in Slack
+            self.chat.submit(ask)  # the Mac panel shows it from the mirror feed, not as an inbox card
             return
         self.inbox.add("Slack", place, self._name(str(user)), text, kind)
 

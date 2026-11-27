@@ -26,7 +26,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 FEED_KEEP = 300  # status lines kept per feed
 RECORDS_KEEP = 100  # finished records kept per kind
 TEXT_CAP = 2_000  # characters of any one stored text field
@@ -51,6 +51,13 @@ MIGRATIONS: dict[int, list[str]] = {
             seq INTEGER PRIMARY KEY AUTOINCREMENT, scope TEXT NOT NULL, ref TEXT NOT NULL, ts TEXT NOT NULL,
             text TEXT NOT NULL)""",
         """CREATE INDEX events_by_ref ON events (scope, ref, seq)""",
+    ],
+    # The Unified Command Stream (docs/unified-command-stream.md): where a card's turn began, and
+    # where its reply goes (a Slack channel and thread, as JSON), so the rule "Slack answers only
+    # Slack's cards" and the reply's destination both survive a restart.
+    2: [
+        """ALTER TABLE approvals ADD COLUMN origin TEXT NOT NULL DEFAULT 'mac'""",
+        """ALTER TABLE approvals ADD COLUMN reply_to TEXT""",
     ],
 }
 
@@ -175,22 +182,30 @@ class StateStore:
     # ── approvals ───────────────────────────────────────────────────────────────────────────
 
     def add_approval(self, approval_id: str, turn_id: str | None, conversation: str, interrupt_id: str, digest: str,
-                     tools: list[str], signature: str) -> None:  # fmt: skip
+                     tools: list[str], signature: str, origin: str = "mac",
+                     reply_to: dict[str, Any] | None = None) -> None:  # fmt: skip
         with self.tx() as db:
             # An earlier approval of this conversation that was never answered is superseded.
             db.execute("UPDATE approvals SET state = 'stale', reason = 'superseded', decided = ? "
                        "WHERE conversation = ? AND state = 'pending'", (now(), conversation))  # fmt: skip
             db.execute("INSERT INTO approvals (id, turn_id, conversation, interrupt_id, digest, tools, signature, state, "
-                       "created) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)",
-                       (approval_id, turn_id, conversation, interrupt_id, digest, json.dumps(tools), signature, now()))  # fmt: skip
+                       "created, origin, reply_to) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)",
+                       (approval_id, turn_id, conversation, interrupt_id, digest, json.dumps(tools), signature, now(),
+                        origin, json.dumps(reply_to) if reply_to else None))  # fmt: skip
+
+    @staticmethod
+    def _approval_row(row: sqlite3.Row) -> dict[str, Any]:
+        record = dict(row)
+        record["reply_to"] = json.loads(record["reply_to"]) if record.get("reply_to") else None
+        return record
 
     def approval(self, approval_id: str) -> dict[str, Any] | None:
         rows = self._query("SELECT * FROM approvals WHERE id = ?", (approval_id,))
-        return dict(rows[0]) if rows else None
+        return self._approval_row(rows[0]) if rows else None
 
     def approval_for(self, interrupt_id: str) -> dict[str, Any] | None:
         rows = self._query("SELECT * FROM approvals WHERE interrupt_id = ? ORDER BY created DESC LIMIT 1", (interrupt_id,))
-        return dict(rows[0]) if rows else None
+        return self._approval_row(rows[0]) if rows else None
 
     def claim_approval(self, approval_id: str) -> bool:
         """pending → submitted, atomically: exactly one answer wins; a retry gets False."""

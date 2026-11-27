@@ -23,9 +23,11 @@ public final class ChatStore {
         public var edited = false  // approved with the user's edits (the Specification Approval card)
         public var incoming: IncomingMessage?  // a live Slack or Discord message
         public var developer: String?  // the user's message went to this Developer ("claude", "codex")
+        public var origin: String?  // the user wrote it somewhere else ("slack"): shown with a badge
+        public var answeredElsewhere: String?  // an approval card answered from there ("slack")
 
         public init(role: Role, text: String, actions: [PendingAction] = [], decisions: [Bool]? = nil, edited: Bool = false,
-                    incoming: IncomingMessage? = nil, developer: String? = nil) {
+                    incoming: IncomingMessage? = nil, developer: String? = nil, origin: String? = nil) {
             self.role = role
             self.text = text
             self.actions = actions
@@ -33,6 +35,7 @@ public final class ChatStore {
             self.edited = edited
             self.incoming = incoming
             self.developer = developer
+            self.origin = origin
         }
 
         /// A card asking about the files a Developer changed (one action per file).
@@ -58,6 +61,12 @@ public final class ChatStore {
     public private(set) var localPerformance: LocalModelPerformance?
     /// Bumped when the panel opens so the input field can take focus.
     public var focusRequests = 0
+    /// A turn running elsewhere (the owner's Slack command), drawn from the mirror feed: its id.
+    public private(set) var remoteTurn: String?
+    /// A Slack command's turn ended: Aura's answer there (the app posts a Mac notification).
+    @ObservationIgnored public var onRemoteAnswer: (IncomingMessage) -> Void = { _ in }
+    @ObservationIgnored private var remoteStart = 0  // where the Slack turn's items begin
+    @ObservationIgnored private var remotePlace = "Slack"
 
     public var transport: (any AuraTransport)? {
         didSet {
@@ -163,6 +172,8 @@ public final class ChatStore {
         guard text.count > maximum else { return text }
         return "… earlier HOL output omitted …\n" + String(text.suffix(maximum))
     }
+    /// The busy state belongs to a Slack command, not to something typed here.
+    public var isAnsweringElsewhere: Bool { remoteTurn != nil && isBusy }
     public var isBusy: Bool { phase == .thinking || phase == .waking || phase == .streaming || phase == .stopping }
     public var isStopping: Bool { phase == .stopping }
 
@@ -211,6 +222,11 @@ public final class ChatStore {
         // logically lock the control after one request.
         guard isBusy else { return }
         guard !isStopping else { return }
+        if let remote = remoteTurn, let transport {  // a Slack command: the feed's `done` ends it here
+            phase = .stopping
+            Task { _ = try? await transport.stopTurn(id: remote) }
+            return
+        }
         guard let transport, let task = turnTask else {
             turnTask?.cancel()
             return
@@ -234,7 +250,22 @@ public final class ChatStore {
     public func restoreConversation() async {
         guard items.isEmpty, phase == .idle, let info = try? await transport?.conversation() else { return }
         guard items.isEmpty else { return }  // the user started typing meanwhile
-        items = info.messages.map { Item(role: $0.role == "user" ? .user : .aura, text: $0.text) }
+        show(info)
+    }
+
+    /// The feed lost track (a gap it can't fill, or the server restarted): show the conversation
+    /// as the server has it. Not while a turn typed here is streaming: its own stream is the truth.
+    public func reloadConversation() async {
+        guard !(isBusy && remoteTurn == nil), let info = try? await transport?.conversation() else { return }
+        guard !(isBusy && remoteTurn == nil) else { return }
+        flushPendingText()
+        remoteTurn = nil
+        phase = .idle
+        show(info)
+    }
+
+    private func show(_ info: ConversationInfo) {
+        items = info.messages.map { Item(role: $0.role == "user" ? .user : .aura, text: $0.text, origin: $0.origin) }
         if let note = info.recoveryNote {
             items.append(Item(role: .status, text: note))
         }
@@ -242,6 +273,97 @@ public final class ChatStore {
             items.append(Item(role: .approval, text: "", actions: pending.actions))
             phase = .awaitingApproval
         }
+    }
+
+    // MARK: - the mirror feed: turns that didn't start here
+
+    @ObservationIgnored private var mirrorTask: Task<Void, Never>?
+    @ObservationIgnored public private(set) var mirrorSeq = -1
+    /// The first wait before reconnecting (doubling to 5 s); tests shorten it.
+    @ObservationIgnored var mirrorRetry = 0.5
+
+    /// Follow the server's mirror feed for as long as this transport lasts. A dropped connection
+    /// is retried quietly from the last frame seen, so nothing on screen changes.
+    public func followMirror() {
+        mirrorTask?.cancel()
+        mirrorSeq = -1
+        let first = mirrorRetry
+        mirrorTask = Task { [weak self] in
+            var backoff = first
+            while !Task.isCancelled, let transport = self?.transport {
+                do {
+                    for try await frame in transport.mirror(after: self?.mirrorSeq ?? -1) {
+                        self?.applyMirror(frame)
+                        backoff = first
+                    }
+                } catch {}
+                if Task.isCancelled { return }
+                try? await Task.sleep(for: .seconds(backoff))
+                backoff = min(backoff * 2, 5)
+            }
+        }
+    }
+
+    public func stopMirror() {
+        mirrorTask?.cancel()
+        mirrorTask = nil
+    }
+
+    /// A Slack turn's frames that arrived while this panel's own turn was still ending (the server
+    /// releases the turn before its `done` reaches us): drawn once that turn has ended.
+    @ObservationIgnored private var deferredFrames: [MirrorFrame] = []
+    /// A card was waiting here when the Slack turn began; unless Slack answers it, it still waits.
+    @ObservationIgnored private var cardWasWaiting = false
+
+    func applyMirror(_ frame: MirrorFrame) {
+        mirrorSeq = frame.seq
+        if frame.kind == "reset" {
+            deferredFrames.removeAll()
+            Task { await reloadConversation() }
+            return
+        }
+        guard frame.origin != "mac" else { return }  // turns started here: drawn from their own stream
+        if isBusy && remoteTurn == nil {  // this panel's own turn hasn't seen its `done` yet
+            deferredFrames.append(frame)
+            return
+        }
+        if frame.kind == "turn" {
+            flushPendingText()
+            cardWasWaiting = phase == .awaitingApproval
+            remoteTurn = frame.turnID
+            remoteStart = items.count
+            remotePlace = frame.place ?? "Slack"
+            if let said = frame.said { items.append(Item(role: .user, text: said, origin: "slack")) }
+            phase = .thinking
+            return
+        }
+        guard let remote = remoteTurn, frame.turnID == remote else { return }  // a turn from before we joined
+        if frame.kind == "answered" {  // the owner answered the waiting card from Slack
+            if let i = items.lastIndex(where: { $0.role == .approval && $0.decisions == nil }) {
+                items[i].decisions = []
+                items[i].answeredElsewhere = "slack"
+            }
+            cardWasWaiting = false
+            return
+        }
+        if frame.kind == "done" {
+            flushPendingText()
+            let said = items[min(remoteStart, items.count)...].filter { $0.role == .aura }.map(\.text).joined(separator: "\n\n")
+            let answer = said.isEmpty && phase == .awaitingApproval ? "Aura needs your OK." : said
+            if !answer.isEmpty {
+                onRemoteAnswer(IncomingMessage(id: frame.seq, source: "Slack", place: remotePlace, author: "Aura", text: answer,
+                                               kind: "reply", at: Date().timeIntervalSince1970))
+            }
+            remoteTurn = nil
+            if cardWasWaiting, items.contains(where: { $0.role == .approval && $0.decisions == nil }) {
+                phase = .awaitingApproval  // Slack didn't answer it (e.g. "answer it on the Mac"): it still waits here
+            }
+            cardWasWaiting = false
+            endTurn()
+            if phase == .stopping { phase = .idle }
+            return
+        }
+        if let event = frame.event { apply(event) }
     }
 
     // MARK: - live messages (Slack, Discord)
@@ -397,6 +519,8 @@ public final class ChatStore {
     /// The server went away (it restarts with fresh state): end the turn, expire any open card.
     public func connectionLost(_ reason: String) {
         cancelTurn()
+        stopMirror()
+        remoteTurn = nil
         if let i = items.lastIndex(where: { $0.role == .approval && $0.decisions == nil }) {
             items[i].decisions = []  // expired
         }
@@ -464,7 +588,7 @@ public final class ChatStore {
             guard !isStopping else { return }
             finishSpokenSegment()
             items.append(Item(role: .approval, text: "", actions: actions))
-            speech?.approvalRequested(actions)  // the verbal audit trail
+            if remoteTurn == nil { speech?.approvalRequested(actions) }  // the verbal audit trail (not for Slack's)
             phase = .awaitingApproval
         case let .error(message):
             items.append(Item(role: .error, text: message))
@@ -489,6 +613,7 @@ public final class ChatStore {
 
     /// Speak the last sentence of the current reply segment, then start a fresh one.
     private func finishSpokenSegment() {
+        if remoteTurn != nil { speakingItem = nil; return }
         if let id = speakingItem, let item = items.first(where: { $0.id == id }) {
             speech?.reply(item.text, final: true)
         }
@@ -532,7 +657,7 @@ public final class ChatStore {
         }
         // A sentence can only end at one of these: re-planning on every chunk would re-parse
         // the whole reply each time (quadratic on a long reply).
-        if text.contains(where: { ".!?:;\n".contains($0) }) {
+        if remoteTurn == nil, text.contains(where: { ".!?:;\n".contains($0) }) {  // Slack's replies aren't read aloud here
             speech?.reply(items[items.count - 1].text, final: false)
         }
         phase = .streaming
@@ -547,6 +672,11 @@ public final class ChatStore {
         if !held.isEmpty, !isBusy {
             items += held.map(Item.message)
             held.removeAll()
+        }
+        if !deferredFrames.isEmpty, !isBusy, remoteTurn == nil {  // a Slack turn that began as ours ended
+            let frames = deferredFrames
+            deferredFrames.removeAll()
+            frames.forEach(applyMirror)
         }
     }
 }

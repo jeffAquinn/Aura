@@ -8,7 +8,7 @@ public struct IncomingMessage: Codable, Sendable, Equatable, Identifiable {
     public let place: String  // "#aura-chat", "#general in Aura HQ", "a direct message"
     public let author: String
     public let text: String
-    public let kind: String  // dm | mention | channel
+    public let kind: String  // dm | mention | channel; reply: a Slack answer Aura couldn't post
     public let at: Double
 
     public init(id: Int, source: String, place: String, author: String, text: String, kind: String = "channel",
@@ -23,11 +23,7 @@ public struct IncomingMessage: Codable, Sendable, Equatable, Identifiable {
     }
 
     /// Written to Aura (a DM or an @mention), not just said in a channel it's in.
-    public var isToAura: Bool { kind == "dm" || kind == "mention" || kind == "command" }
-
-    /// The owner talking to Aura from Slack (their message, or Aura's answer there): shown in the
-    /// panel, never a Mac notification (the user is on their phone).
-    public var isSlackChat: Bool { kind == "command" || kind == "reply" }
+    public var isToAura: Bool { kind == "dm" || kind == "mention" }
 
     /// "Slack · #aura-chat", or "Discord · direct message".
     public var heading: String { "\(source) · \(kind == "dm" ? "direct message" : place)" }

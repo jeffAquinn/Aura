@@ -522,10 +522,8 @@ struct SnapshotTests {
             .message(IncomingMessage(id: 2, source: "Discord", place: "a direct message", author: "Jeff",
                                      text: "Lunch at noon? (1 attachment)", kind: "dm")),
             .message(IncomingMessage(id: 3, source: "Slack", place: "#social", author: "Sam", text: "Pizza's here 🍕")),
-            .message(IncomingMessage(id: 4, source: "Slack", place: "#aura-chat", author: "Jeff Quinn",
-                                     text: "What's on my calendar tomorrow?", kind: "command")),
-            .message(IncomingMessage(id: 5, source: "Slack", place: "#aura-chat", author: "Aura",
-                                     text: "Tomorrow you have **Dentist** at 9:00 and **Team sync** at 14:00.", kind: "reply")),
+            ChatStore.Item(role: .user, text: "What's on my calendar tomorrow?", origin: "slack"),  // asked from the phone
+            item(.aura, "Tomorrow you have **Dentist** at 9:00 and **Team sync** at 14:00."),
             item(.aura, "Two messages are for you: Jeff asked in **#aura-chat** whether I can see it, and DM'd you about lunch at noon. Want me to reply?"),
         ])
         try render("29-live-messages", store)

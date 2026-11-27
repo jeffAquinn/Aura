@@ -80,6 +80,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         store.onBuildStarted = { [weak self] _ in self?.checkAlerts() }
         feed.onMessages = { [weak self] in self?.messagesArrived($0) }
+        store.onRemoteAnswer = { [weak self] in self?.answeredInSlack($0) }
         notifier.onOpen = { [weak self] in self?.showPanel() }
         startServer()
         // Opening Aura should visibly open it: show the panel once the menu bar icon is placed.
@@ -161,6 +162,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let client = AuraClient(port: port, token: server.token)
             store.transport = client
             feed.start(client)  // a new server: follow its live messages from the start
+            store.followMirror()  // and its turns, so a Slack command shows here as it runs
             alertTimer?.invalidate()  // the Continuous Audit runs in the server; show its alerts here
             alertTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated { self?.checkAlerts() }
@@ -184,14 +186,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - live messages
 
-    /// New Slack or Discord messages: a card in the chat for each. A Mac notification only when
-    /// Aura answers the user in a messaging app (the user's choice), unless the panel is in front.
+    /// New Slack or Discord messages: a card in the chat for each. (Mac notifications are only for
+    /// Aura's answers to the owner's Slack commands: answeredInSlack.)
     private func messagesArrived(_ messages: [IncomingMessage]) {
         AppLog.write("live messages: \(messages.count)")  // never their text
         store.receive(messages)
-        let answers = messages.filter { $0.kind == "reply" }
-        guard !answers.isEmpty, !(panel.isVisible && panel.isKeyWindow) else { return }
-        for answer in answers.suffix(3) { notifier.post(answer) }  // a burst doesn't flood the screen
+    }
+
+    /// Aura answered the owner's Slack command (from the mirror feed): a Mac notification, unless
+    /// the panel is in front (it's showing the answer already).
+    private func answeredInSlack(_ answer: IncomingMessage) {
+        guard !(panel.isVisible && panel.isKeyWindow) else { return }
+        notifier.post(answer)
     }
 
     // MARK: - panel

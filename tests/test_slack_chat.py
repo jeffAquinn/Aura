@@ -1,5 +1,6 @@
 """Talking to Aura from Slack (the user's phone): only the owner, only where they talk to Aura,
-the same rules (approvals asked for and answered in Slack), its own conversation."""
+the same rules (approvals asked for and answered in Slack), in the Mac panel's own conversation
+(the Unified Command Stream: more in test_command_stream.py)."""
 
 from __future__ import annotations
 
@@ -69,8 +70,8 @@ def test_only_the_owner_talking_to_aura_becomes_a_request(listening):
     asks = socket.chat.asks
     assert [(a.channel, a.text, a.thread_ts) for a in asks] == [
         ("D1", "what's on my calendar?", None), ("C1", "summarise my unread mail", None)]
-    assert [(m.author, m.kind) for m in inbox.recent()] == [("Jeff", "command"), ("Jeff", "dm"), ("Jeff", "command"),
-                                                            ("Jeff", "mention")]  # the fake names everyone Jeff
+    # The owner's requests are turns (no inbox card: the Mac panel draws them from the mirror feed).
+    assert [(m.author, m.kind) for m in inbox.recent()] == [("Jeff", "dm"), ("Jeff", "mention")]  # the fake names everyone Jeff
     assert [m.kind for m in inbox.unseen_by_model()] == ["dm", "mention"]  # the panel's Aura: only others' messages
 
 
@@ -86,12 +87,14 @@ def test_elsewhere_only_an_at_mention_is_for_aura_and_it_answers_in_a_thread(lis
     assert len(socket.chat.asks) == 1 and inbox.recent(1)[0].kind == "dm"
 
 
-def remote_chat(aura: Aura, env, tmp_path, model=None) -> tuple[RemoteChat, list[tuple], Callable[[str], Ask]]:
-    """The Slack chat around `aura`'s toolbox: (remote, what it posted, a DM from the owner)."""
+def remote_chat(aura: Aura, env, tmp_path, model=None, **more) -> tuple[RemoteChat, list[tuple], Callable[[str], Ask]]:
+    """The Slack chat on `aura` (the primary): (remote, what it posted, a DM from the owner)."""
     posted: list[tuple] = []
-    remote = RemoteChat(make_aura=lambda: Aura(settings=env[0], model=model or aura.llm, toolbox=aura.toolbox, primary=False),
-                        turn=threading.Lock(), post=lambda *a: posted.append(a), inbox=aura.toolbox.live.inbox,
-                        settings_path=tmp_path / "slack_chat.json")  # fmt: skip
+    if model is not None:
+        aura.llm = model
+        aura.reload_tools()
+    remote = RemoteChat(aura=aura, turn=more.pop("turn", threading.Lock()), post=lambda *a: posted.append(a),
+                        inbox=aura.toolbox.live.inbox, settings_path=tmp_path / "slack_chat.json", **more)  # fmt: skip
     return remote, posted, lambda text: Ask(channel="D1", ts="1.1", thread_ts=None, text=text, place="a direct message")
 
 
@@ -115,12 +118,12 @@ def test_aura_answers_in_slack_with_the_same_rules(env, tmp_path):  # noqa: F811
     remote.handle(dm("try again"))
     remote.handle(dm("no"))
     assert len(fake.sent) == 1  # denied: never sent
-    # Its own conversation: the Mac panel's Aura saw none of this, and kept its hooks.
-    panel = aura._agent.get_state(aura._config).values.get("messages", [])
-    assert not panel and aura.toolbox.workshop.on_deployed == aura.reload_tools
-    replies = [m for m in aura.toolbox.live.inbox.recent(20) if m.kind == "reply"]
-    assert replies and replies[0].author == "Aura"  # the panel shows the answers as cards
-    assert not [m for m in aura.toolbox.live.inbox.unseen_by_model() if m.kind == "reply"]
+    # The Mac panel's own conversation: it holds all of this, marked as from Slack.
+    said = [m for m in aura.transcript() if m["role"] == "user"]
+    assert [m["text"] for m in said][:2] == ["hello", "tell #general I'm running late"]
+    assert {m.get("origin") for m in said} == {"slack"}
+    assert aura.toolbox.workshop.on_deployed == aura.reload_tools
+    assert not aura.toolbox.live.inbox.recent(20)  # no cards: the Mac panel has these from the mirror feed
 
 
 def test_answer_words():

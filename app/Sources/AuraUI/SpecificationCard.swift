@@ -95,7 +95,7 @@ struct SpecificationApprovalCard: View {
 
     @ViewBuilder private var footer: some View {
         if let decisions = item.decisions {
-            Label(Self.outcome(decisions, edited: item.edited), systemImage: decisions.contains(true) ? "checkmark.circle" : "xmark.circle")
+            Label(Self.outcome(decisions, edited: item.edited, elsewhere: item.answeredElsewhere), systemImage: decisions.contains(true) ? "checkmark.circle" : "xmark.circle")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         } else if editing {
@@ -143,7 +143,8 @@ struct SpecificationApprovalCard: View {
             .replacingOccurrences(of: #"\s*\([^()]*\):$"#, with: ":", options: .regularExpression)
     }
 
-    static func outcome(_ decisions: [Bool], edited: Bool) -> String {
+    static func outcome(_ decisions: [Bool], edited: Bool, elsewhere: String? = nil) -> String {
+        if decisions.isEmpty, elsewhere == "slack" { return "Answered in Slack" }
         if decisions.isEmpty { return "Expired: Aura restarted before you answered" }
         guard decisions.allSatisfy({ $0 }) else { return "Denied: nothing was sent" }
         return edited ? "Approved with your edits" : "Approved"  // whether it started: the card below, or Aura says why not
