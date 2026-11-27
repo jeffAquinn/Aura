@@ -22,7 +22,10 @@ Two findings in the code shaped the plan:
   - Developer builds only. A Technical Specification must include five Mechanics lines; the first four must say `none`.
   - The audit compares the Files line with `skill.toml` and the code, and shows differences as yellow findings, never blocking.
   - A test keeps the server, the prompt, the tool and the app listing the same sections.
-- **Pillar 3:** not started.
+- **Pillar 3, Observer:** built 2026-11-27 to `docs/observer.md`, not committed. It awaits Aura's architect review before tagging.
+  - An Observer window shows the audit log's recent history, then follows it live on the mirror feed.
+  - New records cover containers starting and finishing, with their limits, and searches the Egress Gatekeeper grants, uses or refuses.
+  - Turn and approval rows come from the feed only, so they appear live but not in the history.
 
 ## The pillars, in order
 

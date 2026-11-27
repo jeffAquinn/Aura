@@ -34,6 +34,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }()
     private var holWindow: NSWindow?
     private var workstationWindow: NSWindow?
+    private let observer = ObserverStore()  // Aura's own activity, live (docs/observer.md)
+    private var observerWindow: NSWindow?
+    private var observerClosing: NSObjectProtocol?
     private lazy var connections = ConnectionsStore(transport: { [weak self] in self?.store.transport },
                                                     openURL: { NSWorkspace.shared.open($0) })  // the user's browser
     private var connectionsWindow: NSWindow?
@@ -60,6 +63,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             self?.openVault()
         }, onOpenAuditLog: { [weak self] in
             self?.openAuditLog()
+        }, onOpenObserver: { [weak self] in
+            self?.openObserver()
         })
         .environment(\.openWorkshop, OpenWorkshopAction { [weak self] taskID in self?.openWorkshop(taskID) })
         .environment(\.openConnections, OpenConnectionsAction { [weak self] id in self?.openConnections(id) })
@@ -163,6 +168,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             store.transport = client
             feed.start(client)  // a new server: follow its live messages from the start
             store.followMirror()  // and its turns, so a Slack command shows here as it runs
+            observer.transport = client  // a new server: the Observer follows it from its history
+            if observerWindow != nil { Task { await observer.start() } }
             alertTimer?.invalidate()  // the Continuous Audit runs in the server; show its alerts here
             alertTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated { self?.checkAlerts() }
@@ -177,9 +184,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
         case .failed:  // technical reason is in app.log; the server restarts itself
             feed.stop()
+            observer.transport = nil  // stops following until the next server
             store.connectionLost(FriendlyMessage.reconnecting)
         case .stopped:
             feed.stop()
+            observer.transport = nil  // stops following until the next server
             store.connectionLost(FriendlyMessage.offline)
         }
     }
@@ -300,6 +309,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         add("Open Workshop…", #selector(openWorkshopFromMenu))
         add("Open HOL Terminal…", #selector(openHOLTerminal))
         add("Open Workstation…", #selector(openWorkstation))
+        add("Open Observer…", #selector(openObserver))
         add("Connections…", #selector(openConnectionsFromMenu))
         menu.addItem(.separator())
         add("Open Vault in Finder", #selector(openVault))
@@ -413,6 +423,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         workstationWindow?.makeKeyAndOrderFront(nil)
         Task { await workshop.refresh() }
         AppLog.write("workstation opened")
+    }
+
+    private func observerClosed() {
+        observer.stop()
+        observerWindow = nil
+        if let observerClosing { NotificationCenter.default.removeObserver(observerClosing) }
+        observerClosing = nil
+    }
+
+    /// The Observer: Aura's own activity, live, beside the chat. Read-only.
+    @objc private func openObserver() {
+        if observerWindow == nil {
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 760, height: 560),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                backing: .buffered, defer: false)
+            window.title = "Aura Observer"
+            window.isReleasedWhenClosed = false
+            window.contentView = NSHostingView(rootView: ObserverView(store: observer))
+            window.setFrameAutosaveName("AuraObserver")
+            if window.frame.origin == .zero { window.center() }
+            observerWindow = window
+            // Closing stops following the feed; reopening loads the history again.
+            observerClosing = NotificationCenter.default.addObserver(
+                forName: NSWindow.willCloseNotification, object: window, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.observerClosed() }
+            }
+            Task { await observer.start() }
+        }
+        NSApp.activate()
+        observerWindow?.makeKeyAndOrderFront(nil)
+        AppLog.write("observer opened")
     }
 
     @objc private func openAuditLog() {

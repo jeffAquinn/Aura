@@ -2,7 +2,7 @@
 
 Model choices are ordinary, non-secret preferences in Aura's application-support directory.
 Credentials never appear here: Anthropic's API key stays in the macOS Keychain, while Ollama
-needs no credential.  Keeping this separate also prevents a Claude Code plan token from ever
+and llama.cpp need no credential.  Keeping this separate also prevents a Claude Code plan token from ever
 being mistaken for a general-purpose Claude API credential.
 """
 
@@ -12,11 +12,15 @@ import json
 import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, get_args
+from urllib.parse import urlsplit
 
 from aura.config import Settings
 
-Provider = Literal["ollama", "anthropic"]
+Provider = Literal["ollama", "llamacpp", "anthropic"]
+PROVIDERS: tuple[str, ...] = get_args(Provider)
+# Providers that run on this Mac. Automatic routing never turns a local request into a cloud one.
+LOCAL_PROVIDERS = ("ollama", "llamacpp")
 ROLES = ("startup", "coding", "chat", "deep_research", "web_search")
 DEVELOPER_ENGINES = ("claude", "codex")
 ROLE_LABELS = {
@@ -42,6 +46,7 @@ ANTHROPIC_MODELS = (
     "claude-sonnet-4-6",
     "claude-haiku-4-5-20251001",
 )
+LOCAL_HOSTS = {"127.0.0.1", "localhost"}
 _MODEL = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:@/+-]{0,199}$")
 
 
@@ -51,9 +56,9 @@ class ModelChoice:
     model: str
 
     def validate(self) -> ModelChoice:
-        if self.provider not in ("ollama", "anthropic"):
-            raise ValueError("Choose Ollama or Anthropic.")
-        if not _MODEL.fullmatch(self.model):
+        if self.provider not in PROVIDERS:
+            raise ValueError("Choose Ollama, llama.cpp or Anthropic.")
+        if not valid_model_name(self.model):
             raise ValueError("The model name contains unsupported characters.")
         return self
 
@@ -74,6 +79,25 @@ class SleepMode:
 
     def public(self) -> dict[str, str | bool]:
         return asdict(self)
+
+
+def valid_model_name(name: str) -> bool:
+    return bool(_MODEL.fullmatch(name))
+
+
+def local_root(url: str) -> str:
+    """A local model server's root (no ``/v1``), refusing anything but plain HTTP on this Mac."""
+    root = url.rstrip("/").removesuffix("/v1")
+    parsed = urlsplit(root)
+    if parsed.scheme != "http" or parsed.hostname not in LOCAL_HOSTS:
+        raise ValueError("A local model server must be on 127.0.0.1 or localhost.")
+    return root
+
+
+def llamacpp_root(settings: Settings) -> str:
+    """llama-server's root. A llama.cpp choice is shown as a local model, so its conversation must
+    never leave the Mac because of a mistyped ``AURA_LLAMACPP_URL``."""
+    return local_root(settings.llamacpp_url)
 
 
 class ModelRouting:

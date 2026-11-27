@@ -72,6 +72,8 @@ public protocol AuraTransport: Sendable {
     /// The mirror feed: every turn's frames from `after` (-1: from now). Ends after a while, or
     /// when the connection drops: call again with the last seq seen.
     func mirror(after: Int) -> AsyncThrowingStream<MirrorFrame, Error>
+    /// The Observer's history: the newest audit entries, and the feed's number to follow from.
+    func activity(limit: Int) async throws -> ActivityPage
     /// The conversation the server kept (after a restart: the history, and any approval still waiting).
     func conversation() async throws -> ConversationInfo
     func retryBuild(_ id: String) async throws -> BuildInfo
@@ -151,6 +153,7 @@ extension AuraTransport {
     public func mirror(after: Int) -> AsyncThrowingStream<MirrorFrame, Error> {
         AsyncThrowingStream { $0.finish() }
     }
+    public func activity(limit: Int) async throws -> ActivityPage { ActivityPage(entries: [], latest: -1) }
     public func conversation() async throws -> ConversationInfo { throw AuraClientError.badResponse }
     public func retryBuild(_ id: String) async throws -> BuildInfo { throw AuraClientError.badResponse }
     public func dismissRecovery(_ id: String) async throws {}
@@ -556,6 +559,13 @@ public final class AuraClient: AuraTransport {
                                               URLQueryItem(name: "wait", value: String(wait))])
         r.timeoutInterval = TimeInterval(wait + 30)  // the server holds the request open while it waits
         return try Self.decoder.decode(MessagesPage.self, from: await send(r))
+    }
+
+    public func activity(limit: Int) async throws -> ActivityPage {
+        var r = request("/v1/activity")
+        r.url = r.url?.appending(queryItems: [URLQueryItem(name: "limit", value: String(limit))])
+        // A plain decoder: snake_case conversion would rename the entries' own keys (exit_code).
+        return try JSONDecoder().decode(ActivityPage.self, from: await send(r))
     }
 
     public func mirror(after: Int) -> AsyncThrowingStream<MirrorFrame, Error> {

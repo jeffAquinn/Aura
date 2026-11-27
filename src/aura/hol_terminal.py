@@ -18,7 +18,7 @@ from pathlib import Path
 
 from aura.audit import AuditLog
 from aura.masking import Masker, PATTERNS_ONLY
-from aura.tools.sandbox import DEFAULT_IMAGE, Sandbox, SandboxUnavailable, find_docker
+from aura.tools.sandbox import DEFAULT_IMAGE, Sandbox, SandboxUnavailable, container_limits, find_docker
 
 PREFIX = "aura-hol-"
 MAX_COMMAND_CHARS = 12_000
@@ -93,7 +93,8 @@ class HolTerminal:
                 threading.Thread(target=self._drain, args=(terminal, stream), daemon=True).start()
             threading.Thread(target=self._idle_watchdog, args=(terminal,), daemon=True).start()
             self._write(terminal, "printf '\\nAura HOL container: /vault is the only writable host mount.\\n'")
-            self.audit.record("hol_terminal_started", container=name, vault=str(self.vault_dir), session=session)
+            self.audit.record("hol_terminal_started", container=name, vault=str(self.vault_dir), session=session,
+                              **container_limits(self.argv(docker, name)))
             return self.status(terminal_id, 0)
 
     def send(self, terminal_id: str, command: str) -> dict:

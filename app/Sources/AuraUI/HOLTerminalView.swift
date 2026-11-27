@@ -137,6 +137,7 @@ public struct HOLTerminalView: View {
                 }
                 Picker("Provider", selection: provider) {
                     Text("Local (Ollama)").tag("ollama")
+                    Text("Local (llama.cpp)").tag("llamacpp")
                     Text("Cloud (Anthropic)").tag("anthropic")
                 }
                 Picker("Model", selection: model) {
@@ -290,14 +291,14 @@ public struct HOLTerminalView: View {
 
     private var models: [String] {
         guard let catalog = store.catalog else { return store.selectedModel.model.isEmpty ? [""] : [store.selectedModel.model] }
-        let known = store.selectedModel.provider == "anthropic" ? catalog.anthropicModels : catalog.ollamaModels
+        let known = catalog.models(for: store.selectedModel.provider)
         return known.contains(store.selectedModel.model) ? known : [store.selectedModel.model] + known
     }
 
     private var provider: Binding<String> {
         Binding(get: { store.selectedModel.provider }, set: { value in
             store.selectedModel.provider = value
-            store.selectedModel.model = (value == "anthropic" ? store.catalog?.anthropicModels : store.catalog?.ollamaModels)?.first ?? ""
+            store.selectedModel.model = store.catalog?.models(for: value).first ?? ""
         })
     }
 

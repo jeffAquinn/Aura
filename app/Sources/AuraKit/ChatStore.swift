@@ -287,21 +287,9 @@ public final class ChatStore {
     public func followMirror() {
         mirrorTask?.cancel()
         mirrorSeq = -1
-        let first = mirrorRetry
-        mirrorTask = Task { [weak self] in
-            var backoff = first
-            while !Task.isCancelled, let transport = self?.transport {
-                do {
-                    for try await frame in transport.mirror(after: self?.mirrorSeq ?? -1) {
-                        self?.applyMirror(frame)
-                        backoff = first
-                    }
-                } catch {}
-                if Task.isCancelled { return }
-                try? await Task.sleep(for: .seconds(backoff))
-                backoff = min(backoff * 2, 5)
-            }
-        }
+        mirrorTask = followFeed(from: { [weak self] in self?.mirrorSeq ?? -1 }, retry: mirrorRetry,
+                                transport: { [weak self] in self?.transport },
+                                apply: { [weak self] in self?.applyMirror($0) })
     }
 
     public func stopMirror() {
@@ -317,6 +305,7 @@ public final class ChatStore {
 
     func applyMirror(_ frame: MirrorFrame) {
         mirrorSeq = frame.seq
+        if frame.kind == "activity" { return }  // Aura's activity log: the Observer window's, not the chat's
         if frame.kind == "reset" {
             deferredFrames.removeAll()
             Task { await reloadConversation() }

@@ -59,6 +59,8 @@ final class FakeTransport: AuraTransport, @unchecked Sendable {
     // The mirror feed (MirrorTests): each connection plays one script, then drops; when the
     // scripts run out, the connection stays open and quiet.
     var mirrorScripts: [[MirrorFrame]] = []
+    var activityPage = ActivityPage(entries: [], latest: -1)
+    func activity(limit: Int) async throws -> ActivityPage { activityPage }
     private(set) var mirrorAfters: [Int] = []
     private(set) var stoppedTurns: [String] = []
 

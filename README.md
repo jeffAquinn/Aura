@@ -94,6 +94,30 @@ chat prompt. Once Ollama reports the download complete, the model appears in the
 all five roles and in the chat box's one-turn model picker. Developer turns remain on their chosen
 Claude Code or Codex harness.
 
+A role can also use a model served by **llama.cpp** (`llama-server`), such as Ternary Bonsai 2.5:
+start it with `scripts/llama-server-bonsai.sh`, then choose **llama.cpp (local)** for a role. Aura
+only connects to `llama-server`; it never starts or stops it. The URL (`AURA_LLAMACPP_URL`,
+default `http://127.0.0.1:8080/v1`) must be on 127.0.0.1 or localhost. If `llama-server` isn't
+running, the automatic picker falls back to another local role, never to a cloud model. Sleep
+Mode, model downloads and the Developer's final handoff use Ollama only.
+
+### The Observer
+
+**Open Observer…** in the menu bar (or the panel's header menu) opens a live, read-only log of
+Aura's own activity:
+
+- turns and approvals
+- tool status lines
+- vault changes
+- containers, with their network mode, memory and CPU limits, duration and exit code
+- web searches the Egress Gatekeeper granted, used or refused
+- connection events and alerts
+
+It opens with the newest 200 entries from the audit log, then follows new ones as they happen.
+Pause holds the view while events keep arriving, and a filter shows chosen types. Turn and
+approval rows appear only live, not in the opening history. Entries are masked when they're
+recorded, and nothing in the Observer goes back to the model. See `docs/observer.md`.
+
 ### Strategic coding in the sandbox
 
 The project copy includes Aura's **Master Programmer Workflow** in `AURA_ENGINEERING.md`, plus a

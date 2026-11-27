@@ -47,6 +47,32 @@ public enum JSONValue: Codable, Sendable, Equatable {
 
     public var string: String? { if case let .string(s) = self { s } else { nil } }
     public var bool: Bool? { if case let .bool(b) = self { b } else { nil } }
+
+    /// The value as one line of display text (whole numbers without ".0").
+    public var text: String {
+        switch self {
+        case let .string(s): s
+        case let .number(n): n == n.rounded() && abs(n) < 1e15 ? String(Int(n)) : String(n)
+        case let .bool(b): b ? "yes" : "no"
+        case let .array(a): a.map(\.text).joined(separator: ", ")
+        case let .object(o): o.sorted { $0.key < $1.key }.map { "\($0.key): \($0.value.text)" }.joined(separator: "; ")
+        case .null: "none"
+        }
+    }
+}
+
+/// A tool's status line as people read it: "[Tool: File_System_Tool] Reading 'a.csv'..." ->
+/// "Reading 'a.csv'…" (the chat and the Observer show it the same way).
+public enum StatusLine {
+    public static func readable(_ status: String) -> String {
+        var s = status
+        if s.hasPrefix("[Tool:"), let end = s.firstIndex(of: "]") {
+            s = String(s[s.index(after: end)...]).trimmingCharacters(in: .whitespaces)
+        }
+        if s.hasPrefix("· ") { s = String(s.dropFirst(2)) }  // a Developer's live progress line
+        if s.hasSuffix("...") { s = String(s.dropLast(3)) + "…" }
+        return s
+    }
 }
 
 /// The Specification Approval card's subject: who would build what, from which specification.
@@ -317,7 +343,7 @@ public struct AppSettings: Codable, Sendable, Equatable {
 
 /// A model is selected by job role, not globally. Provider credentials stay on the server.
 public struct ModelChoice: Codable, Sendable, Equatable {
-    public var provider: String  // "ollama" | "anthropic"
+    public var provider: String  // "ollama" | "llamacpp" | "anthropic"
     public var model: String
 
     public init(provider: String, model: String) {
@@ -336,6 +362,17 @@ public struct ModelCatalog: Codable, Sendable, Equatable {
     public let codingEngine: String
     public let sleepMode: SleepMode
     public let startupModelProblem: String?
+    /// Models the user's own llama-server is serving now; absent from servers that predate it.
+    public var llamacppModels: [String]? = nil
+
+    /// The suggestions for one provider's picker.
+    public func models(for provider: String) -> [String] {
+        switch provider {
+        case "anthropic": anthropicModels
+        case "llamacpp": llamacppModels ?? []
+        default: ollamaModels
+        }
+    }
 }
 
 /// User-controlled local Ollama residency. It never applies to cloud models.
@@ -466,6 +503,51 @@ public struct MirrorFrame: Sendable, Equatable {
     public let event: AuraEvent?
     /// The `approval` frame: the id binding the card, so an answer here can't approve another.
     public let approvalID: String?
+    /// The `activity` frame: one entry of Aura's audit log (the Observer).
+    public var activity: ActivityEntry? = nil
+}
+
+/// One entry of Aura's audit log (masked by the server as it was written): its time, its event
+/// name, its kind (named by the server), and every other field as display text, in a stable order.
+public struct ActivityEntry: Decodable, Sendable, Equatable {
+    public let ts: String
+    public let event: String
+    public let category: String  // "alerts", "containers", "egress", "vault", "connections", "actions", "other"
+    public let fields: [Field]
+
+    public struct Field: Sendable, Equatable {
+        public let key: String
+        public let value: String
+    }
+
+    public init(ts: String, event: String, category: String = "other", fields: [Field]) {
+        self.ts = ts
+        self.event = event
+        self.category = category
+        self.fields = fields
+    }
+
+    public func field(_ key: String) -> String? { fields.first { $0.key == key }?.value }
+
+    public init(from decoder: any Decoder) throws {
+        let all = try decoder.singleValueContainer().decode([String: JSONValue].self)
+        ts = all["ts"]?.text ?? ""
+        event = all["event"]?.text ?? "?"
+        category = all["category"]?.text ?? "other"
+        fields = all.filter { !["ts", "event", "category"].contains($0.key) }.sorted { $0.key < $1.key }
+            .map { Field(key: $0.key, value: $0.value.text) }
+    }
+}
+
+/// GET /v1/activity: the newest audit entries, oldest first, and the feed's number to follow from.
+public struct ActivityPage: Decodable, Sendable, Equatable {
+    public let entries: [ActivityEntry]
+    public let latest: Int
+
+    public init(entries: [ActivityEntry], latest: Int) {
+        self.entries = entries
+        self.latest = latest
+    }
 }
 
 /// Parses the mirror feed: the same event lines as a turn's stream, each with `seq`, `turn_id`
@@ -490,11 +572,13 @@ public struct MirrorParser: LineParser {
             let text: String?
             let place: String?
             let approval_id: String?
+            let entry: ActivityEntry?  // an `activity` frame's audit entry
         }
         guard let envelope = try? JSONDecoder().decode(Envelope.self, from: data), let seq = envelope.seq else { return nil }
-        let isTurn = kind == "turn"
+        let isTurn = kind == "turn", isActivity = kind == "activity"
         return MirrorFrame(kind: kind, seq: seq, turnID: envelope.turn_id, origin: envelope.origin,
                            said: isTurn ? envelope.text : nil, place: isTurn ? envelope.place : nil,
-                           event: isTurn ? nil : SSEParser.decode(kind, data), approvalID: envelope.approval_id)
+                           event: isTurn || isActivity ? nil : SSEParser.decode(kind, data), approvalID: envelope.approval_id,
+                           activity: isActivity ? envelope.entry : nil)
     }
 }

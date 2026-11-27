@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import threading
 import unicodedata
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from aura.capabilities import CAPABILITIES
@@ -103,9 +104,12 @@ class Grant:
 class EgressGate:
     """Single-use grants for approved egress, one per approved tool call."""
 
-    def __init__(self) -> None:
+    def __init__(self, record: Callable[..., None] = lambda *a, **k: None) -> None:
         self._grants: dict[str, Grant] = {}
         self._lock = threading.Lock()
+        # The audit log (the Observer shows these): a grant and its use carry the query the card
+        # showed. A refusal is recorded by the web_search tool, with its reason only.
+        self._record = record
 
     def grant(self, approval_id: str, tool_call_id: str, query: str) -> Grant:
         """Called only by `Aura.resume`, for a web_search the user has just approved."""
@@ -116,6 +120,7 @@ class EgressGate:
         made = Grant(approval_id, tool_call_id, query)
         with self._lock:
             self._grants[tool_call_id] = made
+        self._record("egress_granted", tool="web_search", query=query, approval=approval_id)
         return made
 
     def grant_for(self, tool: str, args: dict, approval_id: str | None, tool_call_id: str | None) -> None:
@@ -139,6 +144,7 @@ class EgressGate:
             raise PermissionDenied("No approval for this search: the user hasn't approved it on a card.")
         if held.query != query:
             raise PermissionDenied("This query isn't the one the user approved.")
+        self._record("egress_used", tool="web_search", query=held.query, approval=held.approval_id)
         return held
 
     def pending(self) -> int:

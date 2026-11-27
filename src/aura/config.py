@@ -17,6 +17,9 @@ class Settings:
     base_url: str = "http://localhost:11434/v1"
     api_key: str = "ollama"  # Ollama ignores the key, but the client requires one.
     model: str = "gemma4:26b"
+    # llama.cpp's llama-server, which the user starts themselves (scripts/llama-server-bonsai.sh).
+    # Aura only connects to it, and only on this Mac: the URL must be a 127.0.0.1/localhost one.
+    llamacpp_url: str = "http://127.0.0.1:8080/v1"
     # "none" | "low" | "medium" | "high"; None omits the parameter for servers that reject it.
     reasoning_effort: str | None = "none"
     # The context window the *server* actually allocates (see `ollama ps`). Ollama silently
@@ -58,6 +61,7 @@ class Settings:
             base_url=env("AURA_BASE_URL", d.base_url),
             api_key=env("AURA_API_KEY", d.api_key),
             model=env("AURA_MODEL", d.model),
+            llamacpp_url=env("AURA_LLAMACPP_URL", d.llamacpp_url),
             reasoning_effort=env("AURA_REASONING_EFFORT", d.reasoning_effort) or None,
             context_tokens=int(env("AURA_CONTEXT_TOKENS", d.context_tokens)),
             model_keep_alive=env("AURA_MODEL_KEEP_ALIVE", d.model_keep_alive),

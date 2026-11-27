@@ -24,7 +24,7 @@ from typing import Any
 from aura.brain import ApprovalNeeded, Changed, Event, Status, Text
 from aura.masking import PATTERNS_ONLY, Masker
 
-KEEP = 2000  # frames: a long reply streams many text chunks
+KEEP = 4000  # frames: a long reply streams many text chunks, and Aura's activity shares the buffer
 
 
 def frame(ev: Event) -> tuple[str, dict[str, Any]]:
@@ -97,9 +97,18 @@ class TurnBroadcast:
 
     def publish(self, turn: Any, kind: str, data: dict[str, Any] | None = None) -> None:
         """One frame of `turn` (a lifecycle Turn). `data` must already be masked."""
+        self._append(turn.id, turn.origin, kind, data or {})
+
+    def publish_activity(self, entry: dict[str, Any]) -> None:
+        """One audit-log entry, already masked, as an `activity` frame (the Observer, docs/observer.md).
+        It belongs to no turn; the chat ignores it."""
+        from aura.audit import described
+
+        self._append(None, "aura", "activity", {"entry": described(entry)})
+
+    def _append(self, turn_id: str | None, origin: str, kind: str, data: dict[str, Any]) -> None:
         with self._changed:
-            self._frames.append({"seq": self._next, "turn_id": turn.id, "origin": turn.origin, "event": kind,
-                                 "data": data or {}})  # fmt: skip
+            self._frames.append({"seq": self._next, "turn_id": turn_id, "origin": origin, "event": kind, "data": data})
             self._next += 1
             self._changed.notify_all()
 

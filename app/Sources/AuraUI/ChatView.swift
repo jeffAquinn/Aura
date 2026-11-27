@@ -13,6 +13,7 @@ public struct ChatView: View {
     let onOpenWorkstation: () -> Void
     let onOpenVault: () -> Void
     let onOpenAuditLog: () -> Void
+    let onOpenObserver: () -> Void
     @AppStorage(ChatAppearance.sizeKey) private var fontSize = ChatAppearance.defaultSize
     @AppStorage(ChatAppearance.styleKey) private var fontStyle = ChatFontStyle.system.rawValue
     @AppStorage(ChatAppearance.userBubbleKey) private var userBubble = ""
@@ -32,7 +33,8 @@ public struct ChatView: View {
 
     public init(store: ChatStore, avatar: Image?, backdrop: Image? = nil, onRestart: @escaping () -> Void,
                 onOpenHOLTerminal: @escaping () -> Void = {}, onOpenWorkstation: @escaping () -> Void = {},
-                onOpenVault: @escaping () -> Void = {}, onOpenAuditLog: @escaping () -> Void = {}) {
+                onOpenVault: @escaping () -> Void = {}, onOpenAuditLog: @escaping () -> Void = {},
+                onOpenObserver: @escaping () -> Void = {}) {
         self.store = store
         self.avatar = avatar
         self.backdrop = backdrop
@@ -41,12 +43,14 @@ public struct ChatView: View {
         self.onOpenWorkstation = onOpenWorkstation
         self.onOpenVault = onOpenVault
         self.onOpenAuditLog = onOpenAuditLog
+        self.onOpenObserver = onOpenObserver
     }
 
     public var body: some View {
         VStack(spacing: 0) {
             HeaderView(store: store, avatar: avatar, onRestart: onRestart, onOpenHOLTerminal: onOpenHOLTerminal,
-                       onOpenWorkstation: onOpenWorkstation, onOpenVault: onOpenVault, onOpenAuditLog: onOpenAuditLog)
+                       onOpenWorkstation: onOpenWorkstation, onOpenVault: onOpenVault, onOpenAuditLog: onOpenAuditLog,
+                       onOpenObserver: onOpenObserver)
             if case let .offline(message) = store.connection {
                 OfflineBanner(message: message, onRestart: onRestart)
             }
@@ -115,6 +119,7 @@ struct HeaderView: View {
     let onOpenWorkstation: () -> Void
     let onOpenVault: () -> Void
     let onOpenAuditLog: () -> Void
+    let onOpenObserver: () -> Void
     @State private var showSettings = false
     @State private var confirmRestart = false
     @StateObject private var usage = AuraRuntimeUsage()
@@ -126,7 +131,8 @@ struct HeaderView: View {
 
     init(store: ChatStore, avatar: Image?, onRestart: @escaping () -> Void = {},
          onOpenHOLTerminal: @escaping () -> Void = {}, onOpenWorkstation: @escaping () -> Void = {},
-         onOpenVault: @escaping () -> Void = {}, onOpenAuditLog: @escaping () -> Void = {}) {
+         onOpenVault: @escaping () -> Void = {}, onOpenAuditLog: @escaping () -> Void = {},
+         onOpenObserver: @escaping () -> Void = {}) {
         self.store = store
         self.avatar = avatar
         self.onRestart = onRestart
@@ -134,6 +140,7 @@ struct HeaderView: View {
         self.onOpenWorkstation = onOpenWorkstation
         self.onOpenVault = onOpenVault
         self.onOpenAuditLog = onOpenAuditLog
+        self.onOpenObserver = onOpenObserver
     }
 
     var body: some View {
@@ -179,6 +186,7 @@ struct HeaderView: View {
                 Button("Open Workstation…", action: onOpenWorkstation)
                 Divider()
                 Button("Open Vault in Finder", action: onOpenVault)
+                Button("Open Observer…", action: onOpenObserver)
                 Button("Open Audit Log", action: onOpenAuditLog)
                 Divider()
                 Button("Restart Aura Server") { confirmRestart = true }
@@ -755,15 +763,7 @@ struct ToolStatusView: View {
     }
 
     /// "[Tool: File_System_Tool] Reading 'a.csv'..." -> "Reading 'a.csv'…" (the icon names the tool).
-    static func readable(_ status: String) -> String {
-        var s = status
-        if s.hasPrefix("[Tool:"), let end = s.firstIndex(of: "]") {
-            s = String(s[s.index(after: end)...]).trimmingCharacters(in: .whitespaces)
-        }
-        if s.hasPrefix("· ") { s = String(s.dropFirst(2)) }  // a Developer's live progress line
-        if s.hasSuffix("...") { s = String(s.dropLast(3)) + "…" }
-        return s
-    }
+    static func readable(_ status: String) -> String { StatusLine.readable(status) }
 }
 
 /// Safety first: Deny is the default button (Return); allowing takes a deliberate click.
@@ -1036,6 +1036,8 @@ private struct AuraUsageView: View {
 struct ChatModelPicker: View {
     let store: ChatStore
     static let automatic = ""
+    static let sections = [(provider: "ollama", title: "Local Ollama"), (provider: "llamacpp", title: "Local llama.cpp"),
+                           (provider: "anthropic", title: "Anthropic cloud")]
 
     private var catalog: ModelCatalog? { store.modelCatalog }
     private var selection: Binding<String> {
@@ -1057,17 +1059,13 @@ struct ChatModelPicker: View {
             Picker("Aura model", selection: selection) {
                 Text("Automatic (Chat setting)").tag(Self.automatic)
                 if let catalog {
-                    if !catalog.ollamaModels.isEmpty {
-                        Section("Local Ollama") {
-                            ForEach(catalog.ollamaModels, id: \.self) { model in
-                                Text(model).tag("ollama|\(model)")
-                            }
-                        }
-                    }
-                    if !catalog.anthropicModels.isEmpty {
-                        Section("Anthropic cloud") {
-                            ForEach(catalog.anthropicModels, id: \.self) { model in
-                                Text(model).tag("anthropic|\(model)")
+                    ForEach(Self.sections, id: \.provider) { section in
+                        let models = catalog.models(for: section.provider)
+                        if !models.isEmpty {
+                            Section(section.title) {
+                                ForEach(models, id: \.self) { model in
+                                    Text(model).tag("\(section.provider)|\(model)")
+                                }
                             }
                         }
                     }

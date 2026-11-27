@@ -38,7 +38,7 @@ from langgraph.graph.message import REMOVE_ALL_MESSAGES
 from langgraph.types import Command, Interrupt
 
 from aura.config import Settings
-from aura.model_routing import ModelChoice
+from aura.model_routing import LOCAL_PROVIDERS, ModelChoice, llamacpp_root
 from aura.middleware import (
     REJECTION_NOTE,
     CapabilitySelection,
@@ -333,9 +333,10 @@ def build_model(settings: Settings, choice: ModelChoice | None = None, api_key: 
         if not api_key:
             raise ValueError("Add an Anthropic API key in Settings → Keys before selecting a Claude cloud model.")
         return ChatAnthropic(model=choice.model, api_key=api_key, max_tokens=settings.max_reply_tokens)
+    llama = choice.provider == "llamacpp"
     return ChatOpenAI(
-        base_url=settings.base_url,
-        api_key=settings.api_key,
+        base_url=f"{llamacpp_root(settings)}/v1" if llama else settings.base_url,
+        api_key="llama.cpp" if llama else settings.api_key,  # llama-server ignores the key
         model=choice.model,
         reasoning_effort=settings.reasoning_effort,
         max_tokens=settings.max_reply_tokens,  # a looping model stops instead of running forever
@@ -865,7 +866,7 @@ class Aura:
         """`cancel`: the turn's token. Checked at every chunk (a model writing a long tool call
         streams no text), so a stop ends the run at the next chunk; the step's open tool calls are
         settled before the next message (_settle), and no approval is raised by a stopped run."""
-        performance = _LocalPerformanceRecorder() if self.active_model.provider == "ollama" else None
+        performance = _LocalPerformanceRecorder() if self.active_model.provider in LOCAL_PROVIDERS else None
         callbacks: list[BaseCallbackHandler] = []
         if cancel is not None:
             callbacks.append(_StopOnCancel(cancel))

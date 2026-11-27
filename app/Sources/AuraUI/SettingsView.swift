@@ -440,7 +440,15 @@ private struct ModelRoleRow: View {
     let isStartup: Bool
 
     private var suggestions: [String] {
-        choice.provider == "anthropic" ? catalog.anthropicModels : catalog.ollamaModels
+        catalog.models(for: choice.provider)
+    }
+
+    private var menuTitle: String {
+        switch choice.provider {
+        case "anthropic": "Available cloud models"
+        case "llamacpp": "Served by llama-server"
+        default: "Installed local models"
+        }
     }
 
     var body: some View {
@@ -456,19 +464,23 @@ private struct ModelRoleRow: View {
             HStack {
                 Picker("Provider", selection: $choice.provider) {
                     Text("Ollama (local)").tag("ollama")
+                    Text("llama.cpp (local)").tag("llamacpp")
                     Text("Anthropic (cloud)").tag("anthropic")
                 }
                 .labelsHidden()
                 .onChange(of: choice.provider) { provider in
-                    let available = provider == "anthropic" ? catalog.anthropicModels : catalog.ollamaModels
-                    choice.model = available.first ?? ""
+                    choice.model = catalog.models(for: provider).first ?? ""
                 }
                 TextField("Model", text: $choice.model)
                     .textFieldStyle(.roundedBorder)
                     .frame(minWidth: 180)
             }
+            if choice.provider == "llamacpp" && suggestions.isEmpty {
+                Text("llama-server isn’t running. Start it with scripts/llama-server-bonsai.sh, then reopen Settings.")
+                    .font(.caption).foregroundStyle(.orange)
+            }
             if !suggestions.isEmpty {
-                Menu(choice.provider == "ollama" ? "Installed local models" : "Available cloud models") {
+                Menu(menuTitle) {
                     ForEach(suggestions, id: \.self) { model in
                         Button(model) { choice.model = model }
                     }

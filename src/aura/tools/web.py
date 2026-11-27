@@ -98,7 +98,7 @@ class WebSearch:
         self._tavily = tavily or (tavily_backend(tavily_api_key) if tavily_api_key else None)
         self._duckduckgo = duckduckgo
         self.audit = audit
-        self.gate = gate or EgressGate()
+        self.gate = gate or EgressGate(record=audit.record)
 
     def set_key(self, tavily_api_key: str | None) -> None:
         """A Tavily key saved (or removed) in Settings → Keys takes effect at once."""

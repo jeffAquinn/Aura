@@ -160,3 +160,12 @@ extension MirrorTests {
         #expect(s.items.last?.text == "Phone reply." && s.phase == .idle)
     }
 }
+
+extension MirrorTests {
+    @Test func aurasActivityNeverReachesTheChat() {
+        let s = store()
+        s.applyMirror(MirrorFrame(kind: "activity", seq: 5, turnID: nil, origin: "aura", said: nil, place: nil,
+                                  event: nil, approvalID: nil))
+        #expect(s.items.isEmpty && s.phase == .idle && s.mirrorSeq == 5)
+    }
+}

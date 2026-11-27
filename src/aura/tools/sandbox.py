@@ -172,10 +172,14 @@ class Sandbox:
         if image is None:
             self.ensure_image(docker, on_status)
         name = f"aura-run-{uuid.uuid4().hex[:12]}"
+        command = self.command(docker, name, image, mounts, vault)
+        self.audit.record("container_started", container=name, kind="sandbox", image=image or self.image,
+                          vault="read-only" if vault else "none", **container_limits(command))  # fmt: skip
         start = time.monotonic()
+        result: RunResult | None = None
         try:
             proc = subprocess.run(
-                self.command(docker, name, image, mounts, vault),
+                command,
                 input=code, capture_output=True, text=True, errors="replace",
                 timeout=self.timeout,
             )
@@ -193,6 +197,13 @@ class Sandbox:
                 subprocess.run([docker, "rm", "-f", name], capture_output=True, timeout=30)
             except (OSError, subprocess.SubprocessError) as e:
                 self.audit.record("sandbox_cleanup_failed", container=name, error=str(e))
+            # Every run ends in the log, even one interrupted or crashed (result is None then).
+            # With Docker down, `docker run` exits 125 and no container ever ran: say so.
+            self.audit.record("container_finished", container=name, kind="sandbox",
+                              exit_code=result.exit_code if result else None,
+                              timed_out=bool(result and result.timed_out), interrupted=result is None,
+                              never_started=bool(result and result.exit_code == 125 and _daemon_down(result.stderr)),
+                              seconds=round(result.seconds if result else time.monotonic() - start, 2))  # fmt: skip
         if result.exit_code == 125 and _daemon_down(result.stderr):
             self._image_ready = False
             raise SandboxUnavailable("Docker isn't running. Start Docker Desktop and try again.")
@@ -201,6 +212,13 @@ class Sandbox:
             seconds=round(result.seconds, 2), code=code[:2000],
         )
         return result
+
+
+def container_limits(argv: list[str]) -> dict[str, str]:
+    """What a `docker run` allows, read from the command itself (so the Observer's record can't
+    disagree with what ran): network, memory, CPUs, processes."""
+    flags = {"--network": "network", "--memory": "memory", "--cpus": "cpus", "--pids-limit": "processes"}
+    return {key: argv[argv.index(flag) + 1] for flag, key in flags.items() if flag in argv[:-1]}
 
 
 def describe_run(code: str, timeout: float, preview_lines: int = 8) -> str:

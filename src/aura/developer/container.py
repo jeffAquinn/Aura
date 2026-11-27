@@ -23,7 +23,7 @@ from pathlib import Path
 from aura.audit import AuditLog
 from aura.developer.engines import CLAUDE_VERSION, CODEX_VERSION, Engine, EngineEvent
 from aura.secrets import Secrets
-from aura.tools.sandbox import DEFAULT_IMAGE, Sandbox, SandboxUnavailable, _daemon_down, find_docker
+from aura.tools.sandbox import DEFAULT_IMAGE, Sandbox, SandboxUnavailable, _daemon_down, container_limits, find_docker
 
 IMAGE = f"aura-dev:codex-{CODEX_VERSION}-claude-{CLAUDE_VERSION}"
 DOCKERFILE = f"""\
@@ -127,16 +127,33 @@ class DevContainer:
             return outcome
         name = f"aura-dev-{uuid.uuid4().hex[:8]}"
         engine.prepare(run_dir)
+        limits = container_limits(self.argv(docker, name, engine, workspace, run_dir, [], workspace_read_only))
+        started: float | None = None  # set once the container is really about to run
+        ended = False  # the run returned an outcome (or a known failure), rather than raising
         try:
             self._start_proxy(docker, engine.hosts)
+            self.audit.record("container_started", container=name, kind="developer", engine=engine.name,
+                              allowed_hosts=list(engine.hosts),
+                              workspace="read-only" if workspace_read_only else "read-write", **limits)  # fmt: skip
+            started = time.monotonic()
             outcome = self._run_engine(docker, name, engine, workspace, run_dir, prompt, budget_usd,
                                        timeout, on_event, stop, workspace_read_only)  # fmt: skip
+            ended = True
         except (SandboxUnavailable, OSError, subprocess.SubprocessError) as e:
             outcome.error = str(e)
+            ended = True
         finally:
-            subprocess.run([docker, "rm", "-f", name], capture_output=True)
-            outcome.egress = self._stop_proxy(docker)
-            engine.finish(run_dir)
+            try:
+                subprocess.run([docker, "rm", "-f", name], capture_output=True)
+                outcome.egress = self._stop_proxy(docker)
+                engine.finish(run_dir)
+            finally:
+                # Every container that started ends in the log, even when an error escapes.
+                if started is not None:
+                    self.audit.record("container_finished", container=name, kind="developer",
+                                      exit_code=outcome.exit_code, timed_out=outcome.timed_out,
+                                      stopped=outcome.stopped, interrupted=not ended,
+                                      seconds=round(time.monotonic() - started, 2))  # fmt: skip
         denied = [line for line in outcome.egress if line.startswith("DENY")]
         self.audit.record("developer_run", engine=engine.name, exit_code=outcome.exit_code,
                           cost_usd=round(outcome.cost_usd, 4), timed_out=outcome.timed_out,
