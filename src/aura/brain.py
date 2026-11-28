@@ -8,6 +8,7 @@ which streams `Event`s and pauses with an `ApprovalNeeded` event before any chan
 from __future__ import annotations
 
 import hashlib
+import logging
 import json
 import re
 import threading
@@ -59,7 +60,15 @@ from aura.tools.plans import PlanSteps
 from aura.tools.plans import preview as plan_preview
 from aura.tools.plans import steps_in_use
 from aura.developer.workflow import describe_build, describe_task
-from aura.connections.actions import OUTWARD, describe_outward, inbox_exchange, turn_is_tainted
+from aura.connections.actions import (
+    OUTWARD,
+    PRIVATE_READS,
+    R2_TOOLS,
+    describe_outward,
+    describe_r2,
+    inbox_exchange,
+    turn_is_tainted,
+)
 from aura.capabilities import (
     FINDER,
     RENDERED,
@@ -196,6 +205,9 @@ class Status:
     """A tool is running, e.g. "[Tool: File_System_Tool] Reading 'budget.csv'..."."""
 
     text: str
+
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -441,6 +453,8 @@ class Aura:
                                        private=turn_is_tainted(state["messages"]))  # fmt: skip
             if tool_call["name"] in OUTWARD:
                 return describe_outward(tool_call["name"], args)
+            if tool_call["name"] in R2_TOOLS:
+                return describe_r2(tool_call["name"], args, self._conversation_taint() or "private data")
             if tool_call["name"] == "make_plan":
                 active = self.toolbox.plans.active() if self.toolbox.plans else []
                 return plan_card(args.get("goal"), args.get("steps"), self.toolbox.registered,
@@ -465,8 +479,16 @@ class Aura:
                                  when=lambda request: plan_is_valid(request.tool_call["args"].get("goal"),
                                                                     request.tool_call["args"].get("steps"),
                                                                     self.toolbox.registered))  # fmt: skip
+        # R2 across a plan (docs/orchestration.md T8): once the running plan has read private data, a
+        # call that sends data off this Mac without a card of its own (a connection read, check_library,
+        # propose_skill) gets one, in any of the plan's turns. Sticky: a call given this card keeps it
+        # (recorded by call ID), so the condition can't turn False on resume and skip a Deny.
+        r2 = InterruptOnConfig(allowed_decisions=["approve", "reject"], description=describe,
+                               when=lambda request: self._r2_card(request.tool_call["id"],
+                                                                  (request.state or {}).get("messages", [])))
         interrupt_on = {**{name: editable if name in EDITABLE else approval for name in NEEDS_APPROVAL},
-                        **dict.fromkeys(GATED, egress), "make_plan": plan}  # fmt: skip
+                        **dict.fromkeys(GATED, egress), "make_plan": plan,
+                        **dict.fromkeys(R2_TOOLS, r2)}  # fmt: skip
         self._interrupt_on = interrupt_on  # which tools wait for a card (tests check it against the Registry)
         # Conversation memory (and paused approvals): checkpointed per thread_id in SQLite, so it
         # survives agent rebuilds (deploying a skill) and restarts of the server.
@@ -514,7 +536,9 @@ class Aura:
                     self._selection,
                     RecursionMiddleware(),
                     HumanInTheLoopMiddleware(interrupt_on=interrupt_on),
-                    PlanStepMiddleware(self._plan_steps.started),  # innermost: only calls that run
+                    # Innermost: only calls that run. A private read taints the running plan (R2, T8).
+                    PlanStepMiddleware(self._plan_steps.started, frozenset(PRIVATE_READS),
+                                       self._private_read),
                 ],
                 checkpointer=self._checkpointer,
             )
@@ -523,6 +547,7 @@ class Aura:
         # The server and the terminal publish the Registry to the vault; tests and embeddings don't.
         self.publish_capabilities = publish_capabilities
         self._plan_steps = PlanSteps(self.toolbox.plans)  # cards and tool calls -> the running plan's steps
+        self._resuming_calls: frozenset[str] = frozenset()  # the answered card's calls (R2, T8)
         # Shared by every rebuild of the agent. A running plan's tools are shown on top of each turn's.
         self._selection = CapabilitySelection(lambda: steps_in_use(self.toolbox.plans) & self.toolbox.registered)
         self._finder = finder_tool(self._families, self._load)
@@ -719,6 +744,18 @@ class Aura:
             ids.append(match["id"] if match else None)
         return ids
 
+    def _card_calls(self, actions: list[dict[str, Any]]) -> list[str]:
+        """The tool_call_id of every action on the card (only those: other calls in the same message
+        were never carded), matched in order by tool and exact arguments to the calls still waiting."""
+        waiting = self._dangling(self._agent.get_state(self._config))
+        ids: list[str] = []
+        for action in actions:
+            match = next((tc for tc in waiting if tc["name"] == action["name"] and tc["args"] == action["args"]), None)
+            if match is not None:
+                waiting.remove(match)
+                ids.append(match["id"])
+        return ids
+
     @staticmethod
     def _dangling(state: Any) -> list[dict[str, Any]]:
         msgs = state.values.get("messages", [])
@@ -749,6 +786,81 @@ class Aura:
         if self.approval_id:
             self.toolbox.state.settle_approval(self.approval_id, "stale", note)
         self._pending, self.approval_id = None, None
+        return True
+
+    # R2 across a plan (docs/orchestration.md T8). The taint belongs to the conversation, not to a plan
+    # record: the private data stays in the conversation when a plan ends, fails or is replaced.
+    R2_TAINT, R2_CARD = "r2_taint", "r2_card"  # state.sqlite record kinds: per conversation, per call
+
+    def _conversation_taint(self) -> str | None:
+        """The private read that tainted this conversation (R2 applies from then on), or None."""
+        found = self.toolbox.state.record(self.R2_TAINT, self.thread_id)
+        return str(found[1].get("by", "private data")) if found and found[0] == "tainted" else None
+
+    def _conversation_read(self) -> str | None:
+        """The first private read this conversation made, plan or not (it stays in context, even when
+        a summary replaces its message), or None. Taint only once a plan runs."""
+        found = self.toolbox.state.record(self.R2_TAINT, self.thread_id)
+        return str(found[1].get("by", "private data")) if found else None
+
+    def _taint_conversation(self, by: str) -> None:
+        """Durably mark this conversation as holding private data (until a new conversation)."""
+        if self._conversation_taint() is None:
+            by = self._conversation_read() or by  # the first private read is the reason
+            self.toolbox.state.put_record(self.R2_TAINT, self.thread_id, "tainted", {"by": by})
+            self.toolbox.audit.record("conversation_tainted", by=by, thread=self.thread_id[:8])
+            self.toolbox.state.prune_records(self.R2_TAINT, keep_states=[], keep=100)
+
+    def _note_read(self, by: str) -> None:
+        """Remember a private read with no plan running: it asks nothing now, but a plan started later
+        in this conversation counts it (the read's message may be summarised away by then)."""
+        if self._conversation_read() is None:
+            self.toolbox.state.put_record(self.R2_TAINT, self.thread_id, "read", {"by": by})
+            self.toolbox.state.prune_records(self.R2_TAINT, keep_states=[], keep=100)
+
+    def _private_read(self, name: str) -> bool:
+        """A private read is about to run (or live messages are about to join the turn). During a
+        plan it first taints the conversation, and False if that can't be recorded: the read is then
+        refused (fail closed). With no plan it is only noted, best effort: nothing asks more."""
+        try:
+            running = self._plan_steps.running()
+            if running:
+                self._taint_conversation(name)
+            else:
+                self._note_read(name)
+        except Exception:  # noqa: BLE001
+            log.warning("couldn't record the private read %s", name, exc_info=True)
+            return not running
+        if running:
+            self._plan_steps.note_private_read(name)  # the plan's copy says so (display only)
+        return True
+
+    def _r2_card(self, tool_call_id: str, messages: Sequence[Any] = ()) -> bool:
+        """Does this call (an R2 tool: it leaves the Mac with no card of its own) need a card? Yes if
+        this conversation is tainted, or if a plan is running and the conversation already holds a
+        private read's result (one made earlier, or live messages). A private read in the same model
+        message doesn't count: every call in a message is written before any result exists, so none
+        can carry it; the read taints the conversation as it runs (PlanStepMiddleware), and the next
+        message's calls ask. Sticky and durable: once yes, always yes for this call. Fails closed."""
+        try:
+            if tool_call_id in self._resuming_calls or self.toolbox.state.record(self.R2_CARD, tool_call_id):
+                return True
+            by = self._conversation_taint()
+            if by is None and self._plan_steps.running():
+                # A private read this conversation made (recorded, or still in its messages), or one the
+                # running plan made in another conversation (the Slack Aura shares the plan).
+                read = (self._conversation_read() or self._plan_steps.tainted_by()
+                        or next((m.name for m in messages if isinstance(m, ToolMessage) and m.name in PRIVATE_READS
+                                 and m.status != "error"), None))  # a refused read read nothing
+                if read is not None:
+                    self._taint_conversation(read)
+                    by = read
+            if by is None:
+                return False
+            self.toolbox.state.put_record(self.R2_CARD, tool_call_id, "carded", {})
+            self.toolbox.state.prune_records(self.R2_CARD, keep_states=[], keep=500)
+        except Exception:  # noqa: BLE001 — fail closed: if in doubt, the call asks
+            log.warning("R2 check failed for %s: asking", tool_call_id, exc_info=True)
         return True
 
     def _permissions(self) -> str:
@@ -893,7 +1005,10 @@ class Aura:
         # Other people's live messages (R2 private reads) join Mac turns only: a Slack turn's reply
         # is posted without a card, possibly in a channel thread, so it must not carry them there.
         fresh = self.toolbox.live.inbox.unseen_by_model() if self.primary and self.origin == "mac" else []
-        if fresh:  # live messages since the last turn: a private read (R2), framed as untrusted (R5)
+        # Live messages since the last turn: a private read (R2), framed as untrusted (R5). Recorded
+        # first; during a plan, if that fails they don't join this turn (fail closed): the app still
+        # lists them, but the model doesn't read them.
+        if fresh and self._private_read("new_messages"):
             messages += inbox_exchange(fresh)
         return self._run({"messages": messages}, cancel=cancel)
 
@@ -924,6 +1039,9 @@ class Aura:
                          "Ask again if it's still wanted.")  # fmt: skip
             raise StaleApproval("Your permissions changed since Aura asked, so that request was cancelled. Ask again.")
         calls = self._interrupted_calls(actions)  # before the claim: a failure here leaves the card answerable
+        # The calls on this card stay carded while it resumes (R2's `when` runs again: it must not
+        # turn False and skip a Deny, even if a durable record was lost).
+        self._resuming_calls = frozenset(self._card_calls(actions))
         answering = self.approval_id
         origin, reply_to = self.pending_origin()  # the continuation belongs to the card's turn
         if answering and not self.toolbox.state.claim_approval(answering):  # exactly one answer runs

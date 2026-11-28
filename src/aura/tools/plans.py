@@ -59,7 +59,9 @@ def card(goal: Any, steps: Any, available: Iterable[str], running: Plan | None) 
         waits = f" (after {', '.join(s.after)})" if s.after else ""
         lines.append(f"{s.id}. {s.does} [{s.tool}]{waits}. Done when: {s.done_when}")
     lines += ["", ("Approving starts the plan. It doesn't approve its actions: every step that writes, runs "
-                   "code, searches the web, hands work to the Developer or sends still asks you first.")]
+                   "code, searches the web, hands work to the Developer or sends a message still asks you "
+                   "first, and once this conversation holds your private data, anything else that leaves "
+                   "this Mac asks too.")]
     if running is not None:
         lines.append(f"It replaces the plan still running, \"{running.goal}\" ({running.id}).")
     return "\n".join(lines)
@@ -193,9 +195,17 @@ def plan_tools(store: PlanStore, available: Callable[[], set[str]]) -> list[Base
             return f"{INVALID}: " + "; ".join(e.reasons) + (f". Correct it and try again ({left} more try this turn)."
                                                             if left else ". Tell the user what you were trying to do.")
         previous = running()
+        try:
+            created = store.create(plan)  # first: a failure leaves the running plan as it was
+        except Exception as e:  # a storage error is reported, never crashes the turn
+            log.warning("couldn't start the plan", exc_info=True)
+            return f"Not started: Aura couldn't save the plan ({type(e).__name__}). Tell the user."
         if previous is not None:  # the card said this plan replaces it, and the user approved
-            store.change(previous.id, lambda p: p.stop())
-        return f"{STARTED}\n" + progress(store.create(plan))
+            try:
+                store.change(previous.id, lambda p: p.stop())
+            except Exception:
+                log.warning("couldn't stop the replaced plan %s", previous.id, exc_info=True)
+        return f"{STARTED}\n" + progress(created)
 
     @tool
     def plan_status() -> str:
@@ -231,6 +241,9 @@ def plan_tools(store: PlanStore, available: Callable[[], set[str]]) -> list[Base
             return progress(store.change(plan.id, apply))
         except PlanError as e:
             return "Not recorded: " + "; ".join(e.reasons) + "\n" + progress(store.get(plan.id))
+        except Exception as e:  # a storage error is reported, never crashes the turn
+            log.warning("couldn't save step %s of plan %s", step, plan.id, exc_info=True)
+            return f"Not recorded: Aura couldn't save the plan ({type(e).__name__}). Tell the user."
 
     return [make_plan, plan_status, finish_step]
 
@@ -256,10 +269,14 @@ class PlanSteps:
     def __init__(self, store: PlanStore | None):
         self.store = store
 
-    def _running(self) -> Plan | None:
+    def _running(self, strict: bool = False) -> Plan | None:
+        """The running plan. `strict`: an error is raised (security checks fail closed); otherwise it
+        is logged and means no plan (bookkeeping only)."""
         try:
             active = self.store.active() if self.store is not None else []
-        except Exception:  # as above: no plan known means no bookkeeping
+        except Exception:
+            if strict:
+                raise
             log.warning("couldn't read the running plan", exc_info=True)
             return None
         return active[-1] if active else None
@@ -283,6 +300,35 @@ class PlanSteps:
             self.store.change(plan.id, lambda p: change(p, p.steps[step.id]))
         except Exception:  # bookkeeping never breaks a tool call or a card
             log.warning("plan %s: couldn't record %s for step %s", plan.id, tool_name, step.id, exc_info=True)
+
+    def running(self) -> bool:
+        """Is a plan running? Fails closed for R2: if the plans can't be read, the answer is yes."""
+        try:
+            return self._running(strict=True) is not None
+        except Exception:
+            log.warning("couldn't read the running plan: treating one as running", exc_info=True)
+            return True
+
+    def tainted_by(self) -> str | None:
+        """The private read the running plan made, in any conversation, or None. Fails closed."""
+        try:
+            plan = self._running(strict=True)
+        except Exception:
+            log.warning("couldn't read the running plan: treating it as tainted", exc_info=True)
+            return "an unreadable plan"
+        return (plan.tainted_by or None) if plan is not None else None
+
+    def note_private_read(self, tool_name: str) -> None:
+        """Shown in the plan's copy: which private read the plan made first. Display only; R2's own
+        record is the conversation's (brain.Aura._taint_conversation)."""
+        def change(p: Plan) -> None:
+            p.tainted_by = p.tainted_by or tool_name
+        try:
+            plan = self._running(strict=True)
+            if plan is not None and not plan.tainted_by:
+                self.store.change(plan.id, change)
+        except Exception:
+            log.warning("couldn't note the private read %s on the running plan", tool_name, exc_info=True)
 
     def started(self, tool_name: str) -> None:
         """The tool is about to run: its step is running."""

@@ -224,12 +224,22 @@ class PlanStepMiddleware(AgentMiddleware):
     """A running plan's step is marked running when its tool runs (docs/orchestration.md T6). The
     innermost hook, so it sees only calls that really run: approved, shown this turn, not refused."""
 
-    def __init__(self, started: Callable[[str], None]) -> None:
+    def __init__(self, started: Callable[[str], None], private_reads: frozenset[str] = frozenset(),
+                 read_private: Callable[[str], bool] = lambda name: True) -> None:  # fmt: skip
         super().__init__()
         self.started = started
+        self.private_reads = private_reads
+        self.read_private = read_private
 
     def wrap_tool_call(self, request: ToolCallRequest, handler: Callable) -> Any:
-        self.started(request.tool_call["name"])
+        name = request.tool_call["name"]
+        # R2 across a plan (T8): during a plan, a private read first taints the conversation. If that
+        # can't be recorded, the read doesn't run: Aura must never hold private data it doesn't know of.
+        if name in self.private_reads and not self.read_private(name):
+            return ToolMessage(f"Error: {name} didn't run: Aura couldn't record that this conversation reads "
+                               "private data, so it won't read any.", tool_call_id=request.tool_call["id"],
+                               name=name, status="error")  # fmt: skip
+        self.started(name)
         return handler(request)
 
 

@@ -96,6 +96,7 @@ class Plan:
     version: int = 0  # the stored version this copy was read at (PlanStore's compare-and-set)
     stopped: bool = False  # the user pressed Stop: nothing more runs, not even a retry
     created: str = ""  # when PlanStore stored it (UTC, ISO 8601)
+    tainted_by: str = ""  # R2 (T8): the first private read this plan made; from then on, sends ask
 
     # -- reading ------------------------------------------------------------------------------
 
@@ -223,14 +224,16 @@ class Plan:
 
     def to_dict(self) -> dict[str, Any]:
         return {"id": self.id, "goal": self.goal, "steps": [asdict(s) for s in self.steps.values()],
-                "rulings": [asdict(r) for r in self.rulings], "version": self.version, "stopped": self.stopped, "created": self.created}
+                "rulings": [asdict(r) for r in self.rulings], "version": self.version, "stopped": self.stopped, "created": self.created,
+                "tainted_by": self.tainted_by}
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Plan:
         steps = {s["id"]: Step(**{**s, "after": tuple(s.get("after", ())), "claims": tuple(s.get("claims", ()))})
                  for s in data["steps"]}
         return cls(id=data["id"], goal=data["goal"], steps=steps, rulings=[Ruling(**r) for r in data.get("rulings", [])],
-                   version=int(data.get("version", 0)), stopped=bool(data.get("stopped", False)), created=str(data.get("created", "")))
+                   version=int(data.get("version", 0)), stopped=bool(data.get("stopped", False)), created=str(data.get("created", "")),
+                   tainted_by=str(data.get("tainted_by", "")))
 
 
 KIND = "plan"  # state.sqlite's record kind
@@ -340,6 +343,9 @@ def render(plan: Plan, mask: Callable[[str], str] = lambda text: text) -> str:
         result = f"{s.outcome.replace('_', ' ')}: {s.summary}" if s.outcome else ""
         lines.append(f"| {s.id} | {cell(s.does)} | {s.status} | {s.tool} | {', '.join(s.after)} | "
                      f"{cell(s.done_when)} | {cell(result)} |")
+    if plan.tainted_by:
+        lines += ["", (f"This plan read your private data ({plan.tainted_by}): from then on, anything it sends "
+                       "off this Mac asks you first (R2).")]
     if plan.rulings:
         lines += ["", "## Rulings", "", *(f"- {cell(r.line())}" for r in plan.rulings)]
     return "\n".join(lines) + "\n"

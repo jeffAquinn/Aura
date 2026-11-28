@@ -28,6 +28,10 @@ from aura.connections import Connections, ConnectionsError
 
 MAX_CHARS = 6000  # what one read returns: the model's window is 16k tokens
 PRIVATE_READS = ("gmail_read", "calendar_read", "drive_read", "slack_read", "discord_read", "new_messages")
+# R2 across a plan (docs/orchestration.md T8): the calls that send data off this Mac with no card of
+# their own. Once a running plan has read private data, each of these asks too. (Web searches, sends,
+# writes and Developer jobs always ask already.) Derived from the Registry, so a new row is covered.
+R2_TOOLS = tuple(c.name for c in CAPABILITIES if c.egress != "none" and c.floor == "none")
 # R1 floors of the connections: sending, posting, drafting, adding events (from the Capability Registry).
 OUTWARD = tuple(c.name for c in CAPABILITIES if c.owner == "connection" and c.floor == "ask")
 
@@ -500,6 +504,20 @@ def describe_outward(name: str, args: dict[str, Any]) -> str:
             lines.append(f"    Where: {a['location']}")
         return "\n".join(lines + (_block(a["description"]) if a.get("description") else []))
     return name
+
+
+def describe_r2(name: str, args: dict[str, Any], tainted_by: str) -> str:
+    """The card for a call that asks only because the running plan read private data (R2, T8)."""
+    import json
+
+    row = next(c for c in CAPABILITIES if c.name == name)
+    where = "the internet" if row.egress == "internet" else f"your {row.family} account"
+    # Every argument in full, hidden or non-ASCII characters written as \u codes: what the card shows
+    # is exactly what leaves (the Egress Gatekeeper's rule for queries).
+    sent = json.dumps(args, ensure_ascii=True, sort_keys=True)
+    return (f"{name}: sends exactly this to {where}: {sent}\n"
+            f"Asking because this conversation read your private data ({tainted_by}) while a plan ran: "
+            "from then on, anything that leaves this Mac waits for you (R2). Check it contains nothing private.")
 
 
 def turn_is_tainted(messages: list[Any]) -> bool:

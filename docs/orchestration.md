@@ -343,7 +343,7 @@ security or architecture.
   testing: the live event stream decodes without snake_case conversion and the restored card with it,
   so a step accepts both `done_when` and `doneWhen`; a test covers each path.
 
-### T6 — The step line on approval cards
+### T6 — The step line on approval cards (done, 15fe7bc; approved by Aura)
 - Scope: `middleware.py` (the approval payload), `ChatView.swift`.
 - Blocked by: T4 (knowing the running step).
 - Acceptance: a card raised during a plan reads "Step 3 of 5 of the plan *…*: <does>"; Deny marks
@@ -376,6 +376,40 @@ security or architecture.
   ask). Verified by the scripted R2 test: a fake email read in one turn, a web search in the next
   still stops.
 - Non-goal: changing R2 within a single turn.
+- **Built (2026-11-27), awaiting Aura's review.** What it covers: the calls that leave this Mac with no
+  card of their own (`R2_TOOLS`, derived from the Registry: `check_library`, `propose_skill` and the
+  connection reads). Web searches, sends, writes and Developer jobs always ask already.
+  - **The taint belongs to the conversation, not to a plan.** The private data stays in the
+    conversation when a plan ends, fails or is replaced, so the taint does too, until a new
+    conversation. (Both reviews found the first version, which kept it on the plan record, could be
+    cleared: Aura could end its own plan with `finish_step(…, "failed")` and then send.)
+  - **When a call asks:** if the conversation is tainted; or if a plan is running and the
+    conversation has made a private read: before the plan or during it, or live Slack and Discord
+    messages added to a turn. Every private read is recorded on the conversation, plan or not (a
+    summary can replace its message but not its content); with no plan running that record asks
+    nothing. The first card it causes taints the conversation. A running plan that read private data
+    in another conversation (the Slack Aura's) also makes calls ask.
+  - **When the conversation is tainted:** during a plan, a private read taints it as the read runs.
+    If that can't be recorded, the read is refused.
+  - **A call in the same model message as the first private read doesn't ask:** every call in one
+    message is written before any result exists, so it can't carry that result; the next message's
+    calls ask. (Security review's reasoning; tested.)
+  - **Sticky:** LangChain runs a card's condition again on resume and runs the tool if it turns False,
+    even after a Deny. A call given an R2 card keeps it: one durable record per call, and the calls on
+    the card being answered always count as carded. Every check fails closed: if in doubt, it asks.
+  - **The card** shows every argument in full, with hidden or non-ASCII characters written as `\u`
+    codes, and says why it asks. The plan card's wording now says the same.
+- **Found while building, already there before T8:** within one turn and outside a plan, R2 doesn't
+  apply to these calls at all. Sprint 7 says "R2 still applies to remote connection calls", but only the
+  web search card's note uses the turn's taint. Out of T8's scope; for Aura to decide (with Sprint 7's
+  open question D4: does taint last for the turn or the whole conversation?).
+- **Reviews:** a code review and two security reviews. The first version kept the taint on the plan
+  record; both reviews showed it could be cleared (Aura ending its own plan; a replacement plan; live
+  messages and reads before the plan never counted). The re-review found a regression in the first
+  fix: on resume, every waiting call counted as carded, so a card whose message also held an R2 call
+  crashed LangChain's resume, plan or not; now only the card's own calls count (tested both ways). It
+  also found that a summary could erase a read's message before the conversation was tainted; every
+  private read is now recorded. A refused read (an error result) counts as no read.
 
 ### T9 — Live checks (needs the user's go-ahead)
 - Scope: a scratch evaluation like the routing ones, in `AURA_DATA_DIR`/`AURA_VAULT_DIR` scratch folders.

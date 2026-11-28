@@ -178,7 +178,13 @@ def test_the_cards_aura_raises_are_the_registrys_floors(settings):
 
     aura, _ = make_aura(settings)
     expected = {c.name for c in CAPABILITIES if c.floor != "none"}
-    assert set(aura._interrupt_on) == expected == NEEDS_APPROVAL_TODAY | set(GATED_TODAY) | {"tidy_vault", "make_plan"}
+    assert expected == NEEDS_APPROVAL_TODAY | set(GATED_TODAY) | {"tidy_vault", "make_plan"}
+    # 2026-11-27, R2 across a plan (docs/orchestration.md T8): the calls that leave the Mac with no card
+    # of their own get one only while a running plan has read private data (a `when`, never always).
+    from aura.connections.actions import R2_TOOLS
+
+    assert set(aura._interrupt_on) == expected | set(R2_TOOLS) and not set(R2_TOOLS) & expected
+    assert all("when" in aura._interrupt_on[name] for name in R2_TOOLS)
     assert "when" in aura._interrupt_on["make_plan"]  # the plan card: only for a plan that passed its checks
     assert aura._interrupt_on["develop_skill"]["allowed_decisions"] == ["approve", "edit", "reject"]
     assert aura._interrupt_on["web_search"]["allowed_decisions"] == ["approve", "reject"]
