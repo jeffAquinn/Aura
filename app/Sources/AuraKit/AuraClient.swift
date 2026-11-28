@@ -87,6 +87,8 @@ public protocol AuraTransport: Sendable {
     func chats() async throws -> SavedChats
     /// The running plan, if any (docs/orchestration.md T5).
     func activePlan() async throws -> ActivePlan?
+    /// Stop the running plan: the steps not finished are skipped (T7). Returns the plan stopped, if any.
+    func stopPlan() async throws -> String?
     /// Make a saved chat the current conversation again.
     func openChat(_ id: String) async throws -> ConversationInfo
     func retryBuild(_ id: String) async throws -> BuildInfo
@@ -171,6 +173,7 @@ extension AuraTransport {
     public func conversation() async throws -> ConversationInfo { throw AuraClientError.badResponse }
     public func chats() async throws -> SavedChats { throw AuraClientError.badResponse }
     public func activePlan() async throws -> ActivePlan? { nil }
+    public func stopPlan() async throws -> String? { nil }
     public func localModels() async throws -> LocalModels { throw AuraClientError.badResponse }
     public func modelSettings(_ choice: ModelChoice) async throws -> ModelSettingsInfo { throw AuraClientError.badResponse }
     public func updateModelSettings(_ choice: ModelChoice, _ values: [String: JSONValue]) async throws -> ModelSettingsInfo {
@@ -285,6 +288,11 @@ public final class AuraClient: AuraTransport {
 
     public func activePlan() async throws -> ActivePlan? {
         try Self.decoder.decode(ActivePlanReply.self, from: await send(request("/v1/plans/active"))).plan
+    }
+
+    public func stopPlan() async throws -> String? {
+        struct Reply: Decodable { let stopped: String? }
+        return try Self.decoder.decode(Reply.self, from: await send(request("/v1/plans/stop", body: [String: String]()))).stopped
     }
 
     public func localModels() async throws -> LocalModels {

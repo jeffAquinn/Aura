@@ -1,4 +1,4 @@
-"""The plan tools (docs/orchestration.md, ticket T4): make_plan, plan_status, finish_step.
+"""The plan tools (docs/orchestration.md, tickets T4 and T7): make_plan, plan_status, finish_step, review_step.
 
 Aura writes a plan's steps; `aura.plans` checks them. A valid plan waits for the user's plan card
 (make_plan's approval, default Deny); an invalid one comes straight back with every reason, and no
@@ -26,6 +26,7 @@ from aura.plans import (
     OPEN,
     REVIEW,
     RUNNING,
+    THINK,
     WAITING,
     Plan,
     PlanError,
@@ -37,23 +38,26 @@ from aura.plans import (
 
 log = logging.getLogger(__name__)
 
-PLAN_TOOL_NAMES = frozenset({"make_plan", "plan_status", "finish_step"})
+REVIEW_TOOL = "review_step"  # a review step's card: Continue or Stop (T7)
+STEPLESS = frozenset({"make_plan", "plan_status", "finish_step"})  # calls that never move a step themselves
 INVALID = "Plan not valid"
 STARTED = "Approved by the user and started."
+CONTINUED = "The user pressed Continue on the review card."
 MAX_INVALID = 2  # invalid plans per turn; the third attempt is refused
 
 
 def checked(goal: Any, steps: Any, available: Iterable[str]) -> Plan:
-    """The plan, checked (PlanError with every reason). Review steps arrive with ticket T7."""
-    plan = make(goal, steps, available)
-    if any(s.tool == REVIEW for s in plan.steps.values()):
-        raise PlanError(["review steps aren't available yet: use think, and ask the user in your reply"])
-    return plan
+    """The plan, checked (PlanError with every reason)."""
+    return make(goal, steps, available)
 
 
 def card(goal: Any, steps: Any, available: Iterable[str], running: Plan | None) -> str:
-    """The plan card's text (shown only for a plan that passed its checks)."""
-    plan = checked(goal, steps, available)
+    """The plan card's text (shown only for a plan that passed its checks; on resume it is built again,
+    and a plan that no longer passes says so rather than raising)."""
+    try:
+        plan = checked(goal, steps, available)
+    except PlanError as e:
+        return "This plan no longer passes its checks: " + "; ".join(e.reasons)
     lines = [f"Start this plan? {plan.goal}", ""]
     for s in plan.steps.values():
         waits = f" (after {', '.join(s.after)})" if s.after else ""
@@ -153,9 +157,18 @@ def progress(plan: Plan) -> str:
     else:
         waiting = [s for s in plan.steps.values() if s.status == "waiting"]
         ready = plan.ready()
+        for s in (s for s in plan.steps.values() if s.status == RUNNING and s.uses_tool):
+            # e.g. after a Developer step, whose result ended the turn before finish_step (T7)
+            lines.append(f"In progress: {s.id}. Once {s.tool} has returned its result, in this turn or an earlier "
+                         f"one, call finish_step(step=\"{s.id}\") before going on.")
         if waiting:
             lines.append(f"Waiting for the user on {', '.join(s.id for s in waiting)}: ask them, then finish it.")
-        if ready:
+        if ready and ready[0].tool == REVIEW:
+            nxt = ready[0]
+            lines.append(f"Next: {nxt.id}, {nxt.does}: a review. Call {REVIEW_TOOL}(step=\"{nxt.id}\", note=what the "
+                         "user should look at). Its card shows the results so far, and the user presses Continue "
+                         "or Stop. Don't call finish_step for it.")
+        elif ready:
             nxt = ready[0]
             how = "work it out yourself" if nxt.tool == "think" else f"call {nxt.tool}"
             lines.append(f"Next: {nxt.id}, {nxt.does} ({how}; done when: {nxt.done_when}), then "
@@ -227,6 +240,8 @@ def plan_tools(store: PlanStore, available: Callable[[], set[str]]) -> list[Base
 
         def apply(p: Plan) -> None:
             s = p.step(step)
+            if s.tool == REVIEW:  # only the user ends a review: Continue passes it, Stop ends the plan
+                raise PlanError([f"step {step} is a review: only the user ends it, with Continue on its card (call {REVIEW_TOOL})"])
             if s.status == "failed":  # a retry: allowed once, with a ruling
                 if not ruling.strip():
                     raise PlanError([f"step {step} failed; to retry it, pass ruling: \"what changed — why — cost\""])
@@ -245,7 +260,78 @@ def plan_tools(store: PlanStore, available: Callable[[], set[str]]) -> list[Base
             log.warning("couldn't save step %s of plan %s", step, plan.id, exc_info=True)
             return f"Not recorded: Aura couldn't save the plan ({type(e).__name__}). Tell the user."
 
-    return [make_plan, plan_status, finish_step]
+    @tool
+    def review_step(step: str, note: str) -> str:
+        """Pause the running plan at a review step: the user sees the results so far and your note (what to
+        look at, in one or two lines), then presses Continue or Stop. Only for a step whose tool is "review"."""
+        plan = running()
+        if plan is None:
+            return "No plan is running: the user may have stopped it. Don't continue it."
+        s = _review_step(plan, step)
+        if s is None:
+            return f"Not a review step: {step!r}.\n" + progress(plan)
+        if s.status == DONE and s.summary == CONTINUED:  # recorded only by the card's answer (PlanSteps.answered)
+            return f"{CONTINUED} Go on with the plan.\n" + progress(plan)
+        return f"Not reviewed: step {step} is {s.status}; only Continue on its card ends a review.\n" + progress(plan)
+
+    return [make_plan, plan_status, finish_step, review_step]
+
+
+def review_ready(store: PlanStore | None, step: Any) -> bool:
+    """Does a review_step call get its card? Only for a review step of the running plan that can be
+    reviewed now (ready, or already waiting on its card). Any other call runs at once and is refused."""
+    try:
+        if store is None or not (active := store.active()):
+            return False
+    except Exception:  # if in doubt, the card shows: only its answer can pass a review
+        log.warning("couldn't read the running plan for a review card", exc_info=True)
+        return True
+    plan = active[-1]
+    s = _review_step(plan, step)
+    return s is not None and (s.status in (RUNNING, WAITING) or s in plan.ready())
+
+
+def _review_step(plan: Plan, step: Any) -> Step | None:
+    """The plan's step named `step`, if it is a review step."""
+    s = plan.steps.get(str(step))
+    return s if s is not None and s.tool == REVIEW else None
+
+
+def review_card(store: PlanStore | None, step: Any, note: Any) -> str:
+    """The review card's text: every result recorded so far (never the model's claims about steps it
+    didn't finish), Aura's note, and what Continue and Stop do. Which step and plan it is shows above
+    the card (the step line, as on every card raised during a plan)."""
+    try:
+        active = store.active() if store is not None else []
+    except Exception:  # the card still shows (fail closed): only its answer can pass the review
+        log.warning("couldn't read the running plan for a review card", exc_info=True)
+        return "Review the plan so far: Aura couldn't read its results. Stop ends the plan."
+    if not active:
+        return "Review: no plan is running."
+    plan = active[-1]
+    note = str(note or "").strip()
+    finished = [x for x in plan.steps.values() if x.outcome and x.id != str(step)]
+    lines = ["Results so far:",
+             *([f"{x.id}. {x.does}: {x.outcome.replace('_', ' ')}: {x.summary}" for x in finished] or ["(none yet)"])]
+    if note:
+        lines += ["", f"Aura's note: {note}"]
+    lines += ["", ("Continue: Aura goes on with the next steps, and each one still asks you as usual. "
+                   "Stop: the plan ends, and the steps left are skipped.")]
+    return "\n".join(lines)
+
+
+def stop_running(store: PlanStore | None) -> Plan | None:
+    """The user's Stop: the running plan ends and every unfinished step is skipped. None if none runs."""
+    def once() -> Plan | None:
+        active = store.active() if store is not None else []
+        return store.change(active[-1].id, lambda p: p.stop()) if active else None
+
+    for _ in range(2):  # a turn may save the plan at the same moment: read it again and retry
+        try:
+            return once()
+        except PlanError:
+            pass
+    return once()
 
 
 def step_for(plan: Plan, tool_name: str) -> Step | None:
@@ -281,20 +367,27 @@ class PlanSteps:
             return None
         return active[-1] if active else None
 
-    def line(self, tool_name: str) -> dict[str, Any] | None:
+    def line(self, tool_name: str, args: dict[str, Any] | None = None) -> dict[str, Any] | None:
         """What a card raised for `tool_name` says about the plan, or None outside a plan."""
-        if tool_name in PLAN_TOOL_NAMES or (plan := self._running()) is None:
+        if tool_name in STEPLESS or (plan := self._running()) is None:
             return None
-        if (step := step_for(plan, tool_name)) is None:
+        if (step := self._step(plan, tool_name, args)) is None:
             return None
         ids = list(plan.steps)
         return {"plan": plan.id, "goal": plan.goal, "step": step.id, "index": ids.index(step.id) + 1,
                 "total": len(ids), "does": step.does}
 
-    def _apply(self, tool_name: str, change: Callable[[Plan, Step], Any]) -> None:
-        if tool_name in PLAN_TOOL_NAMES or (plan := self._running()) is None:
+    @staticmethod
+    def _step(plan: Plan, tool_name: str, args: dict[str, Any] | None) -> Step | None:
+        """The step a call serves. A review_step call names its step; any other call is matched by tool."""
+        if tool_name == REVIEW_TOOL:
+            return _review_step(plan, (args or {}).get("step", ""))
+        return step_for(plan, tool_name)
+
+    def _apply(self, tool_name: str, change: Callable[[Plan, Step], Any], args: dict[str, Any] | None = None) -> None:
+        if tool_name in STEPLESS or (plan := self._running()) is None:
             return
-        if (step := step_for(plan, tool_name)) is None:
+        if (step := self._step(plan, tool_name, args)) is None:
             return
         try:
             self.store.change(plan.id, lambda p: change(p, p.steps[step.id]))
@@ -331,28 +424,39 @@ class PlanSteps:
             log.warning("couldn't note the private read %s on the running plan", tool_name, exc_info=True)
 
     def started(self, tool_name: str) -> None:
-        """The tool is about to run: its step is running."""
+        """The tool is about to run: its step is running. A review step never starts this way: only
+        its card's answer moves it."""
+        if tool_name == REVIEW_TOOL:
+            return
         self._apply(tool_name, lambda p, s: p.start(s.id) if s.status == "pending" else None)
 
-    def carded(self, tool_name: str) -> None:
+    def carded(self, tool_name: str, args: dict[str, Any] | None = None) -> None:
         """A card waits for the user: its step is waiting."""
         def change(p: Plan, s: Step) -> None:
             if s.status == "pending":
                 p.start(s.id)
             if s.status == RUNNING:
                 p.wait(s.id)
-        self._apply(tool_name, change)
+        self._apply(tool_name, change, args)
 
-    def answered(self, tool_name: str, allowed: bool) -> None:
-        """The user answered the card: Allow, the step runs; Deny, the step fails."""
+    def answered(self, tool_name: str, allowed: bool, args: dict[str, Any] | None = None) -> None:
+        """The user answered the card: Allow, the step runs; Deny, the step fails. On a review card,
+        Continue (Allow) ends the review step done, and Stop (Deny) stops the whole plan."""
+        review = tool_name == REVIEW_TOOL
+
         def change(p: Plan, s: Step) -> None:
+            if review and not allowed:  # Stop wins, whatever else the card held or answered first
+                p.stop()
+                return
             if s.status != WAITING:
                 return
-            if allowed:
+            if review:
+                p.finish(s.id, "done", CONTINUED)
+            elif allowed:
                 p.resume(s.id)
             else:
                 p.finish(s.id, "failed", f"You denied {tool_name} on its card.")
-        self._apply(tool_name, change)
+        self._apply(tool_name, change, args)
 
 
 def steps_in_use(store: PlanStore | None) -> set[str]:
@@ -362,4 +466,4 @@ def steps_in_use(store: PlanStore | None) -> set[str]:
     plan = active[-1]
     can_run = {s.tool for s in plan.steps.values()
                if s.status in OPEN or (s.status == FAILED and s.attempts < MAX_ATTEMPTS)}
-    return {"plan_status", "finish_step"} | (can_run - {"think", "review"})
+    return {"plan_status", "finish_step"} | {REVIEW_TOOL if t == REVIEW else t for t in can_run} - {THINK}

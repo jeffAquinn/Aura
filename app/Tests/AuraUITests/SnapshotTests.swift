@@ -64,7 +64,7 @@ struct SnapshotTests {
             } else {
                 TranscriptContent(store: store, avatar: Self.avatar, lazy: false)
             }
-            if let plan = store.activePlan { PlanProgressLine(plan: plan) }
+            if let plan = store.activePlan { PlanProgressLine(plan: plan, store: store) }
             InputBar(store: store)
         }
         .frame(width: 420)
@@ -248,6 +248,34 @@ struct SnapshotTests {
         let stepCard = try render("41-plan-step-card", ChatStore(items: [ask, item(.approval, actions: [write])], phase: .awaitingApproval))
         #expect(stepCard.height > 400)
         #expect(running.activePlan?.current?.id == "s2")
+    }
+
+    @Test func reviewCardPendingAndAnswered() throws {
+        let ask = item(.user, "Make a plan for a research note on tides.")
+        let text = """
+            Results so far:
+            s1. Find what the vault already has: done: two notes, tides.md and moon.md
+            s2. Search for recent results: done: three sources from 2025 and 2026
+
+            Aura's note: Is a three-part outline (causes, cycles, local tables) right?
+
+            Continue: Aura goes on with the next steps, and each one still asks you as usual. Stop: the plan ends, and the steps left are skipped.
+            """
+        let review = PendingAction(tool: "review_step", description: text,
+                                   step: .init(plan: "p-9", goal: "Write a research note on tides", step: "s3", index: 3, total: 4,
+                                               does: "Check the outline with you"))
+        let store = ChatStore(items: [ask, item(.approval, actions: [review])], phase: .awaitingApproval)
+        store.activePlan = ActivePlan(id: "p-9", goal: "Write a research note on tides", done: 2, total: 4, steps: [
+            .init(id: "s1", does: "Find what the vault already has", status: "done"),
+            .init(id: "s2", does: "Search for recent results", status: "done"),
+            .init(id: "s3", does: "Check the outline with you", status: "waiting"),
+            .init(id: "s4", does: "Save it to Knowledge/", status: "pending"),
+        ])
+        #expect(try render("42-review-card", store).height > 450)
+        let idle = ChatStore(items: [ask, item(.approval, actions: [review], decisions: [true])])
+        idle.activePlan = store.activePlan
+        try render("43-review-continued", idle, dark: true)  // the progress line offers Continue and Stop
+        #expect(ReviewCard.outcome([true]) == "Continued" && ReviewCard.outcome([false]) == "Plan stopped")
     }
 
     @Test func claudeCodeFromTheChatBox() throws {

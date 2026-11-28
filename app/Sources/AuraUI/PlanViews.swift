@@ -113,10 +113,57 @@ enum PlanTool {
     static func label(_ tool: String) -> String { tool == "think" ? "Aura thinks" : tool }
 }
 
+/// A review step's card (T7): the results so far and Aura's note, with Continue or Stop. Stop is the
+/// default, as Deny is on every card: it ends the plan and skips the steps left.
+struct ReviewCard: View {
+    static let tool = "review_step"
+    let item: ChatStore.Item
+    let store: ChatStore
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("\(store.persona.name) asks you to review the plan so far:", systemImage: "checklist")
+                .font(.subheadline.weight(.semibold))
+            Text(item.actions.first?.description ?? "")
+                .font(.callout)
+                .textSelection(.enabled)
+                .fixedSize(horizontal: false, vertical: true)
+            if let decisions = item.decisions {
+                Label(Self.outcome(decisions, elsewhere: item.answeredElsewhere),
+                      systemImage: decisions.isEmpty ? "clock" : decisions.contains(true) ? "checkmark.circle" : "stop.circle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } else {
+                HStack(spacing: 8) {
+                    Spacer()
+                    Button("Continue") { store.decide([true]) }
+                    Button("Stop Plan") { store.decide([false]) }
+                        .keyboardShortcut(.defaultAction)
+                }
+                .controlSize(.regular)
+            }
+        }
+        .padding(12)
+        .background(.orange.opacity(0.10), in: .rect(cornerRadius: 12))
+        .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.orange.opacity(0.4), lineWidth: 0.75))
+        .padding(.leading, 32)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Review card")
+    }
+
+    static func outcome(_ decisions: [Bool], elsewhere: String? = nil) -> String {
+        if decisions == [true] { return "Continued" }
+        if decisions == [false] { return "Plan stopped" }
+        return ApprovalCard.outcome(decisions, elsewhere: elsewhere)
+    }
+}
+
 /// The running plan, as one line above the chat box: its goal, how many steps are done, and the
-/// step being worked on. Each step's status is in the tooltip.
+/// step being worked on. Each step's status is in the tooltip. Continue (when Aura is idle and no
+/// card waits) resumes the plan in a new turn; Stop ends it and skips what's left.
 struct PlanProgressLine: View {
     let plan: ActivePlan
+    let store: ChatStore
 
     var body: some View {
         HStack(spacing: 8) {
@@ -130,7 +177,16 @@ struct PlanProgressLine: View {
                     .layoutPriority(-1)
             }
             Text("\(plan.done) of \(plan.total) done").monospacedDigit().foregroundStyle(.secondary)
+            if store.canSend {
+                Button("Continue") { store.continuePlan() }
+                    .help("Ask Aura to go on with the plan")
+            }
+            if store.phase != .awaitingApproval {  // a card waits: its own Deny or Stop Plan answers it
+                Button("Stop") { Task { await store.stopPlan() } }
+                    .help("Stop the plan: the steps not finished are skipped")
+            }
         }
+        .buttonStyle(.borderless)
         .font(.caption)
         .padding(.horizontal, 14)
         .padding(.vertical, 6)

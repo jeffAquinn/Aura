@@ -58,6 +58,7 @@ from aura.tools.plans import card as plan_card
 from aura.tools.plans import is_valid as plan_is_valid
 from aura.tools.plans import PlanSteps
 from aura.tools.plans import preview as plan_preview
+from aura.tools.plans import review_card, review_ready, stop_running
 from aura.tools.plans import steps_in_use
 from aura.developer.workflow import describe_build, describe_task
 from aura.connections.actions import (
@@ -455,6 +456,8 @@ class Aura:
                 return describe_outward(tool_call["name"], args)
             if tool_call["name"] in R2_TOOLS:
                 return describe_r2(tool_call["name"], args, self._conversation_taint() or "private data")
+            if tool_call["name"] == "review_step":
+                return review_card(self.toolbox.plans, args.get("step"), args.get("note"))
             if tool_call["name"] == "make_plan":
                 active = self.toolbox.plans.active() if self.toolbox.plans else []
                 return plan_card(args.get("goal"), args.get("steps"), self.toolbox.registered,
@@ -462,13 +465,20 @@ class Aura:
             return vault.describe_change(tool_call["name"], args)
 
         approval = InterruptOnConfig(allowed_decisions=["approve", "reject"], description=describe)
+
+        def sticky(condition: Callable[[Any], bool]) -> Callable[[Any], bool]:
+            """A card's `when`, kept True for the calls on the card being answered. LangChain runs `when`
+            again on resume and, if it turns False, runs the tool even after a Deny; an answer can itself
+            change what a condition reads (a review's Stop stops the plan), so every condition is wrapped."""
+            return lambda request: request.tool_call["id"] in self._resuming_calls or condition(request)
+
         # The Specification Approval card: the user may also edit the specification before approving.
         editable = InterruptOnConfig(allowed_decisions=["approve", "edit", "reject"], description=describe)
         # The Egress Gatekeeper (supersedes R2's taint condition): every web search waits for its
         # own card, in every turn. A query the card can't show exactly (hidden characters) gets no
         # card: the tool refuses it and nothing is sent (tools/egress.py).
         egress = InterruptOnConfig(allowed_decisions=["approve", "reject"], description=describe,
-                                   when=lambda request: visible(request.tool_call["args"].get(GATED[request.tool_call["name"]])))  # fmt: skip
+                                   when=sticky(lambda request: visible(request.tool_call["args"].get(GATED[request.tool_call["name"]]))))  # fmt: skip
         # Every gated tool's card, from the Capability Registry (src/aura/capabilities.py).
         # The plan card: only for a plan that passed its checks. An invalid plan gets no card; make_plan
         # then only returns the reasons (it changes nothing), so the model can correct it. LangChain runs
@@ -476,18 +486,23 @@ class Aura:
         # only on the call's arguments and the registered tools, and make_plan runs the same check: a
         # plan that has become invalid is refused by the tool, so a Deny can never start a plan.
         plan = InterruptOnConfig(allowed_decisions=["approve", "reject"], description=describe,
-                                 when=lambda request: plan_is_valid(request.tool_call["args"].get("goal"),
-                                                                    request.tool_call["args"].get("steps"),
-                                                                    self.toolbox.registered))  # fmt: skip
+                                 when=sticky(lambda request: plan_is_valid(request.tool_call["args"].get("goal"),
+                                                                           request.tool_call["args"].get("steps"),
+                                                                           self.toolbox.registered)))  # fmt: skip
         # R2 across a plan (docs/orchestration.md T8): once the running plan has read private data, a
         # call that sends data off this Mac without a card of its own (a connection read, check_library,
         # propose_skill) gets one, in any of the plan's turns. Sticky: a call given this card keeps it
         # (recorded by call ID), so the condition can't turn False on resume and skip a Deny.
         r2 = InterruptOnConfig(allowed_decisions=["approve", "reject"], description=describe,
-                               when=lambda request: self._r2_card(request.tool_call["id"],
-                                                                  (request.state or {}).get("messages", [])))
+                               when=sticky(lambda request: self._r2_card(request.tool_call["id"],
+                                                                         (request.state or {}).get("messages", []))))
+        # A review step's card (T7): Continue (approve) or Stop (reject, the default). Only for a review
+        # step the running plan can review now; any other call runs at once and the tool refuses it.
+        review = InterruptOnConfig(allowed_decisions=["approve", "reject"], description=describe,
+                                   when=sticky(lambda request: review_ready(self.toolbox.plans,
+                                                                            request.tool_call["args"].get("step"))))
         interrupt_on = {**{name: editable if name in EDITABLE else approval for name in NEEDS_APPROVAL},
-                        **dict.fromkeys(GATED, egress), "make_plan": plan,
+                        **dict.fromkeys(GATED, egress), "make_plan": plan, "review_step": review,
                         **dict.fromkeys(R2_TOOLS, r2)}  # fmt: skip
         self._interrupt_on = interrupt_on  # which tools wait for a card (tests check it against the Registry)
         # Conversation memory (and paused approvals): checkpointed per thread_id in SQLite, so it
@@ -671,18 +686,35 @@ class Aura:
                                       budget=wanted, window=window)
         return window
 
-    def new_conversation(self) -> None:
+    def new_conversation(self, end_plan: bool = False) -> None:
+        """A fresh conversation. `end_plan` (the app's New Chat): the running plan's context stays in the
+        old conversation, so the plan ends with it (T7). Opening a saved chat leaves it running."""
         old = getattr(self, "thread_id", None)
         if old:  # an approval card of the old conversation can no longer be answered
             if self._pending is not None:  # e.g. a vault review: its working copy is dropped
                 self._settle("The user started a new conversation before answering; nothing was carried out.")
             self.toolbox.state.stale_approvals(old, "the conversation was reset")
             self._checkpointer.delete_thread(old)  # forgotten means forgotten, on disk too
+            if end_plan:
+                try:
+                    self.stop_plan()
+                except Exception:  # a plan that can't be stopped never blocks a new conversation
+                    log.warning("couldn't stop the running plan", exc_info=True)
         self.thread_id = uuid.uuid4().hex
         self._pending = None
         self.approval_id = None
         self.recovery_note = None
         self.toolbox.state.set_meta(f"conversation:{self.role}", self.thread_id)
+
+    def stop_plan(self) -> str | None:
+        """The user's Stop (T7): the running plan ends and its unfinished steps are skipped. A card still
+        waiting for one of its steps is dropped unanswered, so an Allow can't run that step afterwards.
+        Returns the plan stopped, or None. Call between turns (it may settle the waiting card)."""
+        carded = {(a.step or {}).get("plan") for a in self._actions(self._pending)} if self._pending else set()
+        stopped = stop_running(self.toolbox.plans)
+        if stopped is not None and stopped.id in carded:
+            self._settle("The user stopped the plan before answering this card; nothing was carried out.")
+        return stopped.id if stopped is not None else None
 
     def seed(self, messages: list[dict[str, str]]) -> None:
         """Give a fresh conversation an opened chat's messages (yours and Aura's replies), so the
@@ -892,7 +924,7 @@ class Aura:
 
     def _actions(self, interrupt: Interrupt) -> tuple[Action, ...]:
         return tuple(Action(a["name"], a["args"], a.get("description", ""), self._plan_preview(a),
-                            self._plan_steps.line(a["name"]))
+                            self._plan_steps.line(a["name"], a["args"]))
                      for a in interrupt.value["action_requests"])
 
     def _plan_preview(self, request: dict[str, Any]) -> dict[str, Any] | None:
@@ -1058,7 +1090,7 @@ class Aura:
             ok = bool(answer.get("approve")) if isinstance(answer, dict) else bool(answer)
             if ok:  # an approved egress (web search) gets its single-use grant (tools/egress.py)
                 self.toolbox.search.gate.grant_for(action["name"], action["args"], answering, tool_call_id)
-            self._plan_steps.answered(action["name"], ok)  # Deny fails a plan's step (T6)
+            self._plan_steps.answered(action["name"], ok, action["args"])  # Deny fails a plan's step (T6)
             self.toolbox.audit.record(
                 "approval",
                 tool=action["name"],
@@ -1143,7 +1175,7 @@ class Aura:
         if interrupts:
             self._pending = interrupts[0]
             for request in self._pending.value["action_requests"]:
-                self._plan_steps.carded(request["name"])  # the step waits for this card
+                self._plan_steps.carded(request["name"], request["args"])  # the step waits for this card
             actions = self._actions(self._pending)
             self.approval_id = self._register(self._pending, actions)
             yield ApprovalNeeded(actions, self.approval_id)

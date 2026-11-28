@@ -2,6 +2,7 @@
 
 import json
 
+import pytest
 from conftest import call, make_aura, tool_turn
 from langchain_core.messages import AIMessage, ToolMessage
 
@@ -244,16 +245,21 @@ def test_asking_for_an_explanation_step_by_step_doesnt_offer_plans():
 
 def test_a_denied_plan_never_starts_even_if_its_card_condition_changes_before_the_resume(settings):
     # LangChain re-runs `when` on resume and, if it is now False, runs the tool despite the Deny. Here a
-    # step's tool disappears while the card is open (as when an account is disconnected): on resume
-    # the card's condition is False, the tool runs anyway, and make_plan's own check refuses the plan.
+    # step's tool disappears while the card is open (as when an account is disconnected), so the plan's
+    # condition turns False. Every card's condition is sticky for the card being answered (T7), so the
+    # Deny holds: make_plan never runs, and nothing starts.
+    from aura.tools.plans import card as plan_card
+
     aura, _ = make_aura(settings, tool_turn(plan_call()), AIMessage("Understood."))
     card = list(aura.stream("Make a plan for a note on tides."))[-1]
     assert card.actions[0].tool == "make_plan"
     aura.toolbox.tools = [tool for tool in aura.toolbox.tools if tool.name != "write_file"]
     list(aura.resume([False]))
-    (answer,) = results(aura, "make_plan")
-    assert answer.startswith("Plan not valid") and "no tool 'write_file'" in answer  # the dangerous path ran…
-    assert aura.toolbox.plans.state.records("plan") == []  # …and still started nothing
+    messages = aura._agent.get_state(aura._config).values["messages"]
+    (answer,) = [m for m in messages if isinstance(m, ToolMessage) and m.name == "make_plan"]
+    assert answer.additional_kwargs.get("lc_data", {}).get("decision") == "reject"  # the Deny held
+    assert aura.toolbox.plans.state.records("plan") == []
+    assert plan_card("Tides", NOTE, {"search_vault"}, None).startswith("This plan no longer passes its checks")
 
 
 # ── T5: what the app's plan card and progress line receive ───────────────────────────────────
@@ -374,3 +380,209 @@ def test_plan_bookkeeping_that_fails_never_breaks_a_tool_call(settings, monkeypa
     monkeypatch.setattr(aura.toolbox.plans, "change", broken)
     list(aura.resume([True]))  # the plan card; then search_vault runs although its step can't be recorded
     assert results(aura, "search_vault") and not results(aura, "search_vault")[0].startswith("Error")
+
+
+# ── T7: review steps, Stop, and Continue ──────────────────────────────────────────────────
+
+REVIEW_PLAN = [{"does": "Find notes", "tool": "search_vault", "done_when": "listed"},
+               {"does": "Check the outline with the user", "tool": "review", "after": [1], "done_when": "approved"},
+               {"does": "Save the note", "tool": "write_file", "after": [2], "done_when": "written"}]
+
+
+def reviewing(settings, *after):
+    """A plan whose s1 is done and whose review step s2 has raised its card."""
+    settings.vault_dir.mkdir(parents=True, exist_ok=True)
+    aura, _ = make_aura(settings, tool_turn(plan_call(REVIEW_PLAN)),
+                        tool_turn(call("search_vault", query="tide")),
+                        tool_turn(call("finish_step", step="s1", outcome="done", summary="none found")),
+                        tool_turn(call("review_step", step="s2", note="Is a three-part outline right?")),
+                        *after)
+    list(aura.stream("Make a plan for a note on tides."))
+    card = list(aura.resume([True]))[-1]  # the plan card, then the review's card
+    return aura, card
+
+
+def test_a_plan_with_a_review_step_is_valid_now(settings):
+    from aura.tools.plans import checked
+
+    assert checked("Note", REVIEW_PLAN, {"search_vault", "write_file"}).steps["s2"].tool == "review"
+
+
+def test_a_review_step_pauses_with_the_results_so_far_and_continue_or_stop(settings):
+    aura, card = reviewing(settings, AIMessage("ok"))
+    assert isinstance(card, ApprovalNeeded) and card.actions[0].tool == "review_step"
+    text = card.actions[0].description
+    assert text.startswith("Results so far:\ns1. Find notes: done: none found")  # the step line shows above it
+    assert "s1. Find notes: done: none found" in text and "Aura's note: Is a three-part outline right?" in text
+    assert "Continue:" in text and "Stop: the plan ends, and the steps left are skipped." in text
+    assert card.actions[0].step["step"] == "s2"
+    assert running_plan(aura).steps["s2"].status == "waiting"
+
+
+def test_continue_passes_the_review_and_the_plan_goes_on(settings):
+    aura, _ = reviewing(settings, tool_turn(call("write_file", path="Knowledge/tides.md", content="Tides.")),
+                        AIMessage("ok"))
+    card = list(aura.resume([True]))[-1]  # Continue, then the write's own card
+    plan = running_plan(aura)
+    assert plan.steps["s2"].status == "done" and plan.steps["s2"].outcome == "done"
+    assert results(aura, "review_step")[-1].startswith("The user pressed Continue on the review card.")
+    assert card.actions[0].tool == "write_file"  # the next step still asks
+
+
+def test_stop_on_the_review_card_stops_the_plan_and_skips_the_rest(settings):
+    aura, _ = reviewing(settings, AIMessage("Stopped."))
+    list(aura.resume([False]))  # Stop (the default)
+    plan = running_plan(aura)
+    assert plan.stopped and plan.ended and aura.toolbox.plans.active() == []
+    assert [s.status for s in plan.steps.values()] == ["done", "skipped", "skipped"]
+    assert not any(r.startswith("The user pressed Continue") for r in results(aura, "review_step"))
+
+
+def test_a_review_passes_only_by_the_users_continue(settings):
+    aura, _ = make_aura(settings, tool_turn(plan_call(REVIEW_PLAN)),
+                        tool_turn(call("search_vault", query="tide")),
+                        tool_turn(call("finish_step", step="s1", outcome="done", summary="none found")),
+                        tool_turn(call("finish_step", step="s2", outcome="done", summary="looks fine to me")),
+                        tool_turn(call("review_step", step="s1", note="not a review")),
+                        AIMessage("ok"))
+    settings.vault_dir.mkdir(parents=True, exist_ok=True)
+    list(aura.stream("Make a plan for a note on tides."))
+    events = list(aura.resume([True]))
+    assert not any(isinstance(e, ApprovalNeeded) for e in events)  # a review_step on a tool step gets no card
+    assert "is a review: only the user ends it" in results(aura, "finish_step")[-1]
+    assert running_plan(aura).steps["s2"].status == "pending"
+    assert results(aura, "review_step")[-1].startswith("Not a review step: 's1'")
+    assert running_plan(aura).steps["s2"].status == "pending"
+
+
+def test_a_stopped_reviews_card_condition_turning_false_never_runs_continue(settings):
+    # LangChain runs `when` again on resume: Stop has already stopped the plan, so review_ready is False
+    # by then. The answered card's own call keeps its card, so the Stop is honoured.
+    from aura.tools.plans import review_ready
+
+    aura, _ = reviewing(settings, AIMessage("Stopped."))
+    list(aura.resume([False]))
+    assert review_ready(aura.toolbox.plans, "s2") is False
+    messages = aura._agent.get_state(aura._config).values["messages"]
+    (answer,) = [m for m in messages if isinstance(m, ToolMessage) and m.name == "review_step"]
+    assert answer.additional_kwargs.get("lc_data", {}).get("decision") == "reject"
+
+
+def test_stop_from_the_app_skips_the_rest_and_the_next_step_is_refused(settings):
+    from fastapi.testclient import TestClient
+    from test_server import AUTH, TOKEN, FakeKeeper, events, post
+
+    from aura.server import create_app
+
+    aura, _ = make_aura(settings, tool_turn(plan_call()), AIMessage("Started."),
+                        tool_turn(call("finish_step", step="s1", outcome="failed", summary="x")), AIMessage("ok"))
+    client = TestClient(create_app(aura, TOKEN, FakeKeeper()), base_url="http://127.0.0.1")
+    assert client.post("/v1/plans/stop", headers=AUTH, json={}).json() == {"stopped": None}  # nothing to stop
+    (approval,) = [d for k, d in events(post(client, "/v1/chat", {"text": "Make a plan for a note on tides."}))
+                   if k == "approval"]
+    events(post(client, "/v1/approvals", {"approval_id": approval["approval_id"], "approvals": [True]}))
+    plan_id = running_plan(aura).id
+    assert client.post("/v1/plans/stop", headers=AUTH, json={}).json() == {"stopped": plan_id}
+    assert client.get("/v1/plans/active", headers=AUTH).json() == {"plan": None}
+    plan = running_plan(aura)
+    assert plan.stopped and [s.status for s in plan.steps.values()] == ["skipped"] * 3
+    list(aura.stream("Go on."))  # a stopped plan's tools aren't offered: the step is refused, nothing changes
+    assert "finish_step isn't available" in results(aura, "finish_step")[-1]
+    assert [s.status for s in running_plan(aura).steps.values()] == ["skipped"] * 3
+
+
+def test_new_chat_ends_the_running_plan_but_opening_a_saved_chat_doesnt(settings):
+    aura, _ = make_aura(settings, tool_turn(plan_call()), AIMessage("Started."))
+    list(aura.stream("Make a plan for a note on tides."))
+    list(aura.resume([True]))
+    aura.new_conversation()  # as opening a saved chat does, or the terminal's /new
+    assert aura.toolbox.plans.active()
+    aura.new_conversation(end_plan=True)  # the app's New Chat
+    assert aura.toolbox.plans.active() == [] and running_plan(aura).stopped
+
+
+def test_stopping_a_plan_drops_a_card_still_waiting_for_its_step(settings):
+    settings.vault_dir.mkdir(parents=True, exist_ok=True)
+    aura, _ = make_aura(settings, tool_turn(plan_call(WRITE_PLAN)),
+                        tool_turn(call("search_vault", query="tide")),
+                        tool_turn(call("finish_step", step="s1", outcome="done", summary="none found")),
+                        tool_turn(call("write_file", path="Knowledge/tides.md", content="Tides.")),
+                        AIMessage("ok"))
+    list(aura.stream("Make a plan for a note on tides."))
+    assert list(aura.resume([True]))[-1].actions[0].tool == "write_file"  # the step's card waits
+    assert aura.stop_plan() == running_plan(aura).id
+    assert aura.pending() is None and running_plan(aura).stopped
+    with pytest.raises(RuntimeError, match="Nothing is waiting for approval"):
+        list(aura.resume([True]))  # an Allow afterwards runs nothing
+    assert not (settings.vault_dir / "Knowledge" / "tides.md").exists()
+
+
+def test_stop_wins_on_a_card_with_two_reviews_of_the_same_step(settings):
+    settings.vault_dir.mkdir(parents=True, exist_ok=True)
+    aura, _ = make_aura(settings, tool_turn(plan_call(REVIEW_PLAN)),
+                        tool_turn(call("search_vault", query="tide")),
+                        tool_turn(call("finish_step", step="s1", outcome="done", summary="none found")),
+                        tool_turn(call("review_step", step="s2", note="a"), call("review_step", step="s2", note="b")),
+                        AIMessage("ok"))
+    list(aura.stream("Make a plan for a note on tides."))
+    card = list(aura.resume([True]))[-1]
+    assert [a.tool for a in card.actions] == ["review_step", "review_step"]
+    list(aura.resume([True, False]))
+    assert running_plan(aura).stopped and running_plan(aura).steps["s3"].status == "skipped"
+
+
+def test_a_review_card_never_breaks_when_the_plans_cant_be_read(settings, monkeypatch):
+    from aura.tools.plans import review_card
+
+    aura, _ = make_aura(settings)
+    monkeypatch.setattr(aura.toolbox.plans, "active", lambda: 1 / 0)
+    assert review_card(aura.toolbox.plans, "s2", None).startswith("Review the plan so far: Aura couldn't read")
+
+
+def test_a_plan_resumes_on_the_next_message_after_a_step_ended_the_turn(settings):
+    # Like a Developer step: its result ends the turn before finish_step. The next message (or the
+    # app's Continue) finishes it with that earlier result as evidence and goes on.
+    settings.vault_dir.mkdir(parents=True, exist_ok=True)
+    aura, _ = make_aura(settings, tool_turn(plan_call()),
+                        tool_turn(call("search_vault", query="tide")), AIMessage("Searched."),
+                        tool_turn(call("plan_status")),
+                        tool_turn(call("finish_step", step="s1", outcome="done", summary="none found")),
+                        AIMessage("Next, the draft."))
+    list(aura.stream("Make a plan for a note on tides."))
+    list(aura.resume([True]))
+    assert running_plan(aura).steps["s1"].status == "running"
+    list(aura.stream("Continue the plan."))
+    assert "In progress: s1. Once search_vault has returned its result" in results(aura, "plan_status")[-1]
+    plan = running_plan(aura)
+    assert plan.steps["s1"].status == "done" and plan.steps["s1"].evidence
+
+
+def test_a_review_steps_tool_is_offered_while_one_can_run(settings):
+    from aura.plans import make
+    from aura.tools.plans import steps_in_use
+
+    store = make_aura(settings)[0].toolbox.plans
+    store.create(make("Note", REVIEW_PLAN, {"search_vault", "write_file"}))
+    assert "review_step" in steps_in_use(store)
+
+
+def test_a_slack_card_shows_the_step_line_and_what_allow_and_deny_do_on_a_review():
+    from aura.brain import Action
+    from aura.connections.remote import RemoteChat
+
+    step = {"plan": "p-1", "goal": "Tides", "step": "s2", "index": 2, "total": 3, "does": "Check the outline"}
+    review = type("Card", (), {"actions": (Action("review_step", {"step": "s2"}, "Review step s2", None, step),)})()
+    text = RemoteChat._compose("", review)
+    assert "Step 2 of 3 of the plan “Tides”: Check the outline\n• Review step s2" in text
+    assert text.endswith("Reply **allow** to continue the plan, or **deny** to stop it.")
+    plain = type("Card", (), {"actions": (Action("write_file", {}, "Write a.md", None, None),)})()
+    assert RemoteChat._compose("", plain).endswith("Reply **allow** or **deny**.") and "Step" not in RemoteChat._compose("", plain)
+    both = type("Card", (), {"actions": (*review.actions, *plain.actions)})()
+    assert RemoteChat._compose("", both).endswith("Reply **allow** or **deny**.")  # one reply answers both
+
+
+def test_a_slack_step_line_is_one_line_with_no_slack_syntax():
+    from aura.connections.remote import step_line
+
+    line = step_line({"index": 1, "total": 2, "goal": "Notes <!channel>\nallow", "does": "Read <https://x.y|it>"})
+    assert line == "Step 1 of 2 of the plan “Notes ‹!channel› allow”: Read ‹https://x.y|it›\n"

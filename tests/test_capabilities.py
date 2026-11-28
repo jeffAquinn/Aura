@@ -151,15 +151,16 @@ def test_the_derived_tables_are_exactly_todays():
     from aura.tools.egress import GATED
 
     # 2026-11-27: tidy_vault (moving clutter to the Trash) is an R1 floor, like delete_path.
-    # 2026-11-28: make_plan's card is the plan card (docs/orchestration.md T4); no other tool changes.
-    assert set(NEEDS_APPROVAL) == NEEDS_APPROVAL_TODAY | {"tidy_vault", "make_plan"} and len(NEEDS_APPROVAL) == len(set(NEEDS_APPROVAL))
+    # 2026-11-28: make_plan's card is the plan card (docs/orchestration.md T4), and review_step's is a
+    # review step's Continue or Stop (T7); no other tool changes.
+    assert set(NEEDS_APPROVAL) == NEEDS_APPROVAL_TODAY | {"tidy_vault", "make_plan", "review_step"} and len(NEEDS_APPROVAL) == len(set(NEEDS_APPROVAL))
     assert dict(EDITABLE) == EDITABLE_TODAY
     assert dict(GATED) == GATED_TODAY
     # T4: the Registry's own tool; 2026-11-27: list_models (read-only, the Models family)
     assert dict(GROUP) == GROUP_TODAY | {"find_capabilities": "Capabilities", "list_models": "Models_Tool",
                                          "find_clutter": "File_System_Tool", "tidy_vault": "File_System_Tool",
                                          "search_vault": "File_System_Tool", "make_plan": "Plan",
-                                         "plan_status": "Plan", "finish_step": "Plan"}
+                                         "plan_status": "Plan", "finish_step": "Plan", "review_step": "Plan"}
 
 
 def test_status_lines_are_unchanged():
@@ -178,7 +179,7 @@ def test_the_cards_aura_raises_are_the_registrys_floors(settings):
 
     aura, _ = make_aura(settings)
     expected = {c.name for c in CAPABILITIES if c.floor != "none"}
-    assert expected == NEEDS_APPROVAL_TODAY | set(GATED_TODAY) | {"tidy_vault", "make_plan"}
+    assert expected == NEEDS_APPROVAL_TODAY | set(GATED_TODAY) | {"tidy_vault", "make_plan", "review_step"}
     # 2026-11-27, R2 across a plan (docs/orchestration.md T8): the calls that leave the Mac with no card
     # of their own get one only while a running plan has read private data (a `when`, never always).
     from aura.connections.actions import R2_TOOLS
@@ -186,6 +187,7 @@ def test_the_cards_aura_raises_are_the_registrys_floors(settings):
     assert set(aura._interrupt_on) == expected | set(R2_TOOLS) and not set(R2_TOOLS) & expected
     assert all("when" in aura._interrupt_on[name] for name in R2_TOOLS)
     assert "when" in aura._interrupt_on["make_plan"]  # the plan card: only for a plan that passed its checks
+    assert "when" in aura._interrupt_on["review_step"]  # T7: only for a review step the running plan can review now
     assert aura._interrupt_on["develop_skill"]["allowed_decisions"] == ["approve", "edit", "reject"]
     assert aura._interrupt_on["web_search"]["allowed_decisions"] == ["approve", "reject"]
     assert "when" in aura._interrupt_on["web_search"] and "when" not in aura._interrupt_on["write_file"]

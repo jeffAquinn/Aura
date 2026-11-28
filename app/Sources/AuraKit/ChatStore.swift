@@ -605,6 +605,27 @@ public final class ChatStore {
         if let state = try? await transport?.localModels() { localModels = state }
     }
 
+    /// The words the progress line's Continue sends: a plan resumes on the next message (T7), for
+    /// example after a Developer step ended the turn.
+    public static let continuePlanText = "Continue the plan."
+
+    /// Continue the running plan in a new turn.
+    public func continuePlan() { send(Self.continuePlanText) }
+
+    /// Stop the running plan: what isn't finished is skipped. A reply being written is stopped too.
+    public func stopPlan() async {
+        guard let transport else { return }
+        if isBusy {  // stop the reply first, so the plan isn't saved by the turn at the same moment
+            stop()
+            for _ in 0..<60 where isBusy { try? await Task.sleep(for: .milliseconds(500)) }
+        }
+        if (try? await transport.stopPlan()) == nil {  // e.g. 409 while a turn still saved it: once more
+            try? await Task.sleep(for: .seconds(1))
+            _ = try? await transport.stopPlan()
+        }
+        await loadActivePlan()
+    }
+
     /// Refresh the running plan's progress line.
     public func loadActivePlan() async {
         guard let transport else { return }

@@ -1263,7 +1263,7 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
             return busy()
         try:
             save_chat()  # the chat being left stays in Chats/
-            aura.new_conversation()
+            aura.new_conversation(end_plan=True)
             aura.toolbox.state.set_meta("chat:mac", aura.thread_id)
         finally:
             turn.release()
@@ -1277,6 +1277,25 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
         store = aura.toolbox.plans
         active = store.active() if store is not None else []
         return {"plan": summary(active[-1]) if active else None}
+
+    @app.post("/v1/plans/stop", response_model=None)
+    def stop_plan() -> dict | Response:
+        """The user's Stop on the running plan (docs/orchestration.md T7): it ends, and every step not
+        finished is skipped. A turn running now isn't stopped here (POST /v1/stop does that); its next
+        plan step is refused. Idempotent: with no plan running, nothing changes."""
+        from aura.plans import PlanError
+        from aura.tools.plans import stop_running
+
+        try:
+            if turn.acquire(blocking=False):  # between turns: a card left waiting for the plan is dropped too
+                try:
+                    return {"stopped": aura.stop_plan()}
+                finally:
+                    turn.release()
+            stopped = stop_running(aura.toolbox.plans)  # mid-turn: its next plan step is refused
+        except PlanError as e:  # the plan kept changing under a running turn: try again
+            return _error(409, str(e))
+        return {"stopped": stopped.id if stopped is not None else None}
 
     @app.get("/v1/chats")
     def chats() -> dict:

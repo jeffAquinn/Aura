@@ -67,6 +67,16 @@ def slack_card(tool: str, args: dict[str, Any], description: str) -> str:
     return f"• {first}" + "".join(f"\n> {line.strip().lstrip('│').strip()}" for line in rest)
 
 
+def step_line(step: dict[str, Any] | None) -> str:
+    """Above a card raised during a plan, as on the Mac (T6): which step of which plan it serves."""
+    if not step:
+        return ""
+    def plain(text: Any) -> str:  # model-written: one line, and no Slack <…> syntax (mentions, links)
+        return " ".join(str(text).split()).replace("<", "‹").replace(">", "›")
+
+    return f"Step {step.get('index')} of {step.get('total')} of the plan “{plain(step.get('goal'))}”: {plain(step.get('does'))}\n"
+
+
 def unshowable_in_slack(tool: str, args: dict[str, Any]) -> bool:
     """A search query Slack can't show exactly: ``` in it would end the code block early."""
     return tool == "web_search" and "```" in str(args.get("query", ""))
@@ -234,9 +244,13 @@ class RemoteChat:
         """One Slack reply: what Aura said, then the card it raised, if any."""
         reply = said.strip()
         if card is not None:
-            asks = [slack_card(a.tool, a.args, a.description) for a in card.actions]
+            asks = [step_line(a.step) + slack_card(a.tool, a.args, a.description) for a in card.actions]
+            from aura.tools.plans import REVIEW_TOOL
+
+            review = [a.tool for a in card.actions] == [REVIEW_TOOL]  # one reply answers every action
             reply = (reply + "\n\n" if reply else "") + "**I need your OK to:**\n" + "\n".join(asks) + \
-                "\n\nReply **allow** or **deny**."  # fmt: skip
+                ("\n\nReply **allow** to continue the plan, or **deny** to stop it." if review else
+                 "\n\nReply **allow** or **deny**.")  # fmt: skip
         return reply or "…"
 
     def deliver(self, reply_to: dict[str, Any], said: str, card: Any, state: str | None) -> None:

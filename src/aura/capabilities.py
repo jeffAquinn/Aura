@@ -194,6 +194,8 @@ CAPABILITIES: tuple[Capability, ...] = (
     _c("make_plan", "Plans", "Plan", lambda a: "Checking the plan...", floor="ask"),
     _c("plan_status", "Plans", "Plan", lambda a: "Reading the plan..."),
     _c("finish_step", "Plans", "Plan", lambda a: f"Finishing step {a.get('step', '')}..."),
+    # A review step's card (T7): Continue ends the review, Stop (the default) ends the plan.
+    _c("review_step", "Plans", "Plan", lambda a: f"Asking you to review step {a.get('step', '')}...", floor="ask"),
     # The Registry itself: always shown, so a request no cue matched can still reach its tools
     _c("find_capabilities", "Capabilities", "Capabilities",
        lambda a: f"Loading my {a['family']} tools..." if a.get("family") else "Looking through my capabilities..."),

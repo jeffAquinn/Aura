@@ -360,13 +360,47 @@ security or architecture.
   that carries a step. Cards outside a plan are unchanged. Not done: Slack's text cards don't show the
   step line yet.
 
-### T7 — Review steps, Stop, and Continue
+### T7 — Review steps, Stop, and Continue (done; for Aura's review)
 - Scope: `tools/plans.py`, `server.py` (Stop), `ChatView.swift`.
 - Blocked by: T5 (the card UI), T4.
 - Acceptance: a `review` step pauses with the results so far and Continue or Stop; Stop marks the
   remaining steps `skipped`; a plan resumes after a Developer step ends the turn. Verified by unit
   tests and a check in the real app.
 - Non-goal: plans that start by themselves.
+- **Done (2026-11-28; for Aura's review).** A review step is served by a new tool, `review_step(step,
+  note)`. Its card lists every recorded result so far and Aura's note, with Continue or Stop Plan
+  (Stop is the default). The step line above the card says which step it is.
+  - **Only the user ends a review.** `finish_step` refuses every outcome on a review step, and the tool
+    itself only reports. Continue marks the step done when the user answers. Stop stops the whole plan,
+    even if the same card also answered Continue for that step.
+  - **Stop.** The progress line has a Stop button, and the server has `POST /v1/plans/stop`. The steps
+    not finished are skipped. A card still waiting for one of the plan's steps is dropped unanswered,
+    so a later Allow can't run that step. The button is hidden while a card waits, because the card's
+    own Deny answers it.
+  - **Continue.** The progress line has a Continue button when Aura is idle. It sends "Continue the
+    plan." A step whose tool ended the turn, such as a Developer job, is still running. `plan_status`
+    then says to finish it first, and the earlier result counts as its evidence.
+  - **New chat ends the running plan.** The plan's context stays in the old conversation. Opening a
+    saved chat and the terminal's `/new` leave it running. This answers the code-review note that a
+    plan left running kept adding R2 cards in later conversations. R2's taint records are unchanged.
+  - **Slack:** every card raised during a plan shows its step line. The line is kept to one line, with
+    `<` and `>` replaced, so plan text can't add a mention or a link. A card holding only a review
+    says "allow to continue the plan, or deny to stop it".
+- **For Aura's review: every card's condition is now sticky.** LangChain runs a card's `when` again
+  on resume and runs the tool if it turns False, even after a Deny. A review's own Stop makes its
+  condition False, so the conditions of the web-search, plan, R2 and review cards now all go through
+  one wrapper. The wrapper keeps the condition True for the calls on the card being answered. It can
+  only add a card, never remove one. One effect: a plan card denied after the plan became invalid
+  (for example, a connection removed meanwhile) no longer runs `make_plan` to refuse it. The Deny
+  simply holds.
+- **Reviews:** simplify, a code review and a security review. The security review found nothing.
+  The code review found five problems, all fixed and each tested:
+  - two reviews of one step on one card, answered Continue then Stop, kept the plan running;
+  - a failed review could never pass;
+  - a card left waiting when the plan was stopped could still run its step;
+  - opening a saved chat stopped the plan;
+  - an unreadable plan store broke the review card.
+  Smaller fixes: a missing note, Slack's wording, and the icon on an expired card.
 
 ### T8 — R2 across a plan's turns (Aura review; done, 6476041, approved)
 - Scope: `brain.py` (the taint check), `plans.py` (a plan's `tainted` flag), `connections/actions.py`.
