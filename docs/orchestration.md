@@ -368,7 +368,7 @@ security or architecture.
   tests and a check in the real app.
 - Non-goal: plans that start by themselves.
 
-### T8 — R2 across a plan's turns (Aura review)
+### T8 — R2 across a plan's turns (Aura review; done, 6476041, approved)
 - Scope: `brain.py` (the taint check), `plans.py` (a plan's `tainted` flag), `connections/actions.py`.
 - Blocked by: T4 (steps belong to plans).
 - Acceptance: once a step reads private data (`PRIVATE_READS`), every later step of that plan that
@@ -376,7 +376,7 @@ security or architecture.
   ask). Verified by the scripted R2 test: a fake email read in one turn, a web search in the next
   still stops.
 - Non-goal: changing R2 within a single turn.
-- **Built (2026-11-27), awaiting Aura's review.** What it covers: the calls that leave this Mac with no
+- **Done (6476041); approved by Aura, 2026-11-27.** Aura agreed the single-turn gap below belongs to Sprint 7 with D4, and that conversation-level taint is the safer choice meanwhile. What it covers: the calls that leave this Mac with no
   card of their own (`R2_TOOLS`, derived from the Registry: `check_library`, `propose_skill` and the
   connection reads). Web searches, sends, writes and Developer jobs always ask already.
   - **The taint belongs to the conversation, not to a plan.** The private data stays in the
