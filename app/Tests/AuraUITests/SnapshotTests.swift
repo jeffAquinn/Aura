@@ -64,6 +64,7 @@ struct SnapshotTests {
             } else {
                 TranscriptContent(store: store, avatar: Self.avatar, lazy: false)
             }
+            if let plan = store.activePlan { PlanProgressLine(plan: plan) }
             InputBar(store: store)
         }
         .frame(width: 420)
@@ -221,6 +222,28 @@ struct SnapshotTests {
             item(.approval, actions: [card], decisions: [false]),
             item(.aura, "[Action Denied by User]. I will not perform that action. How else can I help?"),
         ]))
+    }
+
+    @Test func planCardPendingAnsweredAndRunning() throws {
+        let plan = PlanProposal(goal: "Write a research note on tides", steps: [
+            .init(id: "s1", does: "Find what the vault already has", tool: "search_vault", doneWhen: "matching notes listed"),
+            .init(id: "s2", does: "Search for recent results", tool: "web_search", doneWhen: "three sources"),
+            .init(id: "s3", does: "Draft the note", tool: "think", after: ["s1", "s2"], doneWhen: "a draft citing each source"),
+            .init(id: "s4", does: "Save it to Knowledge/", tool: "write_file", after: ["s3"], doneWhen: "the note is written"),
+        ], replaces: .init(id: "p-1a2b3c4d", goal: "Tidy the Ideas area"))
+        let card = PendingAction(tool: "make_plan", description: "Start this plan? Write a research note on tides", plan: plan)
+        let ask = item(.user, "Make a plan for a research note on tides.")
+        let pending = try render("39-plan-card", ChatStore(items: [ask, item(.approval, actions: [card])], phase: .awaitingApproval))
+        #expect(pending.height > 700)  // four steps, the replace note and the buttons all drew
+        let running = ChatStore(items: [ask, item(.approval, actions: [card], decisions: [true])])
+        running.activePlan = ActivePlan(id: "p-9", goal: plan.goal, done: 1, total: 4, steps: [
+            .init(id: "s1", does: "Find what the vault already has", status: "done"),
+            .init(id: "s2", does: "Search for recent results", status: "waiting"),
+            .init(id: "s3", does: "Draft the note", status: "pending"),
+            .init(id: "s4", does: "Save it to Knowledge/", status: "pending"),
+        ])
+        try render("40-plan-started", running, dark: true)
+        #expect(running.activePlan?.current?.id == "s2")
     }
 
     @Test func claudeCodeFromTheChatBox() throws {

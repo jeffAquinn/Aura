@@ -67,6 +67,9 @@ public struct ChatView: View {
                 }
             }
             .animation(.smooth(duration: 0.3), value: store.items.isEmpty)
+            if let plan = store.activePlan {
+                PlanProgressLine(plan: plan).transition(.opacity)
+            }
             InputBar(store: store)
         }
         .frame(minWidth: 360, minHeight: 440)
@@ -786,6 +789,8 @@ struct ItemView: View {
                 FileChangesCard(item: item, store: store)
             } else if item.actions.count == 1, let task = item.actions[0].developerTask {
                 DeveloperTaskCard(item: item, task: task, store: store)
+            } else if item.actions.count == 1, let plan = item.actions[0].plan {
+                PlanCard(item: item, plan: plan, store: store)
             } else if item.actions.count == 1, let build = item.actions[0].build {
                 SpecificationApprovalCard(item: item, proposal: build, store: store)
             } else {

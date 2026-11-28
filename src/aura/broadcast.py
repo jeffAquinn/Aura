@@ -18,7 +18,6 @@ import itertools
 import threading
 from collections import deque
 from collections.abc import Callable
-from dataclasses import asdict
 from typing import Any
 
 from aura.brain import ApprovalNeeded, Changed, Event, Status, Text
@@ -36,7 +35,7 @@ def frame(ev: Event) -> tuple[str, dict[str, Any]]:
     if isinstance(ev, Changed):
         return ev.kind, ev.data  # "voice", "persona", "performance"
     if isinstance(ev, ApprovalNeeded):
-        return "approval", {"actions": [asdict(a) for a in ev.actions], "approval_id": ev.approval_id}
+        return "approval", {"actions": [a.payload() for a in ev.actions], "approval_id": ev.approval_id}
     raise TypeError(f"not a turn event: {ev!r}")
 
 

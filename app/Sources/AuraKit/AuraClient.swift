@@ -85,6 +85,8 @@ public protocol AuraTransport: Sendable {
     func updateModelSettings(_ choice: ModelChoice, _ values: [String: JSONValue]) async throws -> ModelSettingsInfo
     /// The saved chats (vault Chats/), newest first, and which is open.
     func chats() async throws -> SavedChats
+    /// The running plan, if any (docs/orchestration.md T5).
+    func activePlan() async throws -> ActivePlan?
     /// Make a saved chat the current conversation again.
     func openChat(_ id: String) async throws -> ConversationInfo
     func retryBuild(_ id: String) async throws -> BuildInfo
@@ -168,6 +170,7 @@ extension AuraTransport {
     public func activity(limit: Int) async throws -> ActivityPage { ActivityPage(entries: [], latest: -1) }
     public func conversation() async throws -> ConversationInfo { throw AuraClientError.badResponse }
     public func chats() async throws -> SavedChats { throw AuraClientError.badResponse }
+    public func activePlan() async throws -> ActivePlan? { nil }
     public func localModels() async throws -> LocalModels { throw AuraClientError.badResponse }
     public func modelSettings(_ choice: ModelChoice) async throws -> ModelSettingsInfo { throw AuraClientError.badResponse }
     public func updateModelSettings(_ choice: ModelChoice, _ values: [String: JSONValue]) async throws -> ModelSettingsInfo {
@@ -278,6 +281,10 @@ public final class AuraClient: AuraTransport {
 
     public func chats() async throws -> SavedChats {
         try Self.decoder.decode(SavedChats.self, from: await send(request("/v1/chats")))
+    }
+
+    public func activePlan() async throws -> ActivePlan? {
+        try Self.decoder.decode(ActivePlanReply.self, from: await send(request("/v1/plans/active"))).plan
     }
 
     public func localModels() async throws -> LocalModels {

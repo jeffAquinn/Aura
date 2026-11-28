@@ -19,6 +19,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMe
 from langchain_core.tools import BaseTool, tool
 
 from aura.plans import (
+    DONE,
     FAILED,
     MAX_ATTEMPTS,
     OPEN,
@@ -55,6 +56,26 @@ def card(goal: Any, steps: Any, available: Iterable[str], running: Plan | None) 
     if running is not None:
         lines.append(f"It replaces the plan still running, \"{running.goal}\" ({running.id}).")
     return "\n".join(lines)
+
+
+def preview(goal: Any, steps: Any, available: Iterable[str], running: Plan | None) -> dict[str, Any] | None:
+    """The plan card's content for the app (T5): the checked plan with its real step IDs, and the plan
+    it replaces. None for a plan that doesn't pass its checks (it gets no card)."""
+    try:
+        plan = checked(goal, steps, available)
+    except PlanError:
+        return None
+    return {"goal": plan.goal,
+            "steps": [{"id": s.id, "does": s.does, "tool": s.tool, "after": list(s.after), "done_when": s.done_when}
+                      for s in plan.steps.values()],
+            "replaces": {"id": running.id, "goal": running.goal} if running is not None else None}
+
+
+def summary(plan: Plan) -> dict[str, Any]:
+    """A running plan for the app's progress line (T5)."""
+    return {"id": plan.id, "goal": plan.goal, "done": sum(s.status == DONE for s in plan.steps.values()),
+            "total": len(plan.steps),
+            "steps": [{"id": s.id, "does": s.does, "status": s.status} for s in plan.steps.values()]}
 
 
 def is_valid(goal: Any, steps: Any, available: Iterable[str]) -> bool:

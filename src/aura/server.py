@@ -1269,6 +1269,15 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
             turn.release()
         return Response(status_code=204)
 
+    @app.get("/v1/plans/active")
+    def active_plan() -> dict:
+        """The running plan, for the app's progress line (docs/orchestration.md T5), or none."""
+        from aura.tools.plans import summary
+
+        store = aura.toolbox.plans
+        active = store.active() if store is not None else []
+        return {"plan": summary(active[-1]) if active else None}
+
     @app.get("/v1/chats")
     def chats() -> dict:
         """The saved chats, newest first, and which one is open (saved first, so it is current)."""

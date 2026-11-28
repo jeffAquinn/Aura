@@ -6,11 +6,14 @@ public struct PendingAction: Codable, Sendable, Equatable {
     public let description: String
     /// The tool call's arguments (the Specification Approval card shows and edits some of them).
     public let args: [String: JSONValue]?
+    /// make_plan's card: the plan as the server checked it (docs/orchestration.md T5).
+    public let plan: PlanProposal?
 
-    public init(tool: String, description: String, args: [String: JSONValue]? = nil) {
+    public init(tool: String, description: String, args: [String: JSONValue]? = nil, plan: PlanProposal? = nil) {
         self.tool = tool
         self.description = description
         self.args = args
+        self.plan = plan
     }
 
     /// A Developer build Aura is asking to start (a develop_skill call), if this is one.

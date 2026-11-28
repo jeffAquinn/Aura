@@ -54,6 +54,7 @@ from aura.middleware import (
 from aura.persona import MEMORY_PROMPT, system_prompt
 from aura.tools.plans import card as plan_card
 from aura.tools.plans import is_valid as plan_is_valid
+from aura.tools.plans import preview as plan_preview
 from aura.tools.plans import steps_in_use
 from aura.developer.workflow import describe_build, describe_task
 from aura.connections.actions import OUTWARD, describe_outward, inbox_exchange, turn_is_tainted
@@ -200,6 +201,12 @@ class Action:
     tool: str
     args: dict[str, Any]
     description: str  # e.g. "create folder 'Project Aura/'"
+    plan: dict[str, Any] | None = None  # make_plan's card: the checked plan, for the app's plan card (T5)
+
+    def payload(self) -> dict[str, Any]:
+        """What the app receives: `plan` only on a plan card, so every other card is as before."""
+        out = {"tool": self.tool, "args": self.args, "description": self.description}
+        return out | {"plan": self.plan} if self.plan is not None else out
 
 
 @dataclass(frozen=True)
@@ -767,7 +774,15 @@ class Aura:
         ])
 
     def _actions(self, interrupt: Interrupt) -> tuple[Action, ...]:
-        return tuple(Action(a["name"], a["args"], a.get("description", "")) for a in interrupt.value["action_requests"])
+        return tuple(Action(a["name"], a["args"], a.get("description", ""), self._plan_preview(a))
+                     for a in interrupt.value["action_requests"])
+
+    def _plan_preview(self, request: dict[str, Any]) -> dict[str, Any] | None:
+        if request["name"] != "make_plan" or self.toolbox.plans is None:
+            return None
+        active = self.toolbox.plans.active()
+        args = request["args"]
+        return plan_preview(args.get("goal"), args.get("steps"), self.toolbox.registered, active[-1] if active else None)
 
     def _register(self, interrupt: Interrupt, actions: tuple[Action, ...]) -> str:
         """Bind a new approval to its turn, conversation, tools and argument digest."""
@@ -784,8 +799,7 @@ class Aura:
         if self._pending is None:
             return None
         return {"approval_id": self.approval_id, "origin": self.pending_origin()[0],
-                "actions": [{"tool": a.tool, "args": a.args, "description": a.description}
-                            for a in self._actions(self._pending)]}  # fmt: skip
+                "actions": [a.payload() for a in self._actions(self._pending)]}
 
     def pending_origin(self) -> tuple[str, dict[str, Any] | None]:
         """Where the waiting card's turn began, and where its reply goes (from the durable record,

@@ -88,6 +88,8 @@ public final class ChatStore {
     public internal(set) var localModels: LocalModels?  // internal: snapshot tests fill it
     /// The saved chats for the new-chat menu (vault Chats/), newest first.
     public private(set) var savedChats: SavedChats?
+    /// The running plan, for the progress line (refreshed after every turn and every card answered).
+    public internal(set) var activePlan: ActivePlan?
     /// Developer account readiness, including the result of an explicit isolated connection check.
     public private(set) var developerInfo: DeveloperInfo?
     /// Speaks replies and approval requests when spoken replies are on.
@@ -603,6 +605,12 @@ public final class ChatStore {
         if let state = try? await transport?.localModels() { localModels = state }
     }
 
+    /// Refresh the running plan's progress line.
+    public func loadActivePlan() async {
+        guard let transport else { return }
+        if let plan = try? await transport.activePlan() { activePlan = plan } else { activePlan = nil }
+    }
+
     /// Refresh the new-chat menu's list (the server saves the open chat first).
     public func loadChats() async {
         if let chats = try? await transport?.chats() { savedChats = chats }
@@ -748,6 +756,7 @@ public final class ChatStore {
         Task {
             await refreshHealth()  // the model's state just changed (loaded, or done): show it now
             await loadChats()  // the chat was just saved: its title and time are current
+            await loadActivePlan()  // a plan may have started, moved on or ended
         }
         flushPendingText()
         if phase != .awaitingApproval {

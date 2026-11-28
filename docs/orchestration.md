@@ -284,7 +284,7 @@ security or architecture.
   every change, with secrets masked as in saved chats; a copy that can't be written is logged and
   never stops the plan. The server passes the folder in T4, when plans are first used.
 
-### T4 — make_plan, plan_status and finish_step (Aura review)
+### T4 — make_plan, plan_status and finish_step (Aura review; done, 69d3acf)
 - Scope: new `src/aura/tools/plans.py`, `capabilities.py` (a Plans family; `make_plan` floor "ask",
   so its card is the plan card), `persona.py` (one rule: while a plan runs, go on to the next ready
   step without asking; stop only at a card, a review step or `needs input`), `tools/__init__.py`.
@@ -294,7 +294,7 @@ security or architecture.
   one retry with a recorded ruling, then blocks. The approval and egress sets for every existing tool
   are unchanged, and the first-menu budget test still passes. Verified by unit tests and a scripted turn.
 - Non-goal: the app's plan card (T5); R2 (T8).
-- **Built (2026-11-27), awaiting Aura's review.** The plan card is `make_plan`'s approval card,
+- **Done (69d3acf); approved by Aura, 2026-11-27,** including its three rulings. The plan card is `make_plan`'s approval card,
   raised only for a plan that passed its checks (`when`, like the web search card); an invalid plan
   gets no card and only returns its reasons. A running plan's tools and its open steps' tools are
   shown every turn. Evidence is the newest unclaimed, successful, not-denied result of the step's
@@ -334,6 +334,14 @@ security or architecture.
   `done_when`, with Approve and Deny (default Deny); a running plan shows its progress line. Verified
   by snapshot tests and a check in the real app.
 - Non-goal: editing a plan in the app.
+- **Done (2026-11-27).** The server sends the checked plan with make_plan's card (`Action.plan`, only
+  on plan cards: every other card's payload is unchanged), so the app shows the real step IDs without
+  re-deriving them. `PlanCard`: the goal, each step with its tool ("Aura thinks" for `think`), what it
+  waits for and when it's done, the plan it replaces, and that starting it approves no step; Start Plan
+  or Deny (the default). `PlanProgressLine` above the chat box (`GET /v1/plans/active`, refreshed after
+  every turn): the goal, the current step, "1 of 4 done", each step's status in its tooltip. Found while
+  testing: the live event stream decodes without snake_case conversion and the restored card with it,
+  so a step accepts both `done_when` and `doneWhen`; a test covers each path.
 
 ### T6 — The step line on approval cards
 - Scope: `middleware.py` (the approval payload), `ChatView.swift`.

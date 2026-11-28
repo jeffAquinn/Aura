@@ -252,3 +252,42 @@ def test_a_denied_plan_never_starts_even_if_its_card_condition_changes_before_th
     (answer,) = results(aura, "make_plan")
     assert answer.startswith("Plan not valid") and "no tool 'write_file'" in answer  # the dangerous path ran…
     assert aura.toolbox.plans.state.records("plan") == []  # …and still started nothing
+
+
+# ── T5: what the app's plan card and progress line receive ───────────────────────────────────
+
+
+def test_the_plan_card_carries_the_checked_plan_with_its_real_step_ids(settings):
+    named = [{"id": "find", "does": "Find notes", "tool": "search_vault", "done_when": "listed"},
+             {"id": "draft", "does": "Draft", "tool": "think", "after": ["find"], "done_when": "a draft"}]
+    aura, _ = make_aura(settings, tool_turn(plan_call(named)), AIMessage("ok"))
+    card = list(aura.stream("Make a plan for a note on tides."))[-1]
+    assert card.actions[0].plan == {
+        "goal": "Write a note on tides", "replaces": None,
+        "steps": [{"id": "s1", "does": "Find notes", "tool": "search_vault", "after": [], "done_when": "listed"},
+                  {"id": "s2", "does": "Draft", "tool": "think", "after": ["s1"], "done_when": "a draft"}]}
+    assert aura.pending()["actions"][0]["plan"] == card.actions[0].plan  # the card shown again after a restart
+
+
+def test_other_cards_carry_no_plan(settings):
+    aura, _ = make_aura(settings, tool_turn(call("create_folder", path="Receipts")), AIMessage("ok"))
+    card = list(aura.stream("Create a folder named Receipts."))[-1]
+    assert card.actions[0].plan is None
+
+
+def test_the_server_streams_the_plan_card_and_reports_the_running_plan(settings):
+    from fastapi.testclient import TestClient
+    from test_server import AUTH, TOKEN, FakeKeeper, events, post
+
+    from aura.server import create_app
+
+    aura, _ = make_aura(settings, tool_turn(plan_call()), AIMessage("Started."))
+    client = TestClient(create_app(aura, TOKEN, FakeKeeper()), base_url="http://127.0.0.1")
+    assert client.get("/v1/plans/active", headers=AUTH).json() == {"plan": None}
+    evs = events(post(client, "/v1/chat", {"text": "Make a plan for a note on tides."}))
+    (approval,) = [data for kind, data in evs if kind == "approval"]
+    assert [s["id"] for s in approval["actions"][0]["plan"]["steps"]] == ["s1", "s2", "s3"]
+    events(post(client, "/v1/approvals", {"approval_id": approval["approval_id"], "approvals": [True]}))
+    running = client.get("/v1/plans/active", headers=AUTH).json()["plan"]
+    assert running["goal"] == "Write a note on tides" and (running["done"], running["total"]) == (0, 3)
+    assert [s["status"] for s in running["steps"]] == ["pending"] * 3
