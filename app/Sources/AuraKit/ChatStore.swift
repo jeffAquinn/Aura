@@ -84,6 +84,8 @@ public final class ChatStore {
     public private(set) var voices: [VoiceInfo] = []
     /// Server-owned model role choices. API keys themselves are never sent back to the app.
     public private(set) var modelCatalog: ModelCatalog?
+    /// The local models for the Models window's Local page.
+    public internal(set) var localModels: LocalModels?  // internal: snapshot tests fill it
     /// The saved chats for the new-chat menu (vault Chats/), newest first.
     public private(set) var savedChats: SavedChats?
     /// Developer account readiness, including the result of an explicit isolated connection check.
@@ -565,6 +567,11 @@ public final class ChatStore {
         items.removeAll()
         phase = .idle
         await loadChats()
+    }
+
+    /// Refresh the Models window's Local page (what is installed and loaded changes on its own).
+    public func loadLocalModels() async {
+        if let state = try? await transport?.localModels() { localModels = state }
     }
 
     /// Refresh the new-chat menu's list (the server saves the open chat first).

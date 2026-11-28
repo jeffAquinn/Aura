@@ -1308,6 +1308,14 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
                 "sleep_mode": routing.sleep_mode().public(),
                 "startup_model_problem": startup_problem}
 
+    @app.get("/v1/models/local")
+    def local_models_state() -> dict:
+        """The local models for the Models window's Local page: Ollama's and llama.cpp's, which
+        is loaded, Sleep Mode and the idle time (the same facts list_models gives Aura)."""
+        from aura.tools.models import local_state
+
+        return local_state(aura.settings, lambda: getattr(aura.toolbox.local_server, "model", None))
+
     @app.post("/v1/models/pull")
     def pull_local_model(body: LocalModelPullIn) -> Response:
         """Download one explicitly selected Ollama model, then refresh the local catalog.

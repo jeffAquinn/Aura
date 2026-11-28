@@ -132,9 +132,17 @@ struct SnapshotTests {
             roleLabels: ["startup": "Model on startup", "chat": "Chat", "web_search": "Web Search", "deep_research": "Deep Research"],
             ollamaModels: ["gemma4:26b", "qwen3.5:9b"], anthropicModels: ["claude-opus-5-5", "claude-sonnet-5-5"],
             anthropicKeySet: true, codingEngine: "claude", sleepMode: SleepMode(model: "qwen3.5:9b"), startupModelProblem: nil)
+        let store = ChatStore(items: [])
+        store.localModels = LocalModels(
+            ollama: .init(answering: true, models: [.init(name: "gemma4:26b", gb: 17.0, loaded: true),
+                                                    .init(name: "qwen3.5:9b", gb: 6.6, loaded: false)]),
+            llamacpp: .init(installed: true, folder: "/Users/you/models",
+                            models: [.init(name: "Ternary-Bonsai-2.5-27B-Q2_0", gb: 7.1, loaded: false)],
+                            server: .init(running: false, model: nil)),
+            sleepMode: SleepMode(model: "qwen3.5:9b"), idleUnload: "10m")
         for page in ModelsPage.allCases {
             let size = try renderWide("39-models-\(page.rawValue)", width: 640,
-                                      ModelsPageContent(page: page, catalog: catalog, store: ChatStore(items: [])))
+                                      ModelsPageContent(page: page, catalog: catalog, store: store))
             #expect(size.height > 200)
         }
     }

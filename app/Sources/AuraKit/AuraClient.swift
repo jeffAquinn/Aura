@@ -78,6 +78,8 @@ public protocol AuraTransport: Sendable {
     func activity(limit: Int) async throws -> ActivityPage
     /// The conversation the server kept (after a restart: the history, and any approval still waiting).
     func conversation() async throws -> ConversationInfo
+    /// The local models for the Models window's Local page.
+    func localModels() async throws -> LocalModels
     /// The saved chats (vault Chats/), newest first, and which is open.
     func chats() async throws -> SavedChats
     /// Make a saved chat the current conversation again.
@@ -163,6 +165,7 @@ extension AuraTransport {
     public func activity(limit: Int) async throws -> ActivityPage { ActivityPage(entries: [], latest: -1) }
     public func conversation() async throws -> ConversationInfo { throw AuraClientError.badResponse }
     public func chats() async throws -> SavedChats { throw AuraClientError.badResponse }
+    public func localModels() async throws -> LocalModels { throw AuraClientError.badResponse }
     public func openChat(_ id: String) async throws -> ConversationInfo { throw AuraClientError.badResponse }
     public func retryBuild(_ id: String) async throws -> BuildInfo { throw AuraClientError.badResponse }
     public func dismissRecovery(_ id: String) async throws {}
@@ -268,6 +271,10 @@ public final class AuraClient: AuraTransport {
 
     public func chats() async throws -> SavedChats {
         try Self.decoder.decode(SavedChats.self, from: await send(request("/v1/chats")))
+    }
+
+    public func localModels() async throws -> LocalModels {
+        try Self.decoder.decode(LocalModels.self, from: await send(request("/v1/models/local")))
     }
 
     public func openChat(_ id: String) async throws -> ConversationInfo {

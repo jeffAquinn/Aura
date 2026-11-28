@@ -194,13 +194,7 @@ struct ModelsSection: View {
     let store: ChatStore
     @State private var error: String?
     @Environment(\.openModels) private var openModels
-    @State private var localModel = ""
-    @State private var confirmDownload = false
-    @State private var downloading = false
     @State private var syncingCloudModels = false
-    @State private var sleepMode = SleepMode(model: "")
-    @State private var savingSleep = false
-    @State private var confirmSleep = false
 
     var body: some View {
         Section("Models") {
@@ -225,7 +219,7 @@ struct ModelsSection: View {
                 // Step 2 of docs/models-window.md: each role's model and the Coding developer are
                 // chosen in the Models window now.
                 HStack {
-                    Label("Each role's model, and the Developer for coding, are chosen in the Models window.",
+                    Label("Each role's model, the Developer for coding, local models and Sleep Mode are in the Models window.",
                           systemImage: "arrow.triangle.branch")
                         .font(.callout)
                     Spacer()
@@ -234,79 +228,12 @@ struct ModelsSection: View {
                 if let problem = catalog.startupModelProblem {
                     Label(problem, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
                 }
-                Divider()
-                Toggle("Sleep Mode", isOn: sleepEnabled)
-                    .disabled(savingSleep || catalog.ollamaModels.isEmpty)
-                if !catalog.ollamaModels.isEmpty {
-                    Picker("Keep this local model loaded", selection: $sleepMode.model) {
-                        ForEach(catalog.ollamaModels, id: \.self) { Text($0).tag($0) }
-                    }
-                    .disabled(savingSleep)
-                    .onChange(of: sleepMode.model) { _ in
-                        if sleepMode.enabled { saveSleepMode() }
-                    }
-                }
-                Text("After 10 minutes with nothing happening, Aura unloads every model to free your Mac's memory. With Sleep Mode on, it then loads this one local model and keeps it ready, so your next message answers quickly; it can use several GB of memory and stays loaded after Aura closes. With Sleep Mode off, nothing stays loaded.")
-                    .font(.caption).foregroundStyle(.secondary)
-                Divider()
-                Text("Install a local Ollama model")
-                    .font(.callout.weight(.medium))
-                Link("Browse Ollama’s most-downloaded models", destination: Self.ollamaPopularModels)
-                    .font(.caption)
-                TextField("Model name, e.g. qwen3:8b", text: $localModel)
-                    .textFieldStyle(.roundedBorder)
-                    .disabled(downloading)
-                Text("Downloads use your local Ollama daemon and its configured model folder, not Aura_Vault. Models can use several GB and may download from the internet. Only download a model name and source you trust.")
-                    .font(.caption).foregroundStyle(.secondary)
-                HStack {
-                    Button(downloading ? "Downloading…" : "Download Local Model") { confirmDownload = true }
-                        .disabled(downloading || localModel.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    if downloading { ProgressView().controlSize(.small) }
-                    Spacer()
-                }
-                .controlSize(.small)
                 if let error {
                     Label(error, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
                 }
             } else {
                 Text(store.transport == nil ? "Aura is offline." : "Loading model settings…").foregroundStyle(.secondary)
             }
-        }
-        .onChange(of: store.modelCatalog) { sync() }
-        .onAppear(perform: sync)
-        .confirmationDialog("Download local model?", isPresented: $confirmDownload, titleVisibility: .visible) {
-            Button("Download \(localModel.trimmingCharacters(in: .whitespacesAndNewlines))") { download() }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Aura will ask Ollama to download this named model. The model is stored by Ollama outside Aura_Vault and can consume several GB of disk space.")
-        }
-        .confirmationDialog("Enable Sleep Mode?", isPresented: $confirmSleep, titleVisibility: .visible) {
-            Button("Keep \(sleepMode.model) Loaded") {
-                sleepMode.enabled = true
-                saveSleepMode()
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("After 10 idle minutes, Aura unloads every other model and keeps this one loaded in Ollama until you use Aura again. It may make a smaller Mac feel less responsive.")
-        }
-    }
-
-    private static let ollamaPopularModels = URL(string: "https://ollama.com/library?sort=popular")!
-
-    private func sync() {
-        if let catalog = store.modelCatalog {
-            sleepMode = catalog.sleepMode
-        }
-    }
-
-    private func download() {
-        downloading = true
-        error = nil
-        let requested = localModel.trimmingCharacters(in: .whitespacesAndNewlines)
-        Task {
-            error = await store.pullLocalModel(requested)
-            if error == nil { localModel = "" }
-            downloading = false
         }
     }
 
@@ -319,27 +246,6 @@ struct ModelsSection: View {
         }
     }
 
-    private var sleepEnabled: Binding<Bool> {
-        Binding(
-            get: { sleepMode.enabled },
-            set: { enabled in
-                if enabled { confirmSleep = true }
-                else {
-                    sleepMode.enabled = false
-                    saveSleepMode()
-                }
-            }
-        )
-    }
-
-    private func saveSleepMode() {
-        savingSleep = true
-        error = nil
-        Task {
-            error = await store.updateSleepMode(sleepMode)
-            savingSleep = false
-        }
-    }
 }
 
 /// The chat's font, text size and bubble colors, with a live preview.

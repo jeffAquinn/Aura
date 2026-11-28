@@ -221,6 +221,58 @@ public struct LocalModelPerformance: Codable, Equatable, Sendable {
 }
 
 /// The conversation as the server keeps it: it survives a restart of the server.
+/// The local models, as the Models window's Local page shows them (GET /v1/models/local).
+public struct LocalModels: Codable, Sendable, Equatable {
+    public struct Model: Codable, Sendable, Equatable, Identifiable {
+        public let name: String
+        public let gb: Double?
+        public let loaded: Bool
+        public var id: String { name }
+
+        public init(name: String, gb: Double?, loaded: Bool) {
+            self.name = name
+            self.gb = gb
+            self.loaded = loaded
+        }
+    }
+
+    public struct Ollama: Codable, Sendable, Equatable {
+        public let answering: Bool
+        public let models: [Model]
+        public init(answering: Bool, models: [Model]) { self.answering = answering; self.models = models }
+    }
+
+    public struct LlamaCpp: Codable, Sendable, Equatable {
+        public struct Server: Codable, Sendable, Equatable {
+            public let running: Bool
+            public let model: String?
+            public init(running: Bool, model: String?) { self.running = running; self.model = model }
+        }
+        public let installed: Bool
+        public let folder: String
+        public let models: [Model]
+        public let server: Server
+        public init(installed: Bool, folder: String, models: [Model], server: Server) {
+            self.installed = installed
+            self.folder = folder
+            self.models = models
+            self.server = server
+        }
+    }
+
+    public let ollama: Ollama
+    public let llamacpp: LlamaCpp
+    public let sleepMode: SleepMode
+    public let idleUnload: String
+
+    public init(ollama: Ollama, llamacpp: LlamaCpp, sleepMode: SleepMode, idleUnload: String) {
+        self.ollama = ollama
+        self.llamacpp = llamacpp
+        self.sleepMode = sleepMode
+        self.idleUnload = idleUnload
+    }
+}
+
 /// A chat saved in the vault's Chats folder (the new-chat menu's Recents).
 public struct SavedChat: Codable, Sendable, Equatable, Identifiable {
     public let id: String

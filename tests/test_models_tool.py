@@ -50,3 +50,21 @@ def test_it_is_a_read_only_models_capability():
     row = BY_NAME["list_models"]
     assert (row.family, row.floor, row.egress) == ("Models", "none", "none")
     assert "Models" in FAMILY_SUMMARY and row.matches("Which models can you run?")
+
+
+def test_the_models_window_and_list_models_share_one_local_state(settings, monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from aura.server import create_app
+    from conftest import make_aura
+    from test_model_routing import AUTH, TOKEN, NoopKeeper
+
+    monkeypatch.setattr(models_module.httpx, "get", ollama(["gemma4:26b", "qwen3.5:9b"], ["gemma4:26b"]))
+    aura, _ = make_aura(settings)
+    client = TestClient(create_app(aura, TOKEN, NoopKeeper()), base_url="http://127.0.0.1")
+    state = client.get("/v1/models/local", headers=AUTH).json()
+    assert state["ollama"] == {"answering": True, "models": [{"name": "gemma4:26b", "gb": 16.0, "loaded": True},
+                                                             {"name": "qwen3.5:9b", "gb": 16.0, "loaded": False}]}
+    assert state["llamacpp"]["server"] == {"running": False, "model": None} and state["llamacpp"]["installed"] is False
+    assert state["sleep_mode"] == {"enabled": False, "model": settings.model} and state["idle_unload"] == "10m"
+    assert "- gemma4:26b (Ollama, 16.0 GB), loaded now" in describe(settings, lambda: None)
