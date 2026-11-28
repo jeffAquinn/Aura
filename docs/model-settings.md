@@ -27,6 +27,7 @@ A field a provider doesn't accept is hidden for that provider.
 | top_k, min_p, repeat_penalty | yes | only if its OpenAI endpoint passes them through (checked during the build; hidden otherwise) | no |
 | Thinking / effort | `reasoning_effort` none, low, medium or high | `reasoning_effort` | `output_config.effort`, low to max |
 | Context budget (Aura's compaction limit) | yes, checked against llama-server's `/props` `n_ctx` | yes, checked against `/api/ps` `context_length` | yes |
+| Reply length (`max_reply_tokens`, added 2026-11-27) | `max_tokens` on the request (llama-server's `n_predict`) | `max_tokens` on its OpenAI endpoint (Ollama's `num_predict`) | `max_tokens` (required by the API) |
 
 The Anthropic column follows the `claude-api` reference. Fable 5.x, Opus 5.5, 5, 4.8 and 4.7, and Sonnet 5 reject `temperature`, `top_p` and `top_k`. Sonnet 5.5 and Haiku 5.5 reject any non-default value. API version `2026-10-21` rejects them on every model. Thinking can't be turned off on Opus 5.5: effort is its only control, and its default is `medium`.
 
@@ -40,7 +41,9 @@ The Anthropic column follows the `claude-api` reference. Fable 5.x, Opus 5.5, 5,
   - presence_penalty -2 to 2
   - repeat_penalty 0.5 to 2
   - context budget at least 4,096
-- **No setting means today's behavior:** the global `reasoning_effort=none`, `AURA_CONTEXT_TOKENS`, and no sampling values sent.
+  - reply length 1,024 to 32,768 tokens, and for a local model at most half its context budget (a longer value is capped at that, with the same warning as the context check)
+- **No setting means today's behavior:** the global `reasoning_effort=none`, `AURA_CONTEXT_TOKENS`, `AURA_MAX_REPLY_TOKENS` (8,192), and no sampling values sent.
+- **Reply length is an override:** a model's `max_reply_tokens` replaces the global `AURA_MAX_REPLY_TOKENS` for that model only. `build_model` applies it, as it applies the global value today; nothing else in a turn changes.
 - **HOL:** a HOL session's own effort choice still wins over the model's setting.
 - **Context check:** Aura's context budget is a compaction limit. The server's context window is what Ollama or llama-server allocates, which Aura can't set. If the budget is larger than the window, Settings warns, and Aura uses the smaller of the two, so the server never drops or refuses part of a conversation.
 
