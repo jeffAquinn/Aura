@@ -40,6 +40,8 @@ from langgraph.types import Command, Interrupt
 from aura.config import Settings
 from aura.model_routing import LOCAL_PROVIDERS, ModelChoice, llamacpp_root
 from aura.llama_server import API_KEY as LLAMA_API_KEY, LocalModelError
+from aura.model_settings import ModelSettingsStore, ollama_window, request_options
+from aura.model_settings import budget as model_budget
 from aura.middleware import (
     REJECTION_NOTE,
     CapabilitySelection,
@@ -333,46 +335,33 @@ def engine_name(choice: ModelChoice) -> str:
     return f"{choice.model} ({ENGINE_PLACES.get(choice.provider, choice.provider)})"
 
 
-# A model's recommended sampling, sent unless its settings say otherwise (docs/model-settings.md §5).
-# Bonsai's file carries thinking-mode defaults (1.0 / 0.95 / 20 / min_p 0.05), but Aura turns its
-# thinking off; these non-thinking values tied on accuracy and were 30% faster (§10, measured on Q2_0).
-RECOMMENDED_SAMPLING: dict[str, dict[str, Any]] = {
-    "bonsai": {"temperature": 0.7, "top_p": 0.8, "presence_penalty": 0.0,
-               "extra_body": {"top_k": 20, "min_p": 0.0, "repeat_penalty": 1.0}},
-}
-
-
-def recommended_sampling(choice: ModelChoice) -> dict[str, Any]:
-    """The recommended sampling for a llama.cpp model, matched by family name; {} for others."""
-    if choice.provider != "llamacpp":
-        return {}
-    name = choice.model.lower()
-    return next((dict(values) for family, values in RECOMMENDED_SAMPLING.items() if family in name), {})
-
-
-def build_model(settings: Settings, choice: ModelChoice | None = None, api_key: str | None = None) -> BaseChatModel:
-    """Build either the local OpenAI-compatible model or a first-party Claude API model.
+def build_model(settings: Settings, choice: ModelChoice | None = None, api_key: str | None = None,
+                context: int | None = None) -> BaseChatModel:
+    """Build either the local OpenAI-compatible model or a first-party Claude API model, with the
+    model's own settings (model_settings.py): each provider is sent only what it accepts, and a
+    setting that isn't set isn't sent. `context`: the memory budget in use (it caps a local
+    model's reply length); by default the model's own.
 
     ``claude_oauth_token`` is intentionally never accepted here: it is a Claude Code credential,
     not Aura's Anthropic API credential.
     """
     choice = choice or ModelChoice("ollama", settings.model)
+    values = ModelSettingsStore(settings).get(choice)
+    options = request_options(settings, choice, values, context or model_budget(settings, choice, values))
     if choice.provider == "anthropic":
         if not api_key:
-            raise ValueError("Add an Anthropic API key in Settings → Keys before selecting a Claude cloud model.")
-        return ChatAnthropic(model=choice.model, api_key=api_key, max_tokens=settings.max_reply_tokens)
+            raise ValueError("Add an Anthropic API key in the Models window (Cloud) before selecting a Claude cloud model.")
+        return ChatAnthropic(model=choice.model, api_key=api_key, **options)
     llama = choice.provider == "llamacpp"
     return ChatOpenAI(
         base_url=f"{llamacpp_root(settings)}/v1" if llama else settings.base_url,
         api_key=LLAMA_API_KEY if llama else settings.api_key,  # Aura's llama-server's own key
         model=choice.model,
-        reasoning_effort=settings.reasoning_effort,
-        max_tokens=settings.max_reply_tokens,  # a looping model stops instead of running forever
-        # Report real token usage on streamed replies too. Memory compaction keys off the
-        # server's count, which (unlike the local estimate) includes the system prompt and
-        # tool schemas.
+        # max_tokens is always set (a looping model stops instead of running forever). Report real
+        # token usage on streamed replies too: memory compaction keys off the server's count,
+        # which (unlike the local estimate) includes the system prompt and tool schemas.
         stream_usage=True,
-        **recommended_sampling(choice),
+        **options,
     )
 
 
@@ -400,7 +389,8 @@ class Aura:
         self.primary = primary
         self.active_model = ModelChoice("ollama", self.settings.model)
         self._injected_model = model is not None
-        self.llm = model or build_model(self.settings, self.active_model)
+        self._capped: tuple[str, int] | None = None  # the last budget cap recorded (once per change)
+        self.llm = model or build_model(self.settings, self.active_model, context=self._context_budget(self.active_model))
         # This guard is reset only for a new user turn. It survives an approval/resume within that
         # turn so an agent cannot evade the retry limit by splitting the same failed work in two.
         self._circuit_breaker = RecursionCircuitBreaker()
@@ -464,8 +454,7 @@ class Aura:
         def build(tools: list) -> Any:
             # The memory budget follows the model answering: Aura sets llama-server's window itself
             # (32k), while Ollama's is Ollama's own setting (Aura's default 16k). Rebuilt on a switch.
-            budget = (self.settings.llamacpp_context_tokens if self.active_model.provider == "llamacpp"
-                      else self.settings.context_tokens)
+            budget = self._context_budget(self.active_model)
             self._summarization = UsageAwareSummarizationMiddleware(
                 model=self.llm,
                 trigger=("tokens", int(budget * 0.6)),
@@ -585,9 +574,34 @@ class Aura:
             self.reload_tools()
             return
         key = self.toolbox.secrets.get("anthropic_api_key") if choice.provider == "anthropic" else None
-        self.llm = build_model(self.settings, choice, key)
+        self.llm = build_model(self.settings, choice, key, context=self._context_budget(choice))
         self.active_model = choice
         self.reload_tools()
+
+    def refresh_model(self) -> None:
+        """The active model's settings changed: rebuild it (and the agent around it) between turns."""
+        if not self._injected_model:
+            choice = self.active_model
+            key = self.toolbox.secrets.get("anthropic_api_key") if choice.provider == "anthropic" else None
+            self.llm = build_model(self.settings, choice, key, context=self._context_budget(choice))
+        self.reload_tools()
+
+    def _context_budget(self, choice: ModelChoice) -> int:
+        """The memory budget for a model: its own setting or the provider's default, but never more
+        than the window an Ollama server actually allocated, so it never drops or refuses part of
+        a conversation (docs/model-settings.md §4). A cap is recorded once, for the Observer.
+        llama-server's window is Aura's to set, so it is started with the model's budget instead."""
+        wanted = model_budget(self.settings, choice, ModelSettingsStore(self.settings).get(choice))
+        if choice.provider != "ollama" or self._injected_model:
+            return wanted
+        window = ollama_window(self.settings, choice.model)
+        if window is None or wanted <= window:
+            return wanted
+        if self._capped != (choice.model, window):
+            self._capped = (choice.model, window)
+            self.toolbox.audit.record("context_budget_capped", model=choice.model, provider=choice.provider,
+                                      budget=wanted, window=window)
+        return window
 
     def new_conversation(self) -> None:
         old = getattr(self, "thread_id", None)

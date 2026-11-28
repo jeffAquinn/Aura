@@ -130,6 +130,7 @@ class LlamaServer:
         self._watcher: threading.Thread | None = None
         self._closed = threading.Event()
         self._wanted: str | None = None  # the model the latest request wants; a load for another stops
+        self._served_window: int | None = None  # the -c the running server was started with
         self.reap_stale()
 
     # ── what health and routing ask ─────────────────────────────────────────────────────────
@@ -171,12 +172,19 @@ class LlamaServer:
             str(self.binary), "-m", str(path), "--alias", name,
             "--host", self.host, "--port", str(self.port),
             "--jinja",  # the model's chat template: Aura's tool calls need it
-            "-c", str(self.settings.llamacpp_context_tokens),  # Aura's memory compaction matches the window
+            "-c", str(self.window(name)),  # Aura's memory compaction matches the window
             "--parallel", "1",  # one conversation: the whole window serves the turn
             "-ngl", "99",  # every layer on the GPU
             "-fa", "on", "--cache-type-k", "q8_0", "--cache-type-v", "q8_0",  # a smaller KV cache
             "--cors-origins", "localhost",  # no web page on another origin
         ]
+
+    def window(self, model: str) -> int:
+        """The window to serve `model` with: its own context budget, or the llama.cpp default."""
+        from aura.model_settings import ModelSettingsStore, budget
+
+        choice = ModelChoice("llamacpp", model)
+        return budget(self.settings, choice, ModelSettingsStore(self.settings).get(choice))
 
     def ensure(self, model: str, cancel: threading.Event | None = None) -> None:
         """Serve `model`, starting (or switching) llama-server if needed; returns once it answers.
@@ -185,7 +193,7 @@ class LlamaServer:
         self._wanted = model
         with self._lock:
             self.touch()
-            if self.loaded(model):  # every turn asks: the usual answer needs no folder scan
+            if self.loaded(model) and self._served_window == self.window(model):  # the usual answer
                 return
             path = gguf_models(self.settings).get(model)
             if path is None:
@@ -203,6 +211,7 @@ class LlamaServer:
                 self._proc = subprocess.Popen(self.argv(path, model), stdin=subprocess.DEVNULL, stdout=out,
                                               stderr=subprocess.STDOUT, env={**os.environ, "LLAMA_API_KEY": API_KEY})
             self.model, self._ready = model, False
+            self._served_window = self.window(model)
             self.pid_file.parent.mkdir(parents=True, exist_ok=True)
             # The owner too: a second Aura on this data folder must not take this one for a crash.
             self.pid_file.write_text(json.dumps({"pid": self._proc.pid, "owner": os.getpid()}))

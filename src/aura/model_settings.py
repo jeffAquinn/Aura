@@ -1,0 +1,180 @@
+"""Per-model settings (docs/model-settings.md, step 5 of docs/models-window.md).
+
+Settings belong to a model, not a role: they're keyed "<provider>:<model>" (split at the first
+colon; provider names have none, model names may: "ollama:qwen3.5:9b") and kept in
+model_settings.json beside model_routing.json. Every field is optional: one that isn't set isn't
+sent, so the model's own default (or Aura's global value, for effort, context and reply length)
+applies. The file holds no secrets.
+
+A model with nothing saved uses its recommended values, if it has any (Bonsai's, measured on its
+Q2_0 build); saving settings for it replaces them, and clearing them brings them back.
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass
+from typing import Any
+
+import httpx
+
+from aura.config import Settings
+from aura.model_routing import ModelChoice, local_root
+
+# name: (lowest, highest, type)
+RANGES: dict[str, tuple[float, float, type]] = {
+    "temperature": (0, 2, float),
+    "top_p": (0, 1, float),
+    "min_p": (0, 1, float),
+    "top_k": (1, 200, int),
+    "presence_penalty": (-2, 2, float),
+    "repeat_penalty": (0.5, 2, float),
+    "context_budget": (4_096, 262_144, int),
+    "max_reply_tokens": (1_024, 32_768, int),
+}
+EFFORTS = {"llamacpp": ("none", "low", "medium", "high"), "ollama": ("none", "low", "medium", "high"),
+           "anthropic": ("low", "medium", "high", "max")}
+# What each provider accepts (the spec's §3). Current Claude models reject temperature, top_p and
+# top_k; Ollama's OpenAI endpoint doesn't pass top_k, min_p or repeat_penalty through.
+ACCEPTED = {
+    "llamacpp": {"temperature", "top_p", "top_k", "min_p", "presence_penalty", "repeat_penalty", "effort",
+                 "context_budget", "max_reply_tokens"},
+    "ollama": {"temperature", "top_p", "presence_penalty", "effort", "context_budget", "max_reply_tokens"},
+    "anthropic": {"effort", "context_budget", "max_reply_tokens"},
+}
+# Recommended values, by model family (docs/model-settings.md §5 and §10: Bonsai's non-thinking
+# values tied on accuracy and were 30% faster than its file's thinking-mode defaults).
+RECOMMENDED: dict[str, dict[str, Any]] = {
+    "bonsai": {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "min_p": 0.0, "presence_penalty": 0.0,
+               "repeat_penalty": 1.0},
+}
+
+
+def key(choice: ModelChoice) -> str:
+    return f"{choice.provider}:{choice.model}"
+
+
+def choice_of(text: str) -> ModelChoice:
+    provider, _, model = text.partition(":")
+    return ModelChoice(provider, model).validate()  # type: ignore[arg-type]
+
+
+def recommended(choice: ModelChoice) -> dict[str, Any]:
+    """A llama.cpp model's recommended values, matched by family name; {} for others."""
+    if choice.provider != "llamacpp":
+        return {}
+    name = choice.model.lower()
+    return next((dict(values) for family, values in RECOMMENDED.items() if family in name), {})
+
+
+def validate(choice: ModelChoice, values: dict[str, Any]) -> dict[str, Any]:
+    """The settings, checked: only what the provider accepts, each within its range. Raises
+    ValueError naming the field. None or "" means "not set" and is dropped."""
+    accepted = ACCEPTED.get(choice.provider, set())
+    out: dict[str, Any] = {}
+    for name, value in values.items():
+        if value is None or value == "":
+            continue
+        if name not in accepted:
+            raise ValueError(f"{name} isn't a setting {choice.provider} models accept.")
+        if name == "effort":
+            if value not in EFFORTS[choice.provider]:
+                raise ValueError(f"effort must be one of: {', '.join(EFFORTS[choice.provider])}.")
+            out[name] = value
+            continue
+        low, high, kind = RANGES[name]
+        try:
+            number = kind(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"{name} must be a number.") from None
+        if isinstance(value, bool) or not low <= number <= high:
+            raise ValueError(f"{name} must be between {low:g} and {high:g}.")
+        out[name] = number
+    return out
+
+
+@dataclass
+class ModelSettingsStore:
+    settings: Settings
+
+    @property
+    def path(self):
+        return self.settings.data_dir / "model_settings.json"
+
+    def all(self) -> dict[str, dict[str, Any]]:
+        try:
+            raw = json.loads(self.path.read_text())
+        except (OSError, ValueError):
+            return {}  # missing or unreadable: no settings, today's behavior
+        return {k: v for k, v in raw.items() if isinstance(v, dict)} if isinstance(raw, dict) else {}
+
+    def stored(self, choice: ModelChoice) -> dict[str, Any] | None:
+        return self.all().get(key(choice))
+
+    def get(self, choice: ModelChoice) -> dict[str, Any]:
+        """The settings in effect: what's saved, or the model's recommended values."""
+        saved = self.stored(choice)
+        if saved is not None:
+            try:
+                return validate(choice, saved)
+            except ValueError:
+                return {}  # a hand-edited bad value: fall back to the model's own defaults
+        return recommended(choice)
+
+    def put(self, choice: ModelChoice, values: dict[str, Any]) -> dict[str, Any]:
+        """Save the model's settings (validated). Empty: forget them, so recommended values (if
+        any) apply again."""
+        checked = validate(choice.validate(), values)
+        everything = self.all()
+        if checked:
+            everything[key(choice)] = checked
+        else:
+            everything.pop(key(choice), None)
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = self.path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(everything, indent=2, sort_keys=True) + "\n")
+        tmp.replace(self.path)
+        return checked
+
+
+def budget(settings: Settings, choice: ModelChoice, values: dict[str, Any]) -> int:
+    """The model's context budget (Aura's compaction limit): its own, or the provider's default."""
+    if "context_budget" in values:
+        return int(values["context_budget"])
+    return settings.llamacpp_context_tokens if choice.provider == "llamacpp" else settings.context_tokens
+
+
+def reply_tokens(settings: Settings, choice: ModelChoice, values: dict[str, Any], context: int) -> int:
+    """The reply limit: the model's own or the global one; a local model's is at most half its window."""
+    limit = int(values.get("max_reply_tokens", settings.max_reply_tokens))
+    return limit if choice.provider == "anthropic" else min(limit, context // 2)
+
+
+def ollama_window(settings: Settings, model: str) -> int | None:
+    """The context window Ollama has allocated for a loaded model (`ollama ps`); None if it isn't
+    loaded or Ollama can't say. Aura can't set it: it's Ollama's own setting."""
+    try:
+        listed = httpx.get(f"{local_root(settings.base_url)}/api/ps", timeout=2).json().get("models", [])
+    except (ValueError, httpx.HTTPError, AttributeError):
+        return None
+    for m in listed:
+        if model in (m.get("name"), m.get("model")) and m.get("context_length"):
+            return int(m["context_length"])
+    return None
+
+
+def request_options(settings: Settings, choice: ModelChoice, values: dict[str, Any], context: int) -> dict[str, Any]:
+    """What a model's settings add to its client: each provider is sent only what it accepts."""
+    options: dict[str, Any] = {"max_tokens": reply_tokens(settings, choice, values, context)}
+    if choice.provider == "anthropic":
+        if "effort" in values:
+            options["output_config"] = {"effort": values["effort"]}
+        return options
+    options["reasoning_effort"] = values.get("effort", settings.reasoning_effort)
+    for name in ("temperature", "top_p", "presence_penalty"):
+        if name in values:
+            options[name] = values[name]
+    extra = {name: values[name] for name in ("top_k", "min_p", "repeat_penalty") if name in values}
+    if extra and choice.provider == "llamacpp":
+        options["extra_body"] = extra
+    return options

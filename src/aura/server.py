@@ -798,6 +798,12 @@ class ApprovalsIn(BaseModel):
     approval_id: str | None = Field(default=None, max_length=64)  # binds the answer to the card it answers
 
 
+class ModelSettingsIn(BaseModel):
+    provider: Provider
+    model: str = Field(min_length=1, max_length=200)
+    settings: dict[str, Any] = Field(default_factory=dict)
+
+
 class ChatOpenIn(BaseModel):
     id: str = Field(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$")
 
@@ -1307,6 +1313,45 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
                 "anthropic_key_set": aura.toolbox.secrets.get("anthropic_api_key") is not None,
                 "sleep_mode": routing.sleep_mode().public(),
                 "startup_model_problem": startup_problem}
+
+    def model_settings_view(choice: ModelChoice) -> dict:
+        from aura import model_settings as ms
+
+        store = ms.ModelSettingsStore(aura.settings)
+        return {"provider": choice.provider, "model": choice.model, "saved": store.stored(choice) or {},
+                "effective": store.get(choice), "recommended": ms.recommended(choice),
+                "accepted": sorted(ms.ACCEPTED.get(choice.provider, ())), "efforts": list(ms.EFFORTS[choice.provider]),
+                "ranges": {name: [low, high] for name, (low, high, _) in ms.RANGES.items()}}
+
+    @app.get("/v1/models/settings")
+    def get_model_settings(provider: str = Query(...), model: str = Query(..., max_length=200)) -> Response:
+        """One model's settings: what's saved, what's in effect, its recommended values, and what
+        its provider accepts (docs/model-settings.md)."""
+        try:
+            choice = ModelChoice(provider, model).validate()  # type: ignore[arg-type]
+        except ValueError as e:
+            return _error(422, str(e))
+        return JSONResponse(model_settings_view(choice))
+
+    @app.put("/v1/models/settings")
+    def put_model_settings(body: ModelSettingsIn) -> Response:
+        """Save one model's settings (validated; empty forgets them). If it's the model in use, it is
+        rebuilt with them between turns."""
+        from aura.model_settings import ModelSettingsStore
+
+        try:
+            choice = ModelChoice(body.provider, body.model).validate()
+            ModelSettingsStore(aura.settings).put(choice, body.settings)
+        except ValueError as e:
+            return _error(422, str(e))
+        if choice == aura.active_model:
+            if not turn.acquire(blocking=False):
+                return busy()
+            try:
+                aura.refresh_model()
+            finally:
+                turn.release()
+        return JSONResponse(model_settings_view(choice))
 
     @app.get("/v1/models/local")
     def local_models_state() -> dict:

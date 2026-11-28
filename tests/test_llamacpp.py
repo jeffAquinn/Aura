@@ -219,7 +219,7 @@ def test_the_status_follows_the_chat_box_pick_and_shows_a_model_loading(settings
 
 
 def test_bonsai_gets_its_recommended_sampling_and_other_models_their_own_defaults(settings):
-    from aura.brain import recommended_sampling
+    from aura.model_settings import recommended as recommended_sampling
 
     bonsai = build_model(settings, ModelChoice("llamacpp", "Ternary-Bonsai-2.5-27B-Q2_0"))
     assert (bonsai.temperature, bonsai.top_p, bonsai.presence_penalty) == (0.7, 0.8, 0.0)
