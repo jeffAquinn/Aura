@@ -40,7 +40,7 @@ public enum ModelsPage: String, CaseIterable, Identifiable, Sendable {
     }
 
     /// Its controls are here now (not still in Settings).
-    var moved: Bool { self != .settings }
+    var moved: Bool { true }  // every page's controls are here (steps 2 to 6)
 
     /// The plan's step that moves this page's controls here (§12).
     var step: Int {
@@ -57,6 +57,8 @@ public enum ModelsPage: String, CaseIterable, Identifiable, Sendable {
 @MainActor @Observable
 public final class ModelsNavigation {
     public var page: ModelsPage = .roles
+    /// The model the Model settings page should show (the chat box's "Model settings…").
+    public var settingsModel: ModelChoice?
     public init() {}
 }
 
@@ -77,7 +79,7 @@ public struct ModelsView: View {
                 }
                 .navigationSplitViewColumnWidth(min: 170, ideal: 190, max: 240)
             } detail: {
-                ModelsPageView(page: navigation.page, store: store)
+                ModelsPageView(page: navigation.page, store: store, navigation: navigation)
             }
         }
         .task { await store.loadSettings() }  // the catalog: roles and the cloud connection, read-only here
@@ -88,9 +90,10 @@ public struct ModelsView: View {
 struct ModelsPageView: View {
     let page: ModelsPage
     let store: ChatStore
+    let navigation: ModelsNavigation
 
     var body: some View {
-        ScrollView { ModelsPageContent(page: page, catalog: store.modelCatalog, store: store) }
+        ScrollView { ModelsPageContent(page: page, catalog: store.modelCatalog, store: store, navigation: navigation) }
     }
 }
 
@@ -100,6 +103,7 @@ struct ModelsPageContent: View {
     let page: ModelsPage
     let catalog: ModelCatalog?
     var store: ChatStore? = nil
+    var navigation = ModelsNavigation()
 
     var body: some View {
             VStack(alignment: .leading, spacing: 14) {
@@ -109,7 +113,8 @@ struct ModelsPageContent: View {
                     switch page {
                     case .roles: RoleChoices(store: store, catalog: catalog)
                     case .local: LocalModelsPage(store: store, catalog: catalog)
-                    default: CloudModelsPage(store: store, catalog: catalog)
+                    case .cloud: CloudModelsPage(store: store, catalog: catalog)
+                    case .settings: ModelSettingsPage(store: store, catalog: catalog, navigation: navigation)
                     }
                 } else if page.moved {
                     Text(store?.transport == nil ? "Aura is offline." : "Loading model settings…").foregroundStyle(.secondary)
@@ -190,16 +195,17 @@ struct NowCard<Content: View>: View {
 
 /// Opens the Models window, at a page or where it was. Provided by the app.
 public struct OpenModelsAction: Sendable {
-    private let handler: @MainActor @Sendable (ModelsPage?) -> Void
+    private let handler: @MainActor @Sendable (ModelsPage?, ModelChoice?) -> Void
 
-    public init(_ handler: @escaping @MainActor @Sendable (ModelsPage?) -> Void) {
+    public init(_ handler: @escaping @MainActor @Sendable (ModelsPage?, ModelChoice?) -> Void) {
         self.handler = handler
     }
 
-    @MainActor public func callAsFunction(_ page: ModelsPage? = nil) { handler(page) }
+    /// `model`: the model the Model settings page should show.
+    @MainActor public func callAsFunction(_ page: ModelsPage? = nil, model: ModelChoice? = nil) { handler(page, model) }
 }
 
 public extension EnvironmentValues {
     /// Provided by the app.
-    @Entry var openModels = OpenModelsAction { _ in }
+    @Entry var openModels = OpenModelsAction { _, _ in }
 }

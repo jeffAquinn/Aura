@@ -1345,6 +1345,7 @@ private struct AuraUsageView: View {
 /// Developer turns use the selected coding harness, so this control is shown only for Aura turns.
 struct ChatModelPicker: View {
     let store: ChatStore
+    @Environment(\.openModels) private var openModels
     static let automatic = ""
     static let labelLength = 14  // characters: the lane is 146 points, shared with the Developer button
 
@@ -1391,6 +1392,8 @@ struct ChatModelPicker: View {
                 }
             }
             .pickerStyle(.inline)
+            Divider()
+            Button("Model settings…") { openModels(.settings, model: store.chatModel ?? store.automaticModel) }
         } label: {
             HStack(spacing: 3) {
                 Image(systemName: "cpu")

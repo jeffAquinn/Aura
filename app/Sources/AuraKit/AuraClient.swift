@@ -80,6 +80,9 @@ public protocol AuraTransport: Sendable {
     func conversation() async throws -> ConversationInfo
     /// The local models for the Models window's Local page.
     func localModels() async throws -> LocalModels
+    /// One model's settings, and saving them (empty: back to its recommended values or defaults).
+    func modelSettings(_ choice: ModelChoice) async throws -> ModelSettingsInfo
+    func updateModelSettings(_ choice: ModelChoice, _ values: [String: JSONValue]) async throws -> ModelSettingsInfo
     /// The saved chats (vault Chats/), newest first, and which is open.
     func chats() async throws -> SavedChats
     /// Make a saved chat the current conversation again.
@@ -166,6 +169,10 @@ extension AuraTransport {
     public func conversation() async throws -> ConversationInfo { throw AuraClientError.badResponse }
     public func chats() async throws -> SavedChats { throw AuraClientError.badResponse }
     public func localModels() async throws -> LocalModels { throw AuraClientError.badResponse }
+    public func modelSettings(_ choice: ModelChoice) async throws -> ModelSettingsInfo { throw AuraClientError.badResponse }
+    public func updateModelSettings(_ choice: ModelChoice, _ values: [String: JSONValue]) async throws -> ModelSettingsInfo {
+        throw AuraClientError.badResponse
+    }
     public func openChat(_ id: String) async throws -> ConversationInfo { throw AuraClientError.badResponse }
     public func retryBuild(_ id: String) async throws -> BuildInfo { throw AuraClientError.badResponse }
     public func dismissRecovery(_ id: String) async throws {}
@@ -275,6 +282,21 @@ public final class AuraClient: AuraTransport {
 
     public func localModels() async throws -> LocalModels {
         try Self.decoder.decode(LocalModels.self, from: await send(request("/v1/models/local")))
+    }
+
+    // A plain decoder: snake_case conversion would rename the settings' own keys (max_reply_tokens).
+    public func modelSettings(_ choice: ModelChoice) async throws -> ModelSettingsInfo {
+        var r = request("/v1/models/settings")
+        r.url = r.url?.appending(queryItems: [URLQueryItem(name: "provider", value: choice.provider),
+                                              URLQueryItem(name: "model", value: choice.model)])
+        return try JSONDecoder().decode(ModelSettingsInfo.self, from: await send(r))
+    }
+
+    public func updateModelSettings(_ choice: ModelChoice, _ values: [String: JSONValue]) async throws -> ModelSettingsInfo {
+        var r = request("/v1/models/settings", body: ModelSettingsUpdate(provider: choice.provider, model: choice.model,
+                                                                         settings: values))
+        r.httpMethod = "PUT"
+        return try JSONDecoder().decode(ModelSettingsInfo.self, from: await send(r))
     }
 
     public func openChat(_ id: String) async throws -> ConversationInfo {

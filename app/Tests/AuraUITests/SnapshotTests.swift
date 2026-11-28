@@ -149,6 +149,33 @@ struct SnapshotTests {
         }
     }
 
+    /// Step 6: a Claude model greys out the sampling fields; Bonsai shows its recommended values.
+    @Test func theModelSettingsPageGreysOutWhatAProviderRejects() throws {
+        let catalog = ModelCatalog(
+            roles: ["chat": ModelChoice(provider: "anthropic", model: "claude-sonnet-5-5")], roleLabels: [:],
+            ollamaModels: ["qwen3.5:9b"], anthropicModels: ["claude-sonnet-5-5"], anthropicKeySet: true,
+            codingEngine: "claude", sleepMode: SleepMode(model: ""), startupModelProblem: nil,
+            llamacppModels: ["Ternary-Bonsai-2.5-27B-Q2_0"])
+        let ranges: [String: [Double]] = ["temperature": [0, 2], "top_p": [0, 1], "top_k": [1, 200], "min_p": [0, 1],
+                                          "presence_penalty": [-2, 2], "repeat_penalty": [0.5, 2],
+                                          "context_budget": [4096, 262_144], "max_reply_tokens": [1024, 32768]]
+        let claude = ModelSettingsInfo(provider: "anthropic", model: "claude-sonnet-5-5", saved: ["effort": .string("high")],
+                                       effective: ["effort": .string("high")], recommended: [:],
+                                       accepted: ["context_budget", "effort", "max_reply_tokens"],
+                                       efforts: ["low", "medium", "high", "max"], ranges: ranges)
+        let bonsaiValues: [String: JSONValue] = ["temperature": .number(0.7), "top_p": .number(0.8), "top_k": .number(20)]
+        let bonsai = ModelSettingsInfo(provider: "llamacpp", model: "Ternary-Bonsai-2.5-27B-Q2_0", saved: [:],
+                                       effective: bonsaiValues, recommended: bonsaiValues,
+                                       accepted: ["temperature", "top_p", "top_k", "min_p", "presence_penalty",
+                                                  "repeat_penalty", "effort", "context_budget", "max_reply_tokens"],
+                                       efforts: ["none", "low", "medium", "high"], ranges: ranges)
+        for (name, info) in [("claude", claude), ("bonsai", bonsai)] {
+            let page = ModelSettingsPage(store: ChatStore(items: []), catalog: catalog, navigation: ModelsNavigation(), initial: info)
+            #expect(try renderWide("40-model-settings-\(name)", width: 640, page.padding(24)).height > 400)
+        }
+        #expect(ModelSettingsPage.texts(["top_k": .number(20), "temperature": .number(0.7)]) == ["top_k": "20", "temperature": "0.7"])
+    }
+
     @Test func welcome() throws {
         let size = try render("1-welcome", ChatStore(items: []))
         #expect(size.width == 840 && size.height > 500)

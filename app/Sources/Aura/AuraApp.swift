@@ -72,7 +72,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         })
         .environment(\.openWorkshop, OpenWorkshopAction { [weak self] taskID in self?.openWorkshop(taskID) })
         .environment(\.openConnections, OpenConnectionsAction { [weak self] id in self?.openConnections(id) })
-        .environment(\.openModels, OpenModelsAction { [weak self] page in self?.openModels(page) })
+        .environment(\.openModels, OpenModelsAction { [weak self] page, model in self?.openModels(page, model: model) })
         panel = AuraPanel(rootView: chat)
         panel.onHide = { [weak self] in self?.panelHidden() }
         hotKey = HotKey(keyCode: UInt32(kVK_Space), modifiers: UInt32(optionKey)) { [weak self] in
@@ -442,7 +442,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func openModelsFromMenu() { openModels(nil) }
 
     /// Every model setting in one window (docs/models-window.md), at `page` or where it was.
-    func openModels(_ page: ModelsPage?) {
+    func openModels(_ page: ModelsPage?, model: ModelChoice? = nil) {
         if modelsWindow == nil {
             let window = NSWindow(
                 contentRect: NSRect(x: 0, y: 0, width: 900, height: 640),
@@ -456,6 +456,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             modelsWindow = window
         }
         if let page { modelsNavigation.page = page }
+        if let model { modelsNavigation.settingsModel = model }
         NSApp.activate()
         modelsWindow?.makeKeyAndOrderFront(nil)
         AppLog.write("models opened")

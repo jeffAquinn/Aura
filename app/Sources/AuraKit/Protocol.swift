@@ -221,6 +221,37 @@ public struct LocalModelPerformance: Codable, Equatable, Sendable {
 }
 
 /// The conversation as the server keeps it: it survives a restart of the server.
+/// One model's settings (GET/PUT /v1/models/settings, docs/model-settings.md): what's saved, what's
+/// in effect (saved, or its recommended values), its recommended values, and what its provider takes.
+public struct ModelSettingsInfo: Codable, Sendable, Equatable {
+    public let provider: String
+    public let model: String
+    public let saved: [String: JSONValue]
+    public let effective: [String: JSONValue]
+    public let recommended: [String: JSONValue]
+    public let accepted: [String]
+    public let efforts: [String]
+    public let ranges: [String: [Double]]
+
+    public init(provider: String, model: String, saved: [String: JSONValue], effective: [String: JSONValue],
+                recommended: [String: JSONValue], accepted: [String], efforts: [String], ranges: [String: [Double]]) {
+        self.provider = provider
+        self.model = model
+        self.saved = saved
+        self.effective = effective
+        self.recommended = recommended
+        self.accepted = accepted
+        self.efforts = efforts
+        self.ranges = ranges
+    }
+}
+
+public struct ModelSettingsUpdate: Encodable, Sendable {
+    public let provider: String
+    public let model: String
+    public let settings: [String: JSONValue]
+}
+
 /// The local models, as the Models window's Local page shows them (GET /v1/models/local).
 public struct LocalModels: Codable, Sendable, Equatable {
     public struct Model: Codable, Sendable, Equatable, Identifiable {

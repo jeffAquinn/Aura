@@ -55,3 +55,39 @@ struct SavedChatsTests {
         #expect(chat.when.contains("2 hours"))
     }
 }
+
+/// Saves a model's settings, or refuses them the way the server does (a value out of range).
+private final class SettingsSaveTransport: AuraTransport, @unchecked Sendable {
+    private(set) var sent: [[String: JSONValue]] = []
+    func chat(_ text: String) -> AsyncThrowingStream<AuraEvent, Error> { AsyncThrowingStream { $0.finish() } }
+    func approve(_ approvals: [Bool]) -> AsyncThrowingStream<AuraEvent, Error> { AsyncThrowingStream { $0.finish() } }
+    func newConversation() async throws {}
+    func warmup() async throws {}
+    func health() async throws -> Health { throw URLError(.notConnectedToInternet) }
+    func updateModelSettings(_ choice: ModelChoice, _ values: [String: JSONValue]) async throws -> ModelSettingsInfo {
+        sent.append(values)
+        if case let .number(t)? = values["temperature"], t > 2 {
+            throw AuraClientError.http(status: 422, message: "temperature must be between 0 and 2.")
+        }
+        return ModelSettingsInfo(provider: choice.provider, model: choice.model, saved: values, effective: values,
+                                 recommended: [:], accepted: ["temperature"], efforts: [], ranges: [:])
+    }
+}
+
+@MainActor
+struct ModelSettingsStoreTests {
+    @Test func savingSettingsReturnsThemOrTheServersReason() async {
+        let transport = SettingsSaveTransport()
+        let store = ChatStore(items: [])
+        store.transport = transport
+        let qwen = ModelChoice(provider: "ollama", model: "qwen3.5:9b")
+        guard case let .success(info) = await store.saveModelSettings(qwen, ["temperature": .number(0.6)]) else {
+            Issue.record("the save failed"); return
+        }
+        #expect(info.saved == ["temperature": .number(0.6)])
+        guard case let .failure(error) = await store.saveModelSettings(qwen, ["temperature": .number(3)]) else {
+            Issue.record("an out-of-range value was saved"); return
+        }
+        #expect(error.message == "temperature must be between 0 and 2.")
+    }
+}

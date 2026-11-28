@@ -569,6 +569,23 @@ public final class ChatStore {
         await loadChats()
     }
 
+    /// One model's settings for the Model settings page; nil when Aura can't say.
+    public func modelSettings(_ choice: ModelChoice) async -> ModelSettingsInfo? {
+        try? await transport?.modelSettings(choice)
+    }
+
+    /// Save one model's settings: the saved view, or the server's reason (a value out of range).
+    public func saveModelSettings(_ choice: ModelChoice, _ values: [String: JSONValue]) async -> Result<ModelSettingsInfo, ModelSettingsError> {
+        guard let transport else { return .failure(ModelSettingsError(message: FriendlyMessage.offline)) }
+        do {
+            return .success(try await transport.updateModelSettings(choice, values))
+        } catch let AuraClientError.http(_, message) {
+            return .failure(ModelSettingsError(message: message))
+        } catch {
+            return .failure(ModelSettingsError(message: FriendlyMessage.describe(error)))
+        }
+    }
+
     /// Refresh the Models window's Local page (what is installed and loaded changes on its own).
     public func loadLocalModels() async {
         if let state = try? await transport?.localModels() { localModels = state }
@@ -735,4 +752,9 @@ public final class ChatStore {
             frames.forEach(applyMirror)
         }
     }
+}
+
+/// Why a model's settings weren't saved (the server's own message).
+public struct ModelSettingsError: Error, Equatable, Sendable {
+    public let message: String
 }
