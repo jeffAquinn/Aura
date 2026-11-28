@@ -192,34 +192,14 @@ struct UserProfileSection: View {
 /// Settings → Models. Choices are stored by role; keys remain in the Keychain and never appear here.
 struct ModelsSection: View {
     let store: ChatStore
-    @State private var error: String?
     @Environment(\.openModels) private var openModels
-    @State private var syncingCloudModels = false
 
     var body: some View {
         Section("Models") {
             if let catalog = store.modelCatalog {
-                Text("Ollama is local by default. Selecting a cloud model sends that role's prompts to Anthropic; it does not preload a model at launch.")
-                    .font(.caption).foregroundStyle(.secondary)
-                if !catalog.anthropicKeySet {
-                    Label("Add an Anthropic API key below before choosing Claude.", systemImage: "key.fill")
-                        .font(.caption).foregroundStyle(.orange)
-                }
+                // docs/models-window.md: every model setting is in the Models window now.
                 HStack {
-                    Button(syncingCloudModels ? "Syncing cloud models…" : "Sync cloud models") { syncCloudModels() }
-                        .disabled(syncingCloudModels || !catalog.anthropicKeySet)
-                    if syncingCloudModels { ProgressView().controlSize(.small) }
-                    Spacer()
-                    Text("\(catalog.anthropicModels.count) available")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-                .controlSize(.small)
-                Text("Sync checks Anthropic with your saved API key and lists the cloud models available to that account. It never exposes the key to Aura’s interface.")
-                    .font(.caption).foregroundStyle(.secondary)
-                // Step 2 of docs/models-window.md: each role's model and the Coding developer are
-                // chosen in the Models window now.
-                HStack {
-                    Label("Each role's model, the Developer for coding, local models and Sleep Mode are in the Models window.",
+                    Label("Model roles, local and cloud models (the Anthropic key included) and Sleep Mode are in the Models window.",
                           systemImage: "arrow.triangle.branch")
                         .font(.callout)
                     Spacer()
@@ -228,24 +208,11 @@ struct ModelsSection: View {
                 if let problem = catalog.startupModelProblem {
                     Label(problem, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
                 }
-                if let error {
-                    Label(error, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
-                }
             } else {
                 Text(store.transport == nil ? "Aura is offline." : "Loading model settings…").foregroundStyle(.secondary)
             }
         }
     }
-
-    private func syncCloudModels() {
-        syncingCloudModels = true
-        error = nil
-        Task {
-            error = await store.syncCloudModels()
-            syncingCloudModels = false
-        }
-    }
-
 }
 
 /// The chat's font, text size and bubble colors, with a live preview.
@@ -461,7 +428,8 @@ struct KeysSection: View {
 
     var body: some View {
         Section {
-            ForEach(store.secrets) { KeyRow(secret: $0, store: store) }
+            // The Anthropic API key is on the Models window's Cloud page (Aura's ruling, 2026-11-27).
+            ForEach(store.secrets.filter { !CloudModelsPage.keys.contains($0.name) }) { KeyRow(secret: $0, store: store) }
             if store.secrets.isEmpty {
                 Text(store.transport == nil ? "Aura is offline." : "Loading…").foregroundStyle(.secondary)
             }

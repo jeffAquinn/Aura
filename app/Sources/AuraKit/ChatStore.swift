@@ -502,7 +502,7 @@ public final class ChatStore {
 
     // MARK: - keys (Settings → Keys; values go to the macOS Keychain and never come back)
 
-    public private(set) var secrets: [SecretInfo] = []
+    public internal(set) var secrets: [SecretInfo] = []  // internal: snapshot tests fill it
 
     public func loadSecrets() async {
         if let listing = try? await transport?.secrets() { secrets = listing }

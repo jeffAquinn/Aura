@@ -140,6 +140,8 @@ struct SnapshotTests {
                             models: [.init(name: "Ternary-Bonsai-2.5-27B-Q2_0", gb: 7.1, loaded: false)],
                             server: .init(running: false, model: nil)),
             sleepMode: SleepMode(model: "qwen3.5:9b"), idleUnload: "10m")
+        store.secrets = [SecretInfo(name: "anthropic_api_key", label: "Anthropic API key (Aura cloud models)", set: true,
+                                    hint: "sk-ant-…1234")]
         for page in ModelsPage.allCases {
             let size = try renderWide("39-models-\(page.rawValue)", width: 640,
                                       ModelsPageContent(page: page, catalog: catalog, store: store))

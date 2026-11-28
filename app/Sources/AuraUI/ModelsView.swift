@@ -40,7 +40,7 @@ public enum ModelsPage: String, CaseIterable, Identifiable, Sendable {
     }
 
     /// Its controls are here now (not still in Settings).
-    var moved: Bool { self == .roles || self == .local }
+    var moved: Bool { self != .settings }
 
     /// The plan's step that moves this page's controls here (§12).
     var step: Int {
@@ -106,7 +106,11 @@ struct ModelsPageContent: View {
                 Label(page.title, systemImage: page.symbol).font(.title2.weight(.semibold))
                 Text(page.summary).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 if page.moved, let catalog, let store {
-                    if page == .roles { RoleChoices(store: store, catalog: catalog) } else { LocalModelsPage(store: store, catalog: catalog) }
+                    switch page {
+                    case .roles: RoleChoices(store: store, catalog: catalog)
+                    case .local: LocalModelsPage(store: store, catalog: catalog)
+                    default: CloudModelsPage(store: store, catalog: catalog)
+                    }
                 } else if page.moved {
                     Text(store?.transport == nil ? "Aura is offline." : "Loading model settings…").foregroundStyle(.secondary)
                 } else {
