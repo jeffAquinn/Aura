@@ -146,7 +146,7 @@ struct SpecificationApprovalTests {
 
     @Test func theSpecificationNeedsAllItsSections() {
         #expect(Specification.problems(spec).isEmpty)
-        #expect(Specification.problems(Specification.template).first?.hasPrefix("it must be 150–12000 characters") == true)
+        #expect(Specification.problems(Specification.template).first?.hasPrefix("it must be 150–30000 characters") == true)
         #expect(Specification.template.contains("## Mechanics\n- Network: none\n") && Specification.template.contains("- Files: \n"))
         let noTests = spec.replacingOccurrences(of: "## Acceptance tests", with: "## Checks")
         #expect(Specification.problems(noTests) == ["missing sections: Acceptance tests"])
