@@ -120,6 +120,23 @@ struct SnapshotTests {
         #expect(used > 256 * 1_048_576 && used < ProcessInfo.processInfo.physicalMemory)
     }
 
+    /// Step 1 of the Models window: four pages; Roles and Cloud show today's setup, read-only.
+    @Test func theModelsWindowHasItsFourPages() throws {
+        #expect(ModelsPage.allCases.map(\.title) == ["Roles", "Local", "Cloud", "Model settings"])
+        let catalog = ModelCatalog(
+            roles: ["startup": ModelChoice(provider: "ollama", model: "qwen3.5:9b"),
+                    "chat": ModelChoice(provider: "ollama", model: "gemma4:26b"),
+                    "web_search": ModelChoice(provider: "llamacpp", model: "Ternary-Bonsai-2.5-27B-Q2_0"),
+                    "deep_research": ModelChoice(provider: "anthropic", model: "claude-opus-5-5")],
+            roleLabels: ["startup": "Model on startup", "chat": "Chat", "web_search": "Web Search", "deep_research": "Deep Research"],
+            ollamaModels: ["gemma4:26b", "qwen3.5:9b"], anthropicModels: ["claude-opus-5-5", "claude-sonnet-5-5"],
+            anthropicKeySet: true, codingEngine: "claude", sleepMode: SleepMode(model: "qwen3.5:9b"), startupModelProblem: nil)
+        for page in ModelsPage.allCases {
+            let size = try renderWide("39-models-\(page.rawValue)", width: 640, ModelsPageContent(page: page, catalog: catalog))
+            #expect(size.height > 200)
+        }
+    }
+
     @Test func welcome() throws {
         let size = try render("1-welcome", ChatStore(items: []))
         #expect(size.width == 840 && size.height > 500)

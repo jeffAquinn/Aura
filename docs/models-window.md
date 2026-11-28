@@ -197,7 +197,7 @@ On the **Local** page, under "Find models", each with one sentence on what it is
 
 Each step is a vertical slice that ships and is tested on its own.
 
-1. **The window, empty, and its menu items.** Snapshot of the four pages with placeholders. Nothing moves yet.
+1. **The window, empty, and its menu items.** Snapshot of the four pages with placeholders. Nothing moves yet. **Done 2026-11-27:** `app/Sources/AuraUI/ModelsView.swift`; "Models…" in the menu-bar menu and the panel's ⋯ menu; Roles and Cloud show today's setup read-only (the Anthropic connection included); Settings, Keys, `model_routing.json` and the Keychain unchanged.
 2. **Roles page.** Move the role pickers, Coding and the Startup problem from `ModelsSection`. Settings shows the pointer. Store and snapshot tests.
 3. **Local page.** Move Sleep Mode and Install a model. Add `local_state` and `GET /v1/models/local` (`list_models` rebuilt on it), llama.cpp files, the app's memory figure, and the download links.
 4. **Cloud page.** Move the Anthropic key row (removed from Keys) and Sync cloud models.
@@ -209,7 +209,7 @@ Each step is a vertical slice that ships and is tested on its own.
 ## 13. Questions
 
 1. ~~Per-model "model notes"?~~ **Resolved by Aura: no per-model prompt text, ever** (§2).
-2. **Still open:** is Phase 2 (OpenAI-compatible cloud providers) wanted, and should a provider's host appear on every reply's model label?
+2. ~~Phase 2 (OpenAI-compatible cloud providers)?~~ **Resolved by the user: no Phase 2 for now** (2026-11-27). Anthropic stays the only cloud provider; its connection, key and synced models are kept exactly as they are.
 3. ~~Anthropic key also in Settings → Keys?~~ **Resolved by Aura: only on the Models window's Cloud page, no pointer** (§5).
 
 ## 14. Aura's review (2026-11-27) and what changed

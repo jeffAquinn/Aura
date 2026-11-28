@@ -136,6 +136,7 @@ struct HeaderView: View {
     @Environment(\.rendersOffscreen) private var offscreen
     @Environment(\.openWorkshop) private var openWorkshop
     @Environment(\.openConnections) private var openConnections
+    @Environment(\.openModels) private var openModels
 
     private var speaking: Bool { store.speech?.isSpeaking == true }
 
@@ -205,6 +206,7 @@ struct HeaderView: View {
             ChatsMenu(store: store)
             Menu {
                 Button("Settings…") { showSettings = true }
+                Button("Models…") { openModels(nil) }
                 Divider()
                 Button("Connections…") { openConnections(nil) }
                 Button("Open Workshop…") { openWorkshop(nil) }

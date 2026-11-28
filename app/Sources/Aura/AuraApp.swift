@@ -40,6 +40,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private lazy var connections = ConnectionsStore(transport: { [weak self] in self?.store.transport },
                                                     openURL: { NSWorkspace.shared.open($0) })  // the user's browser
     private var connectionsWindow: NSWindow?
+    private var modelsWindow: NSWindow?
+    private let modelsNavigation = ModelsNavigation()
     private let feed = MessageFeed()  // live Slack and Discord messages
     private let notifier = Notifier()
 
@@ -70,6 +72,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         })
         .environment(\.openWorkshop, OpenWorkshopAction { [weak self] taskID in self?.openWorkshop(taskID) })
         .environment(\.openConnections, OpenConnectionsAction { [weak self] id in self?.openConnections(id) })
+        .environment(\.openModels, OpenModelsAction { [weak self] page in self?.openModels(page) })
         panel = AuraPanel(rootView: chat)
         panel.onHide = { [weak self] in self?.panelHidden() }
         hotKey = HotKey(keyCode: UInt32(kVK_Space), modifiers: UInt32(optionKey)) { [weak self] in
@@ -313,6 +316,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         add("Open Workstation…", #selector(openWorkstation))
         add("Open Observer…", #selector(openObserver))
         add("Connections…", #selector(openConnectionsFromMenu))
+        add("Models…", #selector(openModelsFromMenu))
         menu.addItem(.separator())
         add("Open Vault in Finder", #selector(openVault))
         add("Open Audit Log", #selector(openAuditLog))
@@ -435,6 +439,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// The Observer: Aura's own activity, live, beside the chat. Read-only.
+    @objc private func openModelsFromMenu() { openModels(nil) }
+
+    /// Every model setting in one window (docs/models-window.md), at `page` or where it was.
+    func openModels(_ page: ModelsPage?) {
+        if modelsWindow == nil {
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 900, height: 640),
+                styleMask: [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView],
+                backing: .buffered, defer: false)
+            window.title = "Aura Models"
+            window.isReleasedWhenClosed = false
+            window.contentView = NSHostingView(rootView: ModelsView(store: store, navigation: modelsNavigation))
+            window.setFrameAutosaveName("AuraModels")
+            if window.frame.origin == .zero { window.center() }
+            modelsWindow = window
+        }
+        if let page { modelsNavigation.page = page }
+        NSApp.activate()
+        modelsWindow?.makeKeyAndOrderFront(nil)
+        AppLog.write("models opened")
+    }
+
     @objc private func openObserver() {
         if observerWindow == nil {
             let window = NSWindow(
