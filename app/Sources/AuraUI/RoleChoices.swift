@@ -26,10 +26,10 @@ struct RoleChoices: View {
             }
             DeveloperCodingRow(store: store, engine: catalog.codingEngine)
             if let problem = catalog.startupModelProblem {
-                Label(problem, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+                WarningLabel(problem)
             }
             if let error {
-                Label(error, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+                WarningLabel(error)
             }
             HStack {
                 Text(saving ? "Saving model choices…" : "Model choices save automatically.")
@@ -114,9 +114,7 @@ struct ModelRoleRow: View {
             }
             HStack {
                 Picker("Provider", selection: $choice.provider) {
-                    Text("Ollama (local)").tag("ollama")
-                    Text("llama.cpp (local)").tag("llamacpp")
-                    Text("Anthropic (cloud)").tag("anthropic")
+                    ForEach(ModelProviders.all, id: \.id) { Text($0.title).tag($0.id) }
                 }
                 .labelsHidden()
                 .onChange(of: choice.provider) { provider in
@@ -160,7 +158,7 @@ struct DeveloperCodingRow: View {
             .disabled(saving)
             Text("Code-change requests use this connected Developer account after Aura presents its approval card. They do not use an Anthropic cloud-chat model.")
                 .font(.caption).foregroundStyle(.secondary)
-            if let error { Label(error, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange) }
+            if let error { WarningLabel(error) }
         }
         .padding(8)
         .background(Color.accentColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))

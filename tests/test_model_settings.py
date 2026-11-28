@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from aura import brain as brain_module
 from aura.brain import build_model
 from aura.model_routing import ModelChoice
-from aura.model_settings import ModelSettingsStore, choice_of, request_options, validate
+from aura.model_settings import ModelSettingsStore, request_options, validate
 
 BONSAI = ModelChoice("llamacpp", "Ternary-Bonsai-2.5-27B-Q2_0")
 QWEN = ModelChoice("ollama", "qwen3.5:9b")
@@ -21,7 +21,7 @@ def test_settings_are_saved_validated_and_kept_across_restarts(settings):
     assert store.put(QWEN, {"temperature": 0.6, "top_p": "", "max_reply_tokens": 4096}) == {"temperature": 0.6, "max_reply_tokens": 4096}
     assert ModelSettingsStore(settings).get(QWEN) == {"temperature": 0.6, "max_reply_tokens": 4096}  # a new store: same file
     assert '"ollama:qwen3.5:9b"' in store.path.read_text()  # keyed provider:model
-    assert choice_of("ollama:qwen3.5:9b") == QWEN  # split at the first colon
+    assert list(store.all()) == ["ollama:qwen3.5:9b"]  # the model name keeps its own colon
     for bad, message in [({"temperature": 3}, "temperature must be between 0 and 2"),
                          ({"top_k": 20}, "top_k isn't a setting ollama models accept"),
                          ({"effort": "max"}, "effort must be one of"),
@@ -73,8 +73,12 @@ def test_an_ollama_budget_beyond_its_window_is_capped_and_recorded_once(settings
     assert aura._context_budget(QWEN) == 16384 and aura._context_budget(QWEN) == 16384
     capped = [e for e in aura.toolbox.audit.entries() if e["event"] == "context_budget_capped"]
     assert len(capped) == 1 and (capped[0]["budget"], capped[0]["window"]) == (32768, 16384)
-    monkeypatch.setattr(brain_module, "ollama_window", lambda _s, model: None)  # not loaded: no cap
+    aura._windows.clear()
+    monkeypatch.setattr(brain_module, "ollama_window", lambda _s, model: 65536)  # a bigger window: no cap
     assert aura._context_budget(QWEN) == 32768
+    aura._windows.clear()
+    monkeypatch.setattr(brain_module, "ollama_window", lambda _s, model: None)  # not loaded yet:
+    assert aura._context_budget(QWEN) == settings.context_tokens  # its configured window is assumed
     aura._injected_model = True
 
 
@@ -103,3 +107,38 @@ def test_the_settings_endpoints(settings):
     bad = client.put("/v1/models/settings", json={"provider": "anthropic", "model": CLAUDE.model,
                                                  "settings": {"top_k": 5}}, headers=AUTH)
     assert bad.status_code == 422 and "top_k isn't a setting anthropic" in bad.json()["error"]
+
+
+def test_whole_numbers_and_hand_edited_values(settings):
+    with pytest.raises(ValueError, match="top_k must be a whole number"):
+        validate(BONSAI, {"top_k": 20.7})
+    assert validate(BONSAI, {"top_k": 20.0, "context_budget": "8192"}) == {"top_k": 20, "context_budget": 8192}
+    store = ModelSettingsStore(settings)
+    store.put(BONSAI, {"temperature": 0.7})
+    store.path.write_text('{"llamacpp:Ternary-Bonsai-2.5-27B-Q2_0": {"temperature": 0.7, "top_k": 500}}')
+    assert store.get(BONSAI) == {"temperature": 0.7}  # only the bad value is dropped
+
+
+def test_ollama_names_match_with_or_without_latest(settings, monkeypatch):
+    from aura import model_settings as ms
+
+    monkeypatch.setattr(ms, "ollama_loaded", lambda _s: [{"name": "llama3:latest", "context_length": 8192}])
+    assert ms.ollama_window(settings, "llama3") == 8192 and ms.ollama_window(settings, "llama3:8b") is None
+
+
+def test_saving_the_model_in_use_during_a_turn_changes_nothing(settings):
+    from aura.server import create_app
+    from conftest import make_aura
+    from test_model_routing import AUTH, TOKEN, NoopKeeper
+
+    aura, _ = make_aura(settings)
+    app = create_app(aura, TOKEN, NoopKeeper())
+    client = TestClient(app, base_url="http://127.0.0.1")
+    active = aura.active_model
+    app.state.turn.acquire()  # a turn is running
+    try:
+        busy = client.put("/v1/models/settings", json={"provider": active.provider, "model": active.model,
+                                                      "settings": {"temperature": 0.3}}, headers=AUTH)
+    finally:
+        app.state.turn.release()
+    assert busy.status_code == 409 and ModelSettingsStore(settings).stored(active) is None

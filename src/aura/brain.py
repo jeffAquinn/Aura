@@ -390,7 +390,9 @@ class Aura:
         self.active_model = ModelChoice("ollama", self.settings.model)
         self._injected_model = model is not None
         self._capped: tuple[str, int] | None = None  # the last budget cap recorded (once per change)
-        self.llm = model or build_model(self.settings, self.active_model, context=self._context_budget(self.active_model))
+        self._windows: dict[str, tuple[float, int | None]] = {}  # Ollama's window per model, briefly kept
+        self._budget = self._context_budget(self.active_model)
+        self.llm = model or build_model(self.settings, self.active_model, context=self._budget)
         # This guard is reset only for a new user turn. It survives an approval/resume within that
         # turn so an agent cannot evade the retry limit by splitting the same failed work in two.
         self._circuit_breaker = RecursionCircuitBreaker()
@@ -454,7 +456,7 @@ class Aura:
         def build(tools: list) -> Any:
             # The memory budget follows the model answering: Aura sets llama-server's window itself
             # (32k), while Ollama's is Ollama's own setting (Aura's default 16k). Rebuilt on a switch.
-            budget = self._context_budget(self.active_model)
+            budget = self._budget  # worked out when the model was built (select_model, refresh_model)
             self._summarization = UsageAwareSummarizationMiddleware(
                 model=self.llm,
                 trigger=("tokens", int(budget * 0.6)),
@@ -573,18 +575,23 @@ class Aura:
             self.active_model = choice
             self.reload_tools()
             return
-        key = self.toolbox.secrets.get("anthropic_api_key") if choice.provider == "anthropic" else None
-        self.llm = build_model(self.settings, choice, key, context=self._context_budget(choice))
+        self._build_llm(choice)
         self.active_model = choice
         self.reload_tools()
 
     def refresh_model(self) -> None:
         """The active model's settings changed: rebuild it (and the agent around it) between turns."""
-        if not self._injected_model:
-            choice = self.active_model
-            key = self.toolbox.secrets.get("anthropic_api_key") if choice.provider == "anthropic" else None
-            self.llm = build_model(self.settings, choice, key, context=self._context_budget(choice))
+        if self._injected_model:
+            self._budget = self._context_budget(self.active_model)
+        else:
+            self._build_llm(self.active_model)
         self.reload_tools()
+
+    def _build_llm(self, choice: ModelChoice) -> None:
+        """The model's client, with its settings and memory budget (worked out once, here)."""
+        key = self.toolbox.secrets.get("anthropic_api_key") if choice.provider == "anthropic" else None
+        self._budget = self._context_budget(choice)
+        self.llm = build_model(self.settings, choice, key, context=self._budget)
 
     def _context_budget(self, choice: ModelChoice) -> int:
         """The memory budget for a model: its own setting or the provider's default, but never more
@@ -594,8 +601,14 @@ class Aura:
         wanted = model_budget(self.settings, choice, ModelSettingsStore(self.settings).get(choice))
         if choice.provider != "ollama" or self._injected_model:
             return wanted
-        window = ollama_window(self.settings, choice.model)
-        if window is None or wanted <= window:
+        seen = self._windows.get(choice.model)
+        if seen is None or time.monotonic() - seen[0] > 60:  # Ollama's window changes only on a reload
+            seen = (time.monotonic(), ollama_window(self.settings, choice.model))
+            self._windows[choice.model] = seen
+        # Until Ollama has loaded the model (it loads on the first request), assume the window it
+        # is configured with (AURA_CONTEXT_TOKENS): the turn-start check below corrects it later.
+        window = seen[1] if seen[1] is not None else self.settings.context_tokens
+        if wanted <= window:
             return wanted
         if self._capped != (choice.model, window):
             self._capped = (choice.model, window)
@@ -933,6 +946,11 @@ class Aura:
         elif self.active_model.provider == "llamacpp" and not self._injected_model:
             # Only the Aura app's server runs llama-server (one per Mac, on one port).
             raise LocalModelError("llama.cpp models run in the Aura app. Choose an Ollama or cloud model here.")
+        if self.active_model.provider == "ollama" and not self._injected_model \
+                and self._context_budget(self.active_model) != self._budget:
+            # Ollama loaded the model since it was built (or reloaded it with another window): the
+            # memory budget follows the window it really has, before this turn runs.
+            self.refresh_model()
         performance = _LocalPerformanceRecorder() if self.active_model.provider in LOCAL_PROVIDERS else None
         callbacks: list[BaseCallbackHandler] = []
         if cancel is not None:

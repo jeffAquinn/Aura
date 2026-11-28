@@ -16,6 +16,7 @@ from langchain_core.tools import BaseTool, tool
 from aura.config import Settings
 from aura.llama_server import gguf_models, llamacpp_models
 from aura.model_routing import ROLE_LABELS, ModelRouting, local_root
+from aura.model_settings import ollama_loaded
 
 CODEX = "The_Interface_Many/models/registry.md"  # the vault's Model Codex (profiles), if present
 ROLE_ORDER = ("startup", "chat", "web_search", "deep_research")
@@ -26,11 +27,13 @@ def _ollama(settings: Settings) -> tuple[dict[str, float], set[str]] | None:
     try:
         root = local_root(settings.base_url)
         tags = httpx.get(f"{root}/api/tags", timeout=2).json().get("models", [])
-        ps = httpx.get(f"{root}/api/ps", timeout=2).json().get("models", [])
     except (ValueError, httpx.HTTPError, AttributeError):
         return None
+    loaded = ollama_loaded(settings)
+    if loaded is None:
+        return None
     installed = {str(m.get("name")): round(int(m.get("size") or 0) / 1e9, 1) for m in tags if m.get("name")}
-    return installed, {str(m.get("name") or m.get("model")) for m in ps}
+    return installed, {str(m.get("name") or m.get("model")) for m in loaded}
 
 
 def local_state(settings: Settings, llama_loaded: Callable[[], str | None]) -> dict[str, Any]:
@@ -51,7 +54,7 @@ def local_state(settings: Settings, llama_loaded: Callable[[], str | None]) -> d
                      "models": [{"name": name, "gb": round(files[name].stat().st_size / 1e9, 1) if name in files else None,
                                  "loaded": name == current} for name in llamacpp_models(settings)],
                      "server": {"running": current is not None, "model": current}},
-        "sleep_mode": {"enabled": sleep.enabled, "model": sleep.model},
+        "sleep_mode": sleep.public(),
         "idle_unload": settings.model_keep_alive,
     }
 

@@ -162,7 +162,7 @@ struct SleepModeControls: View {
             Text("After 10 minutes with nothing happening, Aura unloads every model to free your Mac's memory. With Sleep Mode on, it then loads this one local model and keeps it ready, so your next message answers quickly; it can use several GB of memory and stays loaded after Aura closes. With Sleep Mode off, nothing stays loaded.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             if let error {
-                Label(error, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+                WarningLabel(error)
             }
         }
         .onAppear { sleepMode = catalog.sleepMode }
@@ -222,7 +222,7 @@ struct InstallOllamaModel: View {
             Text("Downloads use your local Ollama daemon and its configured model folder, not Aura_Vault. Models can use several GB and may download from the internet. Only download a model name and source you trust.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             if let error {
-                Label(error, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+                WarningLabel(error)
             }
         }
         .confirmationDialog("Download local model?", isPresented: $confirm, titleVisibility: .visible) {

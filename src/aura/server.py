@@ -1341,15 +1341,21 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
 
         try:
             choice = ModelChoice(body.provider, body.model).validate()
-            ModelSettingsStore(aura.settings).put(choice, body.settings)
         except ValueError as e:
             return _error(422, str(e))
-        if choice == aura.active_model:
-            if not turn.acquire(blocking=False):
-                return busy()
-            try:
+        active = choice == aura.active_model
+        # The model in use is saved and rebuilt together, between turns: a "busy" answer never
+        # leaves new settings on disk that the running model doesn't have.
+        if active and not turn.acquire(blocking=False):
+            return busy()
+        try:
+            ModelSettingsStore(aura.settings).put(choice, body.settings)
+            if active:
                 aura.refresh_model()
-            finally:
+        except ValueError as e:
+            return _error(422, str(e))
+        finally:
+            if active:
                 turn.release()
         return JSONResponse(model_settings_view(choice))
 
@@ -1359,7 +1365,7 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
         is loaded, Sleep Mode and the idle time (the same facts list_models gives Aura)."""
         from aura.tools.models import local_state
 
-        return local_state(aura.settings, lambda: getattr(aura.toolbox.local_server, "model", None))
+        return local_state(aura.settings, lambda: llama.model if llama is not None else None)
 
     @app.post("/v1/models/pull")
     def pull_local_model(body: LocalModelPullIn) -> Response:

@@ -15,6 +15,7 @@ struct ModelSettingsPage: View {
     @State private var saving = false
     @State private var message: String?
     @State private var failed = false
+    @State private var loadError: String?
 
     /// `initial`: a model's settings to start from (snapshot tests; the app loads them).
     init(store: ChatStore, catalog: ModelCatalog, navigation: ModelsNavigation, initial: ModelSettingsInfo? = nil) {
@@ -78,16 +79,20 @@ struct ModelSettingsPage: View {
                             .font(.caption).foregroundStyle(failed ? Color.orange : .green)
                     }
                 }
+            } else if let loadError {
+                HStack {
+                    WarningLabel(loadError)
+                    Button("Retry") { Task { await load() } }.controlSize(.small)
+                }
             } else {
                 Text(store.transport == nil ? "Aura is offline." : "Loading this model's settings…").foregroundStyle(.secondary)
             }
         }
         .onAppear {
-            if selected.isEmpty { selected = Self.tag(navigation.settingsModel ?? catalog.roles["chat"] ?? catalog.roles["startup"]) }
+            if selected.isEmpty { selected = Self.tag(catalog.roles["chat"] ?? catalog.roles["startup"]) }
+            takeRequestedModel()
         }
-        .onChange(of: navigation.settingsModel) { _, model in
-            if let model { selected = Self.tag(model) }
-        }
+        .onChange(of: navigation.settingsModel) { _, _ in takeRequestedModel() }
         .task(id: selected) {
             if info.map({ Self.tag(ModelChoice(provider: $0.provider, model: $0.model)) }) != selected { await load() }
         }
@@ -98,6 +103,13 @@ struct ModelSettingsPage: View {
         return parts.count == 2 ? ModelChoice(provider: parts[0], model: parts[1]) : nil
     }
 
+    /// The chat box asked for a model: show it, and clear the request so the same one can be asked again.
+    private func takeRequestedModel() {
+        guard let model = navigation.settingsModel else { return }
+        selected = Self.tag(model)
+        navigation.settingsModel = nil
+    }
+
     private func binding(_ name: String) -> Binding<String> {
         Binding(get: { draft[name] ?? "" }, set: { draft[name] = $0 })
     }
@@ -105,8 +117,16 @@ struct ModelSettingsPage: View {
     private func load() async {
         guard let choice else { return }
         message = nil
-        info = await store.modelSettings(choice)
-        draft = Self.texts(info?.saved ?? [:])
+        loadError = nil
+        switch await store.modelSettings(choice) {
+        case let .success(loaded):
+            guard Self.tag(choice) == selected else { return }  // another model was picked meanwhile
+            info = loaded
+            draft = Self.texts(loaded.saved)
+        case let .failure(error):
+            info = nil
+            loadError = error.message
+        }
     }
 
     /// The draft as values to send: blank fields left out; numbers as numbers (the server checks ranges).
@@ -126,8 +146,11 @@ struct ModelSettingsPage: View {
         Task {
             switch await store.saveModelSettings(choice, values) {
             case let .success(saved):
-                info = saved
-                draft = Self.texts(saved.saved)
+                // Another model may have been picked while this saved: show this one only if it's still the one shown.
+                if Self.tag(ModelChoice(provider: saved.provider, model: saved.model)) == selected {
+                    info = saved
+                    draft = Self.texts(saved.saved)
+                }
                 (message, failed) = (values.isEmpty ? "Back to defaults." : "Saved.", false)
             case let .failure(error):
                 (message, failed) = (error.message, true)
@@ -152,7 +175,7 @@ struct ModelSettingsPage: View {
 
     /// Every model Aura knows, by provider: the roles' choices and what's installed or available.
     static func groups(_ catalog: ModelCatalog) -> [(provider: String, title: String, models: [String])] {
-        [("ollama", "Ollama (local)"), ("llamacpp", "llama.cpp (local)"), ("anthropic", "Anthropic (cloud)")].compactMap { provider, title in
+        ModelProviders.all.compactMap { provider, title in
             let models = Set(catalog.models(for: provider) + catalog.roles.values.filter { $0.provider == provider }.map(\.model))
             return models.isEmpty ? nil : (provider, title, models.sorted())
         }
@@ -177,7 +200,7 @@ struct SettingRow: View {
         HStack(alignment: .firstTextBaseline) {
             VStack(alignment: .leading, spacing: 2) {
                 Text(field.label).font(.callout.weight(.medium))
-                Text(accepted ? field.help : "Not accepted by \(provider) models.")
+                Text(accepted ? field.help : "Not accepted by \(ModelProviders.name(info.provider)) models.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             Spacer()
@@ -200,14 +223,6 @@ struct SettingRow: View {
         }
         .disabled(!accepted)
         .opacity(accepted ? 1 : 0.45)
-    }
-
-    private var provider: String {
-        switch info.provider {
-        case "anthropic": "Claude"
-        case "llamacpp": "llama.cpp"
-        default: "Ollama"
-        }
     }
 
     static func number(_ n: Double) -> String {

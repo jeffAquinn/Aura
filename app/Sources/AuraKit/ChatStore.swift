@@ -569,9 +569,21 @@ public final class ChatStore {
         await loadChats()
     }
 
-    /// One model's settings for the Model settings page; nil when Aura can't say.
-    public func modelSettings(_ choice: ModelChoice) async -> ModelSettingsInfo? {
-        try? await transport?.modelSettings(choice)
+    /// The model catalog only (the Models window), without reloading voice, persona and chats.
+    public func loadModelCatalog() async {
+        if let catalog = try? await transport?.models() { adopt(catalog) }
+    }
+
+    /// One model's settings for the Model settings page, or why they couldn't be read.
+    public func modelSettings(_ choice: ModelChoice) async -> Result<ModelSettingsInfo, ModelSettingsError> {
+        guard let transport else { return .failure(ModelSettingsError(message: FriendlyMessage.offline)) }
+        do {
+            return .success(try await transport.modelSettings(choice))
+        } catch let AuraClientError.http(_, message) {
+            return .failure(ModelSettingsError(message: message))
+        } catch {
+            return .failure(ModelSettingsError(message: FriendlyMessage.describe(error)))
+        }
     }
 
     /// Save one model's settings: the saved view, or the server's reason (a value out of range).

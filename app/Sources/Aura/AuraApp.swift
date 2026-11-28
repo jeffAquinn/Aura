@@ -438,7 +438,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         observerClosing = nil
     }
 
-    /// The Observer: Aura's own activity, live, beside the chat. Read-only.
     @objc private func openModelsFromMenu() { openModels(nil) }
 
     /// Every model setting in one window (docs/models-window.md), at `page` or where it was.
@@ -462,6 +461,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         AppLog.write("models opened")
     }
 
+    /// The Observer: Aura's own activity, live, beside the chat. Read-only.
     @objc private func openObserver() {
         if observerWindow == nil {
             let window = NSWindow(

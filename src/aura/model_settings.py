@@ -13,6 +13,7 @@ Q2_0 build); saving settings for it replaces them, and clearing them brings them
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import dataclass
 from typing import Any
 
@@ -54,11 +55,6 @@ def key(choice: ModelChoice) -> str:
     return f"{choice.provider}:{choice.model}"
 
 
-def choice_of(text: str) -> ModelChoice:
-    provider, _, model = text.partition(":")
-    return ModelChoice(provider, model).validate()  # type: ignore[arg-type]
-
-
 def recommended(choice: ModelChoice) -> dict[str, Any]:
     """A llama.cpp model's recommended values, matched by family name; {} for others."""
     if choice.provider != "llamacpp":
@@ -84,13 +80,19 @@ def validate(choice: ModelChoice, values: dict[str, Any]) -> dict[str, Any]:
             continue
         low, high, kind = RANGES[name]
         try:
-            number = kind(value)
+            number = float(value)
         except (TypeError, ValueError):
             raise ValueError(f"{name} must be a number.") from None
+        if kind is int and number != int(number):
+            raise ValueError(f"{name} must be a whole number.")  # never silently cut 20.7 to 20
         if isinstance(value, bool) or not low <= number <= high:
             raise ValueError(f"{name} must be between {low:g} and {high:g}.")
-        out[name] = number
+        out[name] = kind(number)
     return out
+
+
+_CACHE: dict[str, tuple[int, dict[str, dict[str, Any]]]] = {}  # path -> (mtime_ns, contents)
+_WRITING = threading.Lock()  # one save at a time: two at once could otherwise lose one
 
 
 @dataclass
@@ -102,11 +104,21 @@ class ModelSettingsStore:
         return self.settings.data_dir / "model_settings.json"
 
     def all(self) -> dict[str, dict[str, Any]]:
+        """The file's contents, read again only when it changes (it is consulted on every turn)."""
+        try:
+            stamp = self.path.stat().st_mtime_ns
+        except OSError:
+            return {}  # missing: no settings, today's behavior
+        cached = _CACHE.get(str(self.path))
+        if cached and cached[0] == stamp:
+            return {k: dict(v) for k, v in cached[1].items()}
         try:
             raw = json.loads(self.path.read_text())
         except (OSError, ValueError):
-            return {}  # missing or unreadable: no settings, today's behavior
-        return {k: v for k, v in raw.items() if isinstance(v, dict)} if isinstance(raw, dict) else {}
+            return {}  # unreadable: no settings
+        contents = {k: v for k, v in raw.items() if isinstance(v, dict)} if isinstance(raw, dict) else {}
+        _CACHE[str(self.path)] = (stamp, contents)
+        return {k: dict(v) for k, v in contents.items()}
 
     def stored(self, choice: ModelChoice) -> dict[str, Any] | None:
         return self.all().get(key(choice))
@@ -114,17 +126,24 @@ class ModelSettingsStore:
     def get(self, choice: ModelChoice) -> dict[str, Any]:
         """The settings in effect: what's saved, or the model's recommended values."""
         saved = self.stored(choice)
-        if saved is not None:
+        if saved is None:
+            return recommended(choice)
+        good: dict[str, Any] = {}
+        for name, value in saved.items():  # a hand-edited bad value drops only itself
             try:
-                return validate(choice, saved)
+                good.update(validate(choice, {name: value}))
             except ValueError:
-                return {}  # a hand-edited bad value: fall back to the model's own defaults
-        return recommended(choice)
+                continue
+        return good
 
     def put(self, choice: ModelChoice, values: dict[str, Any]) -> dict[str, Any]:
         """Save the model's settings (validated). Empty: forget them, so recommended values (if
         any) apply again."""
         checked = validate(choice.validate(), values)
+        with _WRITING:
+            return self._write(choice, checked)
+
+    def _write(self, choice: ModelChoice, checked: dict[str, Any]) -> dict[str, Any]:
         everything = self.all()
         if checked:
             everything[key(choice)] = checked
@@ -134,6 +153,7 @@ class ModelSettingsStore:
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps(everything, indent=2, sort_keys=True) + "\n")
         tmp.replace(self.path)
+        _CACHE.pop(str(self.path), None)
         return checked
 
 
@@ -150,15 +170,22 @@ def reply_tokens(settings: Settings, choice: ModelChoice, values: dict[str, Any]
     return limit if choice.provider == "anthropic" else min(limit, context // 2)
 
 
-def ollama_window(settings: Settings, model: str) -> int | None:
-    """The context window Ollama has allocated for a loaded model (`ollama ps`); None if it isn't
-    loaded or Ollama can't say. Aura can't set it: it's Ollama's own setting."""
+def ollama_loaded(settings: Settings) -> list[dict[str, Any]] | None:
+    """Ollama's loaded models (`ollama ps`), each with its name and context_length; None if
+    Ollama can't say. One call for the Models window, list_models and the context check."""
     try:
         listed = httpx.get(f"{local_root(settings.base_url)}/api/ps", timeout=2).json().get("models", [])
     except (ValueError, httpx.HTTPError, AttributeError):
         return None
-    for m in listed:
-        if model in (m.get("name"), m.get("model")) and m.get("context_length"):
+    return [m for m in listed if isinstance(m, dict)]
+
+
+def ollama_window(settings: Settings, model: str) -> int | None:
+    """The context window Ollama has allocated for a loaded model; None if it isn't loaded or
+    Ollama can't say. Aura can't set it: it's Ollama's own setting. "llama3" is "llama3:latest"."""
+    names = {model, model if ":" in model else f"{model}:latest"}
+    for m in ollama_loaded(settings) or []:
+        if names & {m.get("name"), m.get("model")} and m.get("context_length"):
             return int(m["context_length"])
     return None
 

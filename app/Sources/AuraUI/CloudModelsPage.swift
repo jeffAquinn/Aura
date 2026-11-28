@@ -47,7 +47,7 @@ struct CloudModelsPage: View {
                         .textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
                 }
                 if let error {
-                    Label(error, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
+                    WarningLabel(error)
                 }
             }
         }

@@ -220,7 +220,6 @@ public struct LocalModelPerformance: Codable, Equatable, Sendable {
     }
 }
 
-/// The conversation as the server keeps it: it survives a restart of the server.
 /// One model's settings (GET/PUT /v1/models/settings, docs/model-settings.md): what's saved, what's
 /// in effect (saved, or its recommended values), its recommended values, and what its provider takes.
 public struct ModelSettingsInfo: Codable, Sendable, Equatable {
@@ -335,6 +334,7 @@ public struct SavedChats: Codable, Sendable, Equatable {
     }
 }
 
+/// The conversation as the server keeps it: it survives a restart of the server.
 public struct ConversationInfo: Codable, Sendable, Equatable {
     public struct Message: Codable, Sendable, Equatable {
         public let role: String  // "user" | "aura"
@@ -453,6 +453,23 @@ public struct AppSettings: Codable, Sendable, Equatable {
     public let voicesRegistered: Int
     public let modelRouting: [String: ModelChoice]?
     public let startupModelProblem: String?
+}
+
+/// The model providers, in the order every picker shows them, with one name each.
+public enum ModelProviders {
+    public static let all: [(id: String, title: String)] = [
+        ("ollama", "Ollama (local)"), ("llamacpp", "llama.cpp (local)"), ("anthropic", "Anthropic (cloud)"),
+    ]
+
+    /// The short name, e.g. for "Not accepted by Claude models."
+    public static func name(_ id: String) -> String {
+        switch id {
+        case "anthropic": "Claude"
+        case "llamacpp": "llama.cpp"
+        case "ollama": "Ollama"
+        default: id
+        }
+    }
 }
 
 /// A model is selected by job role, not globally. Provider credentials stay on the server.

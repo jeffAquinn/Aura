@@ -32,6 +32,7 @@ import json
 import httpx
 
 from aura.model_routing import ModelChoice, llamacpp_root, valid_model_name
+from aura.model_settings import ModelSettingsStore, budget
 
 if TYPE_CHECKING:
     from aura.config import Settings
@@ -167,12 +168,12 @@ class LlamaServer:
         elif self._proc is not None:
             self.stop("another model was chosen")
 
-    def argv(self, path: Path, name: str) -> list[str]:
+    def argv(self, path: Path, name: str, window: int | None = None) -> list[str]:
         return [
             str(self.binary), "-m", str(path), "--alias", name,
             "--host", self.host, "--port", str(self.port),
             "--jinja",  # the model's chat template: Aura's tool calls need it
-            "-c", str(self.window(name)),  # Aura's memory compaction matches the window
+            "-c", str(window or self.window(name)),  # Aura's memory compaction matches the window
             "--parallel", "1",  # one conversation: the whole window serves the turn
             "-ngl", "99",  # every layer on the GPU
             "-fa", "on", "--cache-type-k", "q8_0", "--cache-type-v", "q8_0",  # a smaller KV cache
@@ -181,8 +182,6 @@ class LlamaServer:
 
     def window(self, model: str) -> int:
         """The window to serve `model` with: its own context budget, or the llama.cpp default."""
-        from aura.model_settings import ModelSettingsStore, budget
-
         choice = ModelChoice("llamacpp", model)
         return budget(self.settings, choice, ModelSettingsStore(self.settings).get(choice))
 
@@ -193,14 +192,15 @@ class LlamaServer:
         self._wanted = model
         with self._lock:
             self.touch()
-            if self.loaded(model) and self._served_window == self.window(model):  # the usual answer
+            window = self.window(model)
+            if self.loaded(model) and self._served_window == window:  # the usual answer
                 return
             path = gguf_models(self.settings).get(model)
             if path is None:
                 raise LocalModelError(f"Aura can't find the llama.cpp model '{model}' in {self.settings.llamacpp_models_dir}.")
             if not self.installed():
                 raise LocalModelError("llama.cpp isn't installed. Install it with `brew install llama.cpp`, then try again.")
-            self._stop_locked("another model was chosen")
+            self._stop_locked("its context budget changed" if self.model == model else "another model was chosen")
             if self._port_in_use():
                 raise LocalModelError(
                     f"Another program is using {self.host}:{self.port}, so Aura can't start llama-server there. "
@@ -208,10 +208,10 @@ class LlamaServer:
             started = time.monotonic()
             self.log_path.parent.mkdir(parents=True, exist_ok=True)
             with self.log_path.open("ab") as out:
-                self._proc = subprocess.Popen(self.argv(path, model), stdin=subprocess.DEVNULL, stdout=out,
+                self._proc = subprocess.Popen(self.argv(path, model, window), stdin=subprocess.DEVNULL, stdout=out,
                                               stderr=subprocess.STDOUT, env={**os.environ, "LLAMA_API_KEY": API_KEY})
             self.model, self._ready = model, False
-            self._served_window = self.window(model)
+            self._served_window = window
             self.pid_file.parent.mkdir(parents=True, exist_ok=True)
             # The owner too: a second Aura on this data folder must not take this one for a crash.
             self.pid_file.write_text(json.dumps({"pid": self._proc.pid, "owner": os.getpid()}))

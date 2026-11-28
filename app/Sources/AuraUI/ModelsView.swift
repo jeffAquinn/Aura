@@ -1,12 +1,9 @@
 import AuraKit
 import SwiftUI
 
-/// The Models window (docs/models-window.md): every model setting, local and cloud, in one place.
-///
-/// Step 1 of the plan: the window and its pages, opened from the menu-bar menu and the panel's ⋯
-/// menu. Nothing has moved yet: each page says what will move to it, and the controls stay in
-/// Settings → Models until their step. Roles and Cloud show the current setup, read-only, so it's
-/// plain that nothing was lost (the Anthropic connection, its key and its models included).
+/// The Models window (docs/models-window.md): every model setting, local and cloud, in one place,
+/// opened from the menu-bar menu and the panel's ⋯ menu. Roles, Local, Cloud and Model settings
+/// each hold their own controls; Settings → Models only opens this window.
 public enum ModelsPage: String, CaseIterable, Identifiable, Sendable {
     case roles, local, cloud, settings
 
@@ -38,26 +35,14 @@ public enum ModelsPage: String, CaseIterable, Identifiable, Sendable {
         case .settings: "Each model's own settings: sampling, thinking, context budget and reply length, with recommended values."
         }
     }
-
-    /// Its controls are here now (not still in Settings).
-    var moved: Bool { true }  // every page's controls are here (steps 2 to 6)
-
-    /// The plan's step that moves this page's controls here (§12).
-    var step: Int {
-        switch self {
-        case .roles: 2
-        case .local: 3
-        case .cloud: 4
-        case .settings: 6
-        }
-    }
 }
 
 /// Which page the Models window shows; the app changes it to open the window at a page.
 @MainActor @Observable
 public final class ModelsNavigation {
     public var page: ModelsPage = .roles
-    /// The model the Model settings page should show (the chat box's "Model settings…").
+    /// The model the Model settings page should show next (the chat box's "Model settings…"). The
+    /// page takes it and clears it, so asking for the same model again still works.
     public var settingsModel: ModelChoice?
     public init() {}
 }
@@ -79,117 +64,50 @@ public struct ModelsView: View {
                 }
                 .navigationSplitViewColumnWidth(min: 170, ideal: 190, max: 240)
             } detail: {
-                ModelsPageView(page: navigation.page, store: store, navigation: navigation)
+                ScrollView {
+                    ModelsPageContent(page: navigation.page, catalog: store.modelCatalog, store: store, navigation: navigation)
+                }
             }
         }
-        .task { await store.loadSettings() }  // the catalog: roles and the cloud connection, read-only here
+        .task { await store.loadModelCatalog() }
     }
 }
 
-/// One page, scrolling.
-struct ModelsPageView: View {
-    let page: ModelsPage
-    let store: ChatStore
-    let navigation: ModelsNavigation
-
-    var body: some View {
-        ScrollView { ModelsPageContent(page: page, catalog: store.modelCatalog, store: store, navigation: navigation) }
-    }
-}
-
-/// A page's content. In step 1 it explains what moves here and, for Roles and Cloud, shows
-/// today's setup. (Separate from the scroll view so snapshot tests can draw it.)
+/// A page: its title and summary, then its controls. (Outside the scroll view, so snapshot tests can draw it.)
 struct ModelsPageContent: View {
     let page: ModelsPage
     let catalog: ModelCatalog?
-    var store: ChatStore? = nil
+    let store: ChatStore
     var navigation = ModelsNavigation()
 
     var body: some View {
-            VStack(alignment: .leading, spacing: 14) {
-                Label(page.title, systemImage: page.symbol).font(.title2.weight(.semibold))
-                Text(page.summary).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                if page.moved, let catalog, let store {
-                    switch page {
-                    case .roles: RoleChoices(store: store, catalog: catalog)
-                    case .local: LocalModelsPage(store: store, catalog: catalog)
-                    case .cloud: CloudModelsPage(store: store, catalog: catalog)
-                    case .settings: ModelSettingsPage(store: store, catalog: catalog, navigation: navigation)
-                    }
-                } else if page.moved {
-                    Text(store?.transport == nil ? "Aura is offline." : "Loading model settings…").foregroundStyle(.secondary)
-                } else {
-                    current
-                    Label("These controls move here in step \(page.step) of the plan. Until then, change them in Settings → Models"
-                          + (page == .cloud ? " and Settings → Keys." : "."), systemImage: "info.circle")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                        .padding(10)
-                        .background(.quaternary.opacity(0.5), in: .rect(cornerRadius: 10))
-                        .fixedSize(horizontal: false, vertical: true)
+        VStack(alignment: .leading, spacing: 14) {
+            Label(page.title, systemImage: page.symbol).font(.title2.weight(.semibold))
+            Text(page.summary).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            if let catalog {
+                switch page {
+                case .roles: RoleChoices(store: store, catalog: catalog)
+                case .local: LocalModelsPage(store: store, catalog: catalog)
+                case .cloud: CloudModelsPage(store: store, catalog: catalog)
+                case .settings: ModelSettingsPage(store: store, catalog: catalog, navigation: navigation)
                 }
-            }
-            .padding(24)
-            .frame(maxWidth: 640, alignment: .leading)
-            .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    @ViewBuilder private var current: some View {
-        if let catalog {
-            switch page {
-            case .roles:
-                NowCard {
-                    VStack(alignment: .leading, spacing: 6) {
-                        ForEach(["startup", "chat", "web_search", "deep_research"], id: \.self) { role in
-                            if let choice = catalog.roles[role] {
-                                LabeledContent(catalog.roleLabels[role] ?? role) {
-                                    Text("\(choice.model) · \(Self.provider(choice.provider))").textSelection(.enabled)
-                                }
-                            }
-                        }
-                        LabeledContent("Coding") { Text(catalog.codingEngine == "codex" ? "Codex" : "Claude Code") }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-            case .cloud:
-                NowCard {
-                    VStack(alignment: .leading, spacing: 6) {
-                        LabeledContent("Anthropic") {
-                            Label(catalog.anthropicKeySet ? "Connected: API key set" : "Not connected: no API key",
-                                  systemImage: catalog.anthropicKeySet ? "checkmark.circle.fill" : "circle")
-                                .foregroundStyle(catalog.anthropicKeySet ? Color.green : .secondary)
-                        }
-                        LabeledContent("Claude models") { Text("\(catalog.anthropicModels.count) available") }
-                    }
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                }
-            case .local, .settings:
-                EmptyView()
+            } else {
+                Text(store.transport == nil ? "Aura is offline." : "Loading model settings…").foregroundStyle(.secondary)
             }
         }
-    }
-
-    static func provider(_ id: String) -> String {
-        switch id {
-        case "anthropic": "Anthropic cloud"
-        case "llamacpp": "llama.cpp"
-        default: "Ollama"
-        }
+        .padding(24)
+        .frame(maxWidth: 640, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
-/// Today's setup on a page, in a quiet card (drawn by SwiftUI, so it renders everywhere).
-struct NowCard<Content: View>: View {
-    @ViewBuilder let content: Content
+/// A warning under a control: the same small orange line everywhere in the Models window.
+struct WarningLabel: View {
+    let text: String
+    init(_ text: String) { self.text = text }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Now").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-            content
-        }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.quaternary.opacity(0.35), in: .rect(cornerRadius: 10))
+        Label(text, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
     }
 }
 
