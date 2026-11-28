@@ -250,7 +250,7 @@ test-driven development per step (a plan's steps are vault work, not code).
 Each ticket leaves Aura working and is checked on its own. "Aura review" marks a change to approvals,
 security or architecture.
 
-### T1 — The plan graph and its checks
+### T1 — The plan graph and its checks (done, b40c935)
 - Scope: new `src/aura/plans.py` (pure, no I/O); `tests/test_plans.py`.
 - Blocked by: none.
 - Acceptance: a plan is checked (cycles via `graphlib`, unknown `after` IDs, tools not in the
@@ -267,6 +267,11 @@ security or architecture.
   stale update is refused); results are kept short (the state store's rule); each transition is an
   audit event. Verified by unit tests, including a migration from today's schema 2 database.
 - Non-goal: the Markdown copy.
+- **Done (2026-11-28).** Ruling: plans use state.sqlite's existing `records` table (kind `plan`)
+  instead of a new table and schema 3 — it already gives an ID, a state, JSON data and pruning, and
+  no migration means nothing to go wrong in today's database — the cost if wrong: a later
+  migration to a table, if plans ever need queries by step. `replace_record` adds compare-and-set
+  on the whole record. `plan_` events are in the Observer's Actions.
 
 ### T3 — The Markdown copy in _scratch/Plans/
 - Scope: `plans.py`, `tools/vault.py` (the `_scratch` path).

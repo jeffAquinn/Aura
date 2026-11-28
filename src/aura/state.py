@@ -241,6 +241,15 @@ class StateStore:
             return db.execute(f"UPDATE records SET state = ?, updated = ? WHERE kind = ? AND id = ? AND state IN ({marks})",
                               (to_state, now(), kind, record_id, *allowed)).rowcount == 1  # fmt: skip
 
+    def replace_record(self, kind: str, record_id: str, state: str, data: dict[str, Any], version: int) -> bool:
+        """Compare-and-set on a whole record: write `data` (whose "version" is `version` + 1) only if
+        the stored record is still at `version`. False if it changed meanwhile, or doesn't exist."""
+        payload = json.dumps({**data, "version": version + 1}, ensure_ascii=False, default=str)
+        with self.tx() as db:
+            return db.execute("UPDATE records SET state = ?, data = ?, updated = ? WHERE kind = ? AND id = ? "
+                              "AND json_extract(data, '$.version') = ?",
+                              (state, payload, now(), kind, record_id, version)).rowcount == 1  # fmt: skip
+
     def record(self, kind: str, record_id: str) -> tuple[str, dict[str, Any]] | None:
         rows = self._query("SELECT state, data FROM records WHERE kind = ? AND id = ?", (kind, record_id))
         return (rows[0]["state"], json.loads(rows[0]["data"])) if rows else None

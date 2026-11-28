@@ -6,17 +6,24 @@ done, and the steps it waits for. Aura (the model) writes the steps; this module
 assigns the IDs, and decides what can run next. A failure blocks every step that depends on it,
 and only those.
 
-Pure: no I/O, no clock. Storing plans is `state.py`'s job (T2); the tools that use them are T4.
-Nothing here grants permission for anything: every step's tool keeps its own approval card.
+The graph (`make`, `Plan`) is pure: no I/O, no clock. `PlanStore` keeps plans in Aura's data folder
+(state.sqlite's records, kind "plan"), never in the vault, so no vault edit can change a plan's
+progress (T2); every change is an audit event, so the Observer shows a plan as it runs. The tools
+that use plans are T4. Nothing here grants permission for anything: every step's tool keeps its own
+approval card.
 """
 
 from __future__ import annotations
 
 import graphlib
 import secrets
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from aura.audit import AuditLog
+    from aura.state import StateStore
 
 MAX_STEPS = 20
 MAX_TEXT = 300  # a step's `does` and `done_when`: one line each
@@ -78,6 +85,8 @@ class Plan:
     goal: str
     steps: dict[str, Step]
     rulings: list[Ruling] = field(default_factory=list)
+    version: int = 0  # the stored version this copy was read at (PlanStore's compare-and-set)
+    stopped: bool = False  # the user pressed Stop: nothing more runs, not even a retry
 
     # -- reading ------------------------------------------------------------------------------
 
@@ -109,12 +118,14 @@ class Plan:
     @property
     def ended(self) -> bool:
         """Nothing is left that can run, wait or be retried."""
-        return not any(s.status in OPEN or (s.status == FAILED and s.attempts < MAX_ATTEMPTS)
+        return self.stopped or not any(s.status in OPEN or (s.status == FAILED and s.attempts < MAX_ATTEMPTS)
                        for s in self.steps.values())
 
     # -- transitions ----------------------------------------------------------------------------
 
     def start(self, step_id: str) -> Step:
+        if self.stopped:
+            raise PlanError([f"plan {self.id} was stopped: make a new plan to go on"])
         step = self.step(step_id)
         if step not in self.ready():
             waiting = [a for a in step.after if self.steps[a].status != DONE]
@@ -168,12 +179,15 @@ class Plan:
 
     def stop(self) -> list[str]:
         """The user pressed Stop: every unfinished step is skipped. Returns the steps skipped."""
-        stopped = [s.id for s in self.steps.values() if s.status in OPEN | {BLOCKED}]
-        for step_id in stopped:
+        skipped = [s.id for s in self.steps.values() if s.status in OPEN | {BLOCKED}]
+        for step_id in skipped:
             self.steps[step_id].status = SKIPPED
-        return stopped
+        self.stopped = True
+        return skipped
 
     def _expect(self, step_id: str, *statuses: str) -> Step:
+        if self.stopped:
+            raise PlanError([f"plan {self.id} was stopped: make a new plan to go on"])
         step = self.step(step_id)
         if step.status not in statuses:
             raise PlanError([f"step {step_id} is {step.status}, not {' or '.join(statuses)}"])
@@ -192,12 +206,65 @@ class Plan:
 
     def to_dict(self) -> dict[str, Any]:
         return {"id": self.id, "goal": self.goal, "steps": [asdict(s) for s in self.steps.values()],
-                "rulings": [asdict(r) for r in self.rulings]}
+                "rulings": [asdict(r) for r in self.rulings], "version": self.version, "stopped": self.stopped}
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Plan:
         steps = {s["id"]: Step(**{**s, "after": tuple(s.get("after", ()))}) for s in data["steps"]}
-        return cls(id=data["id"], goal=data["goal"], steps=steps, rulings=[Ruling(**r) for r in data.get("rulings", [])])
+        return cls(id=data["id"], goal=data["goal"], steps=steps, rulings=[Ruling(**r) for r in data.get("rulings", [])],
+                   version=int(data.get("version", 0)), stopped=bool(data.get("stopped", False)))
+
+
+KIND = "plan"  # state.sqlite's record kind
+ACTIVE, ENDED = "active", "ended"
+
+
+class PlanStore:
+    """Plans in state.sqlite. Every save is compare-and-set: a copy read before another change is
+    refused, so two writers can never interleave. Each step whose status changes is one audit
+    event (`plan_step`), with `plan_created` and `plan_ended` around them."""
+
+    def __init__(self, state: StateStore, audit: AuditLog):
+        self.state = state
+        self.audit = audit
+
+    def create(self, plan: Plan) -> Plan:
+        plan.version = 1
+        self.state.put_record(KIND, plan.id, ACTIVE, plan.to_dict())
+        self.audit.record("plan_created", plan=plan.id, goal=_clip(plan.goal, 200), steps=len(plan.steps))
+        self.state.prune_records(KIND, keep_states=[ACTIVE])
+        return plan
+
+    def get(self, plan_id: str) -> Plan:
+        found = self.state.record(KIND, plan_id)
+        if found is None:
+            raise PlanError([f"no plan {plan_id!r}"])
+        return Plan.from_dict(found[1])
+
+    def active(self) -> list[Plan]:
+        return [Plan.from_dict(data) for _, _, data in self.state.records(KIND, [ACTIVE])]
+
+    def save(self, plan: Plan) -> Plan:
+        """Store a changed copy, if nothing changed the stored plan since this copy was read."""
+        before = self.get(plan.id)
+        if not self.state.replace_record(KIND, plan.id, ENDED if plan.ended else ACTIVE, plan.to_dict(), plan.version):
+            raise PlanError([f"plan {plan.id} changed since it was read: read it again"])
+        plan.version += 1
+        for step in plan.steps.values():
+            old = before.steps.get(step.id)
+            if old is None or old.status != step.status:
+                self.audit.record("plan_step", plan=plan.id, step=step.id, tool=step.tool, status=step.status,
+                                  outcome=step.outcome)
+        if plan.ended and not before.ended:
+            self.audit.record("plan_ended", plan=plan.id, complete=plan.complete,
+                              done=sum(s.status == DONE for s in plan.steps.values()), steps=len(plan.steps))
+        return plan
+
+    def change(self, plan_id: str, apply: Callable[[Plan], Any]) -> Plan:
+        """Read the plan, apply a change, save it. A refused transition (PlanError) saves nothing."""
+        plan = self.get(plan_id)
+        apply(plan)
+        return self.save(plan)
 
 
 def make(goal: Any, steps: Any, available: Iterable[str], plan_id: str | None = None) -> Plan:
