@@ -240,6 +240,10 @@ def test_asking_for_an_explanation_step_by_step_doesnt_offer_plans():
     from aura.capabilities import BY_NAME
 
     assert not BY_NAME["make_plan"].matches("Explain step by step how DNS works")
+    # T9 (Aura's decision, 2026-11-28): a research note is a planned job, so its request shows the plan tools.
+    assert BY_NAME["make_plan"].matches("Write a research note on tides.")
+    assert BY_NAME["make_plan"].matches("Draft a research report about coral reefs")
+    assert not BY_NAME["make_plan"].matches("Research the weather in Tokyo")
     assert BY_NAME["make_plan"].matches("Make a plan for the move")
 
 

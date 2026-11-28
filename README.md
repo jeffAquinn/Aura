@@ -187,6 +187,29 @@ changed for a week to the macOS Trash, where it can still be recovered. Nothing 
 folder is touched. Build output and caches are never copied into the vault, and Aura can list other
 clutter (`find_clutter`) and move it to the Trash with one approval (`tidy_vault`).
 
+### Plans
+
+For a job of several dependent steps, such as a research note built from vault notes and web
+sources, Aura first writes a plan with `make_plan`. Each step names one tool (or "think", or "review"),
+what it does, when it counts as done, and the steps it waits for. Aura's code checks the plan: no
+cycles, only tools Aura has, at most 20 steps. You then see it on a plan card, with **Start Plan** or
+**Deny** (the default). Starting a plan approves its direction only: every step that writes, runs
+code, searches the web, hands work to the Developer or sends a message still shows its own card. A
+card raised during a plan names its step ("Step 3 of 5 of the plan …"), and Deny fails that step and
+whatever depends on it.
+
+- **Evidence:** a step that uses a tool is done only once that tool has returned a result in the
+  plan. Aura's word alone doesn't finish it.
+- **Review steps** pause with the results so far and a note from Aura: **Continue** goes on, and
+  **Stop Plan** (the default) ends the plan. Only you can pass a review.
+- **The progress line** above the chat box shows the running plan. **Stop** ends it and skips what's
+  left, and **Continue** picks it up again, for example after a Developer step ended the turn.
+- **Private data:** once the conversation has read your mail, messages or files, anything a plan
+  sends off this Mac asks you first, in every turn (R2). **New Chat** ends the running plan.
+
+Plans live in Aura's data folder, not in the vault, so editing a vault file can't mark a step done.
+A Markdown copy of each plan in `_scratch/Plans/` is for reading only. See `docs/orchestration.md`.
+
 ### Saved chats
 
 The new-chat button in the panel's header opens a menu, as in Claude: **New Chat**, then

@@ -483,6 +483,15 @@ security or architecture.
        "finished without changing any files", so no file card appeared.
     3. After the plan card was approved, the model described the plan in chat instead of starting
        step 1. This is T4's recorded risk that the model may stop between steps.
+  - **Aura's decisions (2026-11-28):**
+    - Check 1: add a cue for research notes. Neither accepting 75% nor a system-prompt rule (T4 ruled
+      against one). Done: `PLAN_CUES` now includes "research note" and "research report", so such a
+      request shows the plan tools without `find_capabilities`.
+    - Check 2: the model stopping between steps is a known limitation, for Sprint 7. Find out first why
+      it stops (it thinks the plan is done, it doesn't follow "keep going", or something else) before
+      any prompt change. Codex finishing without a change (run 2) is recorded with it.
+    - A correction to the record: a plan that is skipped doesn't bypass approvals. Every write still
+      shows its own card; the job just runs without a plan.
   - **Found and fixed during the run (03459c2):** the reply cap never reached Ollama. langchain-openai
     sends `max_completion_tokens`, which Ollama ignores, so a looping reply ran for 15 minutes. Two local
     models loaded at once (Aura's own and the test's) also don't fit in this Mac's 24 GB: the live test

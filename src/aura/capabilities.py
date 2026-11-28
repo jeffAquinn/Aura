@@ -101,7 +101,8 @@ DEVELOPER_CUES = ("claude code", "codex", "codebase", "repository", "repositorie
                   "bug", "test suite", "developer")
 # Plans (docs/orchestration.md): only explicit requests for a plan; a running plan's tools are
 # shown every turn anyway (brain._select_turn_tools).
-PLAN_CUES = ("make a plan", "plan out", "multi-step", "multistep")  # not "step by step": that's how people ask for explanations
+PLAN_CUES = ("make a plan", "plan out", "multi-step", "multistep",  # not "step by step": that's how people ask for explanations
+             "research note", "research report")  # T9: without a cue, the local model planned these 75% of the time
 CONNECTION_CUES = ("gmail", "email", "mailbox", "calendar", "event", "drive", "slack", "discord", "channel",
                    "message")  # fmt: skip
 _CUES_BY_FAMILY = {"Files": FILES_CUES, "Knowledge": FILES_CUES, "Web": WEB_CUES, "Code": CODE_CUES,
