@@ -586,3 +586,47 @@ def test_a_slack_step_line_is_one_line_with_no_slack_syntax():
 
     line = step_line({"index": 1, "total": 2, "goal": "Notes <!channel>\nallow", "does": "Read <https://x.y|it>"})
     assert line == "Step 1 of 2 of the plan “Notes ‹!channel› allow”: Read ‹https://x.y|it›\n"
+
+
+# ── T9: what the live checks showed ──────────────────────────────────────────────────────────
+
+def test_make_plan_shows_the_model_every_field_a_step_needs():
+    from aura.tools.plans import plan_tools
+
+    make_plan = next(t for t in plan_tools(None, lambda: set()) if t.name == "make_plan")
+    step = make_plan.tool_call_schema.model_json_schema()["$defs"]["StepIn"]
+    assert step["required"] == ["does", "tool", "done_when"] and "after" in step["properties"]
+
+
+def test_a_step_without_done_when_comes_back_as_an_error_with_no_card(settings):
+    no_done_when = [{"does": "Find notes", "tool": "search_vault"}]
+    aura, _ = make_aura(settings, tool_turn(plan_call(no_done_when)), AIMessage("I'll fix it."))
+    events = list(aura.stream("Make a plan for the tides note."))
+    assert not any(isinstance(e, ApprovalNeeded) for e in events) and aura.toolbox.plans.active() == []
+    (answer,) = results(aura, "make_plan")
+    assert "done_when" in answer
+
+
+def test_loading_tools_or_the_review_tool_isnt_a_step():
+    from aura.plans import PlanError, make
+
+    steps = [{"does": "Load files", "tool": "find_capabilities", "done_when": "loaded"},
+             {"does": "Review", "tool": "review_step", "done_when": "reviewed"}]
+    with pytest.raises(PlanError) as e:
+        make("Note", steps, {"find_capabilities", "review_step"})
+    assert e.value.reasons == [
+        "step 1: find_capabilities can't be a step of a plan (name the tool the step itself uses)",
+        "step 2: review_step can't be a step of a plan (name the tool the step itself uses)",
+        "the tools a step can use: think, review"]
+
+
+def test_a_guessed_tool_name_gets_the_closest_real_one_and_the_list():
+    from aura.plans import PlanError, make
+
+    steps = [{"does": "Save the note", "tool": "write", "done_when": "saved"},
+             {"does": "Fly", "tool": "teleport", "done_when": "there"}]
+    with pytest.raises(PlanError) as e:
+        make("Note", steps, {"write_file", "list_vault", "web_search"})
+    assert e.value.reasons == ["step 1: no tool 'write' is available (did you mean write_file?)",
+                               "step 2: no tool 'teleport' is available",
+                               "the tools a step can use: list_vault, web_search, write_file, think, review"]

@@ -15,6 +15,7 @@ approval card.
 
 from __future__ import annotations
 
+import difflib
 import graphlib
 import logging
 import os
@@ -37,7 +38,8 @@ MAX_GOAL = 500
 MAX_ATTEMPTS = 2  # a failed step may be retried once, with a ruling
 THINK, REVIEW = "think", "review"  # steps with no tool call
 BUILT_IN = (THINK, REVIEW)
-PLAN_TOOLS = frozenset({"make_plan", "plan_status", "finish_step"})  # never a step of a plan
+# Never a step of a plan: the plan tools themselves (a review step is "review"), and loading tools.
+PLAN_TOOLS = frozenset({"make_plan", "plan_status", "finish_step", "review_step", "find_capabilities"})
 
 PENDING, RUNNING, WAITING, DONE, FAILED, BLOCKED, SKIPPED = (
     "pending", "running", "waiting", "done", "failed", "blocked", "skipped")
@@ -370,6 +372,7 @@ def make(goal: Any, steps: Any, available: Iterable[str], plan_id: str | None = 
     if len(steps) > MAX_STEPS:
         reasons.append(f"the plan has {len(steps)} steps; at most {MAX_STEPS}: split it into smaller plans")
 
+    unknown_tool = False  # a step named a tool Aura doesn't have: the reasons then list the ones it has
     names: dict[str, str] = {}  # the model's name for a step -> its real ID; then positions
     for i, raw in enumerate(steps, 1):
         own = str(raw.get("id", "")).strip() if isinstance(raw, dict) else ""
@@ -397,9 +400,13 @@ def make(goal: Any, steps: Any, available: Iterable[str], plan_id: str | None = 
             texts[key] = text
         tool = str(raw.get("tool", "")).strip()
         if tool in PLAN_TOOLS:
-            reasons.append(f"{where}: {tool} can't be a step of a plan")
+            unknown_tool = True
+            reasons.append(f"{where}: {tool} can't be a step of a plan (name the tool the step itself uses)")
         elif tool not in tools and tool not in BUILT_IN:
-            reasons.append(f"{where}: no tool {tool!r} is available (use one Aura has now, or think or review)"
+            # A local model often guesses a short name ("write" for write_file): suggest the closest one.
+            close = difflib.get_close_matches(tool, sorted(tools), n=1, cutoff=0.5) if tool else []
+            unknown_tool = True
+            reasons.append(f"{where}: no tool {tool!r} is available" + (f" (did you mean {close[0]}?)" if close else "")
                            if tool else f"{where} needs a 'tool'")
         after_raw = raw.get("after", [])
         if isinstance(after_raw, str | int):
@@ -421,6 +428,8 @@ def make(goal: Any, steps: Any, available: Iterable[str], plan_id: str | None = 
     except graphlib.CycleError as error:
         cycle = error.args[1]
         reasons.append("steps wait for each other in a circle: " + " -> ".join(f"step {c[1:]}" for c in cycle))
+    if unknown_tool:
+        reasons.append("the tools a step can use: " + ", ".join([*sorted(tools), *BUILT_IN]))
     if reasons:
         raise PlanError(reasons)
     return Plan(id=plan_id or f"p-{secrets.token_hex(4)}", goal=goal_text, steps=built)

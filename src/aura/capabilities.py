@@ -44,7 +44,8 @@ FAMILY_SUMMARY = {
     "Discord": "read and send Discord messages",
     "Connections": "list connected accounts and check new messages",
     "Skills": "run an installed skill (Workshop lists them)",
-    "Plans": "a plan for a large job: steps run in order, each still asking you as usual",
+    "Plans": ("plan a job of several dependent steps before starting it, e.g. a research note from vault "
+              "notes and web sources, or reorganising a folder; each step's tool still asks the user"),
 }
 
 

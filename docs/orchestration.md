@@ -456,6 +456,37 @@ security or architecture.
   in at least 8 of 10 runs; a Developer job in a vault folder runs with a review step before its file
   card.
 - Non-goal: tuning prompts beyond what the misses show.
+- **Run on 2026-11-28 (gemma4:26b on Ollama; `tests/test_live_plans.py`). Not passed yet: a decision is
+  needed.**
+  - **Check 1, a valid plan within two tries:** 0/10 at first. The model never reached the plan tools:
+    "research note" matches no cue, and the Plans line in `find_capabilities` said only "a large job".
+    Three changes, each made in response to what the misses showed:
+    - The Plans line now names a research note as an example. Result: 8/10, with 7 passes needing a
+      second try because `done_when` was missing.
+    - `make_plan`'s steps now have a typed schema, and a plan can't use `find_capabilities` or
+      `review_step` as a step. Result: 7/10 twice; the misses were guessed tool names ("write" for
+      `write_file`).
+    - A refused plan now suggests the closest tool name and lists the tools a step can use. Result: 7/10
+      and 8/10. A second try almost always succeeds now. The remaining misses (4 of 20) are turns where
+      the model never plans: it writes the file or searches straight away.
+    - Over the last two runs the rate is 75%, against the 80% bar. Stopped there under the circuit
+      breaker.
+    - Closing the gap needs one of these: a cue for research notes (the plan tools are then shown
+      without `find_capabilities`), a system-prompt rule (T4 ruled against one, to keep the prompt
+      unchanged for local models), or accepting 75% as the baseline, as Aura accepted 70% for the
+      capability-finding eval in Aura 2.0 T6.
+  - **Check 2, a Developer job with a review step before its file card:** not passed in three runs,
+    each failing differently:
+    1. The test used the chat box's engine picker, which hands the job straight to Codex by design,
+       so no plan was made. Fixed in the test.
+    2. The plan card, two review cards and the hand-off card came in the right order, but Codex
+       "finished without changing any files", so no file card appeared.
+    3. After the plan card was approved, the model described the plan in chat instead of starting
+       step 1. This is T4's recorded risk that the model may stop between steps.
+  - **Found and fixed during the run (03459c2):** the reply cap never reached Ollama. langchain-openai
+    sends `max_completion_tokens`, which Ollama ignores, so a looping reply ran for 15 minutes. Two local
+    models loaded at once (Aura's own and the test's) also don't fit in this Mac's 24 GB: the live test
+    now checks memory and the loaded models first.
 
 ## 12. Not in this plan
 

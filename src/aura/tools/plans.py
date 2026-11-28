@@ -18,6 +18,7 @@ from typing import Annotated, Any
 from langchain.tools import InjectedState
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool, tool
+from pydantic import BaseModel, Field
 
 from aura.plans import (
     DONE,
@@ -44,6 +45,16 @@ INVALID = "Plan not valid"
 STARTED = "Approved by the user and started."
 CONTINUED = "The user pressed Continue on the review card."
 MAX_INVALID = 2  # invalid plans per turn; the third attempt is refused
+
+
+class StepIn(BaseModel):
+    """One step of the plan."""  # typed so the model sees every field; aura.plans.make checks the values
+
+    does: str = Field(description="what the step does, in one line")
+    tool: str = Field(description='one of your tools, or "think" (your own drafting or deciding), or "review" '
+                                  "(the user checks the results so far)")
+    done_when: str = Field(description="one checkable result that shows the step is done")
+    after: list[int | str] = Field(default_factory=list, description="the steps it needs, by number, e.g. [1, 2]")
 
 
 def checked(goal: Any, steps: Any, available: Iterable[str]) -> Plan:
@@ -185,12 +196,12 @@ def plan_tools(store: PlanStore, available: Callable[[], set[str]]) -> list[Base
         return active[-1] if active else None
 
     @tool
-    def make_plan(goal: str, steps: list[dict[str, Any]], state: Annotated[dict, InjectedState]) -> str:
+    def make_plan(goal: str, steps: list[StepIn], state: Annotated[dict, InjectedState]) -> str:
         """Plan a large job as steps, when it needs several tool calls that depend on each other (a research
-        note from vault notes and web sources; reorganising a folder). Each step: {"does": one line, "tool":
-        one of your tools or "think" (your own drafting or deciding), "done_when": one checkable result,
-        "after": the steps it needs, by number, e.g. [1, 2]}. At most 20 steps. The user sees the plan and
-        approves it; each step's tool still asks the user as usual."""
+        note from vault notes and web sources; reorganising a folder). Every step needs does, tool and
+        done_when. At most 20 steps. The user sees the plan and approves it; each step's tool still asks
+        the user as usual."""
+        steps = [s.model_dump() if isinstance(s, BaseModel) else s for s in steps]
         messages = state.get("messages", [])
         asked = next((m for m in reversed(messages) if isinstance(m, AIMessage)), None)
         if asked is not None and sum(c["name"] == "make_plan" for c in asked.tool_calls) > 1:
