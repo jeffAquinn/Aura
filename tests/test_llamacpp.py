@@ -223,9 +223,9 @@ def test_bonsai_gets_its_recommended_sampling_and_other_models_their_own_default
 
     bonsai = build_model(settings, ModelChoice("llamacpp", "Ternary-Bonsai-2.5-27B-Q2_0"))
     assert (bonsai.temperature, bonsai.top_p, bonsai.presence_penalty) == (0.7, 0.8, 0.0)
-    assert bonsai.extra_body == {"top_k": 20, "min_p": 0.0, "repeat_penalty": 1.0}
+    assert bonsai.extra_body == {"max_tokens": 8192, "top_k": 20, "min_p": 0.0, "repeat_penalty": 1.0}
     other = build_model(settings, ModelChoice("llamacpp", "Other-7B-Q4_K_M"))
-    assert other.top_p is None and not other.extra_body  # nothing sent: the model file's defaults apply
+    assert other.top_p is None and other.extra_body == {"max_tokens": 8192}  # only the cap: the model file's defaults apply
     assert recommended_sampling(ModelChoice("ollama", "bonsai-lookalike")) == {}
 
 

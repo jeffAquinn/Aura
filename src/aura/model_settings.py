@@ -45,6 +45,9 @@ class Profile:
     budget_from: str  # the Settings field that holds the default context budget
     reply_capped: bool  # a local model's reply is at most half its window
     window: str  # who decides the server's window: "aura" (it starts the server), "server" (it reports it), "none"
+    # The reply cap goes in the request body as max_tokens: langchain-openai renames its own max_tokens to
+    # max_completion_tokens, which Ollama ignores (a looping reply then never stops).
+    cap_in_body: bool = False
 
 
 _COMMON = ("effort", "context_budget", "max_reply_tokens")
@@ -52,11 +55,11 @@ PROVIDERS: dict[str, Profile] = {
     # llama-server takes every sampling setting; Aura starts it, so its window is Aura's to set.
     "llamacpp": Profile(sampling=("temperature", "top_p", "presence_penalty"), extra=("top_k", "min_p", "repeat_penalty"),
                         efforts=("none", "low", "medium", "high"), effort_as="reasoning_effort",
-                        budget_from="llamacpp_context_tokens", reply_capped=True, window="aura"),
+                        budget_from="llamacpp_context_tokens", reply_capped=True, window="aura", cap_in_body=True),
     # Ollama's OpenAI endpoint doesn't pass top_k, min_p or repeat_penalty through; its window is its own.
     "ollama": Profile(sampling=("temperature", "top_p", "presence_penalty"), extra=(),
                       efforts=("none", "low", "medium", "high"), effort_as="reasoning_effort",
-                      budget_from="context_tokens", reply_capped=True, window="server"),
+                      budget_from="context_tokens", reply_capped=True, window="server", cap_in_body=True),
     # Current Claude models reject temperature, top_p and top_k: effort and reply length only.
     "anthropic": Profile(sampling=(), extra=(), efforts=("low", "medium", "high", "max"), effort_as="output_config",
                          budget_from="context_tokens", reply_capped=False, window="none"),
@@ -213,12 +216,13 @@ def ollama_window(settings: Settings, model: str) -> int | None:
 def request_options(settings: Settings, choice: ModelChoice, values: dict[str, Any], context: int) -> dict[str, Any]:
     """What a model's settings add to its client: each provider is sent only what it accepts."""
     profile = PROVIDERS[choice.provider]
-    options: dict[str, Any] = {"max_tokens": reply_tokens(settings, choice, values, context)}
+    cap = reply_tokens(settings, choice, values, context)
+    options: dict[str, Any] = {"extra_body": {"max_tokens": cap}} if profile.cap_in_body else {"max_tokens": cap}
     if profile.effort_as == "reasoning_effort":
         options["reasoning_effort"] = values.get("effort", settings.reasoning_effort)
     elif "effort" in values:
         options["output_config"] = {"effort": values["effort"]}
     options.update({name: values[name] for name in profile.sampling if name in values})
     if extra := {name: values[name] for name in profile.extra if name in values}:
-        options["extra_body"] = extra
+        options["extra_body"] = {**options.get("extra_body", {}), **extra}
     return options

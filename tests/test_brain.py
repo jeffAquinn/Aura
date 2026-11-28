@@ -217,8 +217,24 @@ def test_repeated_identical_tool_result_halts_the_turn_after_three_attempts(sett
 def test_every_model_call_has_a_length_cap():
     from aura.brain import build_model
 
-    assert build_model(Settings()).max_tokens == 8192  # a looping model stops instead of running forever
-    assert build_model(Settings(max_reply_tokens=2048)).max_tokens == 2048
+    assert build_model(Settings()).extra_body["max_tokens"] == 8192  # a looping model stops, not runs forever
+    assert build_model(Settings(max_reply_tokens=2048)).extra_body["max_tokens"] == 2048
+
+
+def test_the_length_cap_reaches_a_local_server_in_a_field_it_enforces(tmp_path):
+    # langchain-openai sends its max_tokens as max_completion_tokens, which Ollama (0.40) ignores: a
+    # looping gemma4 reply ran 15 minutes and ~47k tokens (2026-11-28). Local servers get max_tokens
+    # in the request body, the field both Ollama and llama-server enforce.
+    from langchain_core.messages import HumanMessage
+
+    from aura.brain import build_model
+    from aura.model_routing import ModelChoice
+
+    settings = Settings(data_dir=tmp_path / "data")
+    for choice in (ModelChoice("ollama", "gemma4:26b"), ModelChoice("llamacpp", "bonsai")):
+        payload = build_model(settings, choice)._get_request_payload([HumanMessage("hi")])
+        body = {**payload, **payload.get("extra_body", {})}
+        assert body.get("max_tokens") == 8192 and "max_completion_tokens" not in body, (choice, payload)
 
 
 def test_settings_come_from_env(monkeypatch: pytest.MonkeyPatch, tmp_path):

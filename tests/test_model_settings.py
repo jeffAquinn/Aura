@@ -44,21 +44,21 @@ def test_recommended_values_are_the_default_until_settings_are_saved(settings):
 def test_each_provider_is_sent_only_its_own_settings(settings):
     values = {"temperature": 0.7, "top_p": 0.8, "top_k": 20, "min_p": 0.0, "repeat_penalty": 1.1, "effort": "low"}
     llama = request_options(settings, BONSAI, values, 32768)
-    assert llama["extra_body"] == {"top_k": 20, "min_p": 0.0, "repeat_penalty": 1.1}
-    assert (llama["temperature"], llama["reasoning_effort"], llama["max_tokens"]) == (0.7, "low", 8192)
+    assert llama["extra_body"] == {"max_tokens": 8192, "top_k": 20, "min_p": 0.0, "repeat_penalty": 1.1}
+    assert (llama["temperature"], llama["reasoning_effort"]) == (0.7, "low") and "max_tokens" not in llama
     ollama = request_options(settings, QWEN, {"temperature": 0.6}, 16384)
-    assert "extra_body" not in ollama and ollama["reasoning_effort"] == settings.reasoning_effort
+    assert ollama["extra_body"] == {"max_tokens": 8192} and ollama["reasoning_effort"] == settings.reasoning_effort
     claude = request_options(settings, CLAUDE, {"effort": "high", "max_reply_tokens": 20000}, 200000)
     assert claude == {"max_tokens": 20000, "output_config": {"effort": "high"}}
     assert request_options(settings, CLAUDE, {}, 200000) == {"max_tokens": 8192}  # nothing set: nothing sent
 
 
 def test_a_local_reply_is_at_most_half_the_window(settings):
-    assert request_options(settings, QWEN, {"max_reply_tokens": 16000}, 16384)["max_tokens"] == 8192
+    assert request_options(settings, QWEN, {"max_reply_tokens": 16000}, 16384)["extra_body"]["max_tokens"] == 8192
     store = ModelSettingsStore(settings)
     store.put(QWEN, {"max_reply_tokens": 4096, "temperature": 0.5})
     model = build_model(settings, QWEN)
-    assert (model.max_tokens, model.temperature) == (4096, 0.5)
+    assert (model.extra_body["max_tokens"], model.temperature) == (4096, 0.5)
     claude = build_model(settings, CLAUDE, api_key="sk-ant-api03-" + "a" * 40)
     assert claude.max_tokens == 8192 and not claude.output_config
 
