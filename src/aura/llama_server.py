@@ -171,7 +171,7 @@ class LlamaServer:
             str(self.binary), "-m", str(path), "--alias", name,
             "--host", self.host, "--port", str(self.port),
             "--jinja",  # the model's chat template: Aura's tool calls need it
-            "-c", str(self.settings.context_tokens),  # Aura's memory compaction matches the window
+            "-c", str(self.settings.llamacpp_context_tokens),  # Aura's memory compaction matches the window
             "--parallel", "1",  # one conversation: the whole window serves the turn
             "-ngl", "99",  # every layer on the GPU
             "-fa", "on", "--cache-type-k", "q8_0", "--cache-type-v", "q8_0",  # a smaller KV cache

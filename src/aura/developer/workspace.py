@@ -28,7 +28,7 @@ _CANON = {m.casefold(): m for m in MECHANICS}
 # Mechanics' fixed "…: none" lines, left out of the length limits so a blank template stays too short.
 BOILERPLATE = re.compile(rf"(?im)^\s*(#+\s*)?Mechanics\s*$|^\s*[-*•]?\s*({'|'.join(map(re.escape, MUST_BE_NONE))})"
                          r"\s*:\s*none\.?\s*$")  # fmt: skip
-SPEC_LIMITS = (150, 12_000)  # characters
+SPEC_LIMITS = (150, 30_000)  # characters
 
 SKILL_FORMAT = f"""\
 # How to write an Aura skill

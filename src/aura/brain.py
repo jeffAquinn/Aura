@@ -66,7 +66,9 @@ from aura.tools.egress import GATED, describe_search, visible
 from aura.tools.vault import VaultError
 from aura.tools.sandbox import describe_run
 
-TOOL_CALLS_PER_TURN = 8
+# Tool calls in one turn (2026-11-27: was 8, which stopped Aura reading two specs). Runaway loops are
+# stopped separately: three identical calls in a row halt the turn (RecursionMiddleware).
+TOOL_CALLS_PER_TURN = 40
 CHECKPOINTS_KEPT = 8  # per conversation: only the latest is ever read (no time travel)
 TRANSCRIPT_CHARS = 20_000  # of one message, when the app restores the conversation
 # What the model reads for a tool call that never got its result (the turn was stopped, or Aura
@@ -402,7 +404,6 @@ class Aura:
         # This guard is reset only for a new user turn. It survives an approval/resume within that
         # turn so an agent cannot evade the retry limit by splitting the same failed work in two.
         self._circuit_breaker = RecursionCircuitBreaker()
-        budget = self.settings.context_tokens
         vault = self.toolbox.vault
         identity = self.toolbox.identity
 
@@ -461,6 +462,10 @@ class Aura:
         self.recovery_note: str | None = None  # what a restart left unfinished (shown once by the app)
 
         def build(tools: list) -> Any:
+            # The memory budget follows the model answering: Aura sets llama-server's window itself
+            # (32k), while Ollama's is Ollama's own setting (Aura's default 16k). Rebuilt on a switch.
+            budget = (self.settings.llamacpp_context_tokens if self.active_model.provider == "llamacpp"
+                      else self.settings.context_tokens)
             self._summarization = UsageAwareSummarizationMiddleware(
                 model=self.llm,
                 trigger=("tokens", int(budget * 0.6)),

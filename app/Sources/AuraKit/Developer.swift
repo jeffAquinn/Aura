@@ -222,7 +222,7 @@ public enum Specification {
     /// Mechanics' five lines (docs/mechanics.md): the first four must say "none".
     public static let mechanics = ["Network", "Processes", "Native code", "Dynamic code", "Files"]
     public static let minimumLength = 150
-    public static let maximumLength = 12_000
+    public static let maximumLength = 30_000  // the server's SPEC_LIMITS
 
     public static let template = sections.map { section in
         section == "Mechanics"

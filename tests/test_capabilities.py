@@ -156,7 +156,8 @@ def test_the_derived_tables_are_exactly_todays():
     assert dict(GATED) == GATED_TODAY
     # T4: the Registry's own tool; 2026-11-27: list_models (read-only, the Models family)
     assert dict(GROUP) == GROUP_TODAY | {"find_capabilities": "Capabilities", "list_models": "Models_Tool",
-                                         "find_clutter": "File_System_Tool", "tidy_vault": "File_System_Tool"}
+                                         "find_clutter": "File_System_Tool", "tidy_vault": "File_System_Tool",
+                                         "search_vault": "File_System_Tool"}
 
 
 def test_status_lines_are_unchanged():

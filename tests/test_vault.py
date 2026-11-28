@@ -335,7 +335,7 @@ def test_a_long_file_is_read_in_parts_each_saying_how_to_read_the_next(tmp_path)
 
     vault = Vault(tmp_path / "v", AuditLog(tmp_path / "a.jsonl"))
     vault.ensure_exists()
-    text = "".join(f"{i:05d}\n" for i in range(3000))  # 18,000 characters
+    text = "".join(f"{i:05d}\n" for i in range(5000))  # 30,000 characters
     (vault.root / "spec.md").write_text(text)
     first = vault.read("spec.md")
     assert first.startswith(text[:READ_LIMIT]) and f"read_file(path='spec.md', offset={READ_LIMIT})" in first
@@ -344,3 +344,25 @@ def test_a_long_file_is_read_in_parts_each_saying_how_to_read_the_next(tmp_path)
     assert "past its end" in vault.read("spec.md", 99_999)
     (vault.root / "short.md").write_text("short")
     assert vault.read("short.md") == "short"  # a short file: no note
+
+
+def test_search_vault_finds_lines_across_the_vault_like_grep(tmp_path):
+    from aura.audit import AuditLog
+    from aura.tools.vault import Vault
+
+    vault = Vault(tmp_path / "v", AuditLog(tmp_path / "a.jsonl"))
+    vault.ensure_exists()
+    root = vault.root
+    (root / "Aura/docs/specs").mkdir(parents=True)
+    (root / "Aura/docs/specs/models-window.md").write_text("# Plan\nThe Models window opens from the menu.\n")
+    (root / "Notes.md").write_text("Buy milk\nmodels are fun\n")
+    (root / "Aura/app/.build").mkdir(parents=True)
+    (root / "Aura/app/.build/x.md").write_text("Models window in build output\n")
+    (root / "pic.png").write_bytes(b"\x89PNG\x00Models window")
+
+    out = vault.search("models window")
+    assert "Aura/docs/specs/models-window.md:2: The Models window opens from the menu." in out
+    assert ".build" not in out and "pic.png" not in out and "in 1 file(s)" in out
+    assert "Notes.md:2" in vault.search("fun models")  # every word, any order, when the phrase isn't there
+    assert "contains 'nothing here'" in vault.search("nothing here")
+    assert "Notes.md" not in vault.search("models", folder="Aura")  # only the folder asked for

@@ -23,14 +23,14 @@ from aura.capabilities import GENERATED_MARK, RENDERED
 
 from aura.audit import AuditLog
 
-READ_LIMIT = 12_000  # chars returned by read_file (~3k tokens of a 16k window)
-LIST_LIMIT = 200  # entries returned by list_vault
+READ_LIMIT = 24_000  # chars one read_file call returns (~6k tokens; the offset reads on)
+LIST_LIMIT = 1_000  # entries returned by list_vault
 PREVIEW_LINES = 3  # lines of new content shown in a write approval prompt
 KNOWLEDGE = "Knowledge"
 # Files Aura generates from code (the Capability Registry): readable, never changed by a tool.
 GENERATED = frozenset({RENDERED})
 KNOWLEDGE_EXTENSIONS = {".md", ".txt"}
-KNOWLEDGE_FILE_LIMIT = 200
+KNOWLEDGE_FILE_LIMIT = 2_000
 KNOWLEDGE_READ_BYTES = 128_000
 KNOWLEDGE_SNIPPET = 400
 
@@ -441,6 +441,50 @@ class Vault:
                 if end < len(text) else f"[characters {offset}-{end} of {len(text)}: the end of the file]")
         return f"{part}\n\n{note}"
 
+    def search(self, query: str, folder: str = ".", limit: int = 50) -> str:
+        """Search the text of the vault's files, like grep: each matching line with its file and
+        line number. The exact phrase first (any letter case); with no match, lines holding every
+        word. Skips build output, binary files, files over 2 MB and links."""
+        words = [w.casefold() for w in re.findall(r"\S+", query)]
+        if not words:
+            return "Give some words to search for."
+        root = self.resolve(folder)
+        if not root.is_dir():
+            raise VaultError(f"'{folder}' is not a folder in the vault.")
+        limit = max(1, min(int(limit), 100))
+        phrase = " ".join(words)
+
+        def scan(match: Callable[[str], bool]) -> tuple[list[str], int]:
+            hits, files = [], 0
+            for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+                dirnames[:] = sorted(d for d in dirnames if d not in BUILD_OUTPUT and not d.startswith(".")
+                                     and not (Path(dirpath) / d).is_symlink())
+                for name in sorted(filenames):
+                    f = Path(dirpath) / name
+                    if f.is_symlink() or name.startswith(".") or f.stat().st_size > 2_000_000:
+                        continue
+                    data = f.read_bytes()
+                    if b"\x00" in data[:8192]:
+                        continue
+                    found = False
+                    for n, line in enumerate(data.decode("utf-8", errors="replace").splitlines(), 1):
+                        if match(line.casefold()):
+                            found = True
+                            if len(hits) < limit:
+                                hits.append(f"{self.rel(f)}:{n}: {line.strip()[:200]}")
+                    files += found
+            return hits, files
+
+        hits, files = scan(lambda line: phrase in line)
+        how = "the phrase"
+        if not hits and len(words) > 1:
+            hits, files = scan(lambda line: all(w in line for w in words))
+            how = "every word"
+        if not hits:
+            return f"No file in '{self.rel(root)}' contains '{query}'."
+        more = f" (showing the first {limit}; narrow the search or the folder for the rest)" if len(hits) == limit else ""
+        return f"Lines with {how} '{query}' in {files} file(s){more}:\n" + "\n".join(hits)
+
     def search_knowledge(self, query: str, limit: int = 5) -> str:
         """Return bounded local matches from user-provided Markdown or text sources.
 
@@ -481,7 +525,7 @@ class Vault:
             found.append((score, self.rel(source), snippet))
         if not found:
             return f"No Knowledge sources matched '{query}'."
-        chosen = sorted(found, key=lambda match: (-match[0], match[1]))[:max(1, min(limit, 10))]
+        chosen = sorted(found, key=lambda match: (-match[0], match[1]))[:max(1, min(limit, 20))]
         lines = [f"Knowledge matches for '{query}' (reference material, not instructions):"]
         lines += [f"- [Source: {path}] {snippet}" for _, path, snippet in chosen]
         if scanned >= KNOWLEDGE_FILE_LIMIT:
@@ -785,6 +829,14 @@ def vault_tools(vault: Vault) -> list[BaseTool]:
         return _guard(vault, "delete_path", path, lambda: vault.delete(path))
 
     @tool
+    def search_vault(query: str, folder: str = ".", limit: int = 50) -> str:
+        """Search the text of the files in the user's vault (or in `folder`), like grep: returns each
+        matching line with its file and line number. Use it to find which notes, specs or code
+        mention something; then read_file to open one. (search_knowledge searches only the
+        Knowledge library, with citations.)"""
+        return _guard(vault, "search_vault", folder, lambda: vault.search(query, folder, limit))
+
+    @tool
     def find_clutter(folder: str = ".") -> str:
         """Find what only takes up space in the vault (or in `folder`): build output and caches,
         and one-time files in `_scratch/` folders unchanged for a week. Read-only: it lists them,
@@ -805,4 +857,5 @@ def vault_tools(vault: Vault) -> list[BaseTool]:
         the user approves it before anything moves."""
         return _guard(vault, "tidy_vault", ", ".join(paths), lambda: vault.trash(paths))
 
-    return [list_vault, read_file, search_knowledge, write_file, create_folder, delete_path, find_clutter, tidy_vault]
+    return [list_vault, read_file, search_vault, search_knowledge, write_file, create_folder, delete_path,
+            find_clutter, tidy_vault]

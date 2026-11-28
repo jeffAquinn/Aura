@@ -31,6 +31,9 @@ class Settings:
     # The context window the *server* actually allocates (see `ollama ps`). Ollama silently
     # drops the oldest messages past this, so Aura compacts its memory before reaching it.
     context_tokens: int = 16384
+    # llama-server's window, which Aura sets itself (-c); Aura's memory budget for llama.cpp models.
+    # 32k: about 4 GB of q8_0 KV cache for a 27B model, which fits beside it in 24 GB.
+    llamacpp_context_tokens: int = 32768
     # How long a local model (Ollama's, or llama-server's) stays loaded after a turn. Aura does
     # not preload models simply because its panel is visible.
     model_keep_alive: str = "10m"
@@ -72,6 +75,7 @@ class Settings:
             llama_server=env("AURA_LLAMA_SERVER", d.llama_server),
             reasoning_effort=env("AURA_REASONING_EFFORT", d.reasoning_effort) or None,
             context_tokens=int(env("AURA_CONTEXT_TOKENS", d.context_tokens)),
+            llamacpp_context_tokens=int(env("AURA_LLAMACPP_CONTEXT_TOKENS", d.llamacpp_context_tokens)),
             model_keep_alive=env("AURA_MODEL_KEEP_ALIVE", d.model_keep_alive),
             max_reply_tokens=int(env("AURA_MAX_REPLY_TOKENS", d.max_reply_tokens)),
             vault_dir=Path(env("AURA_VAULT_DIR", str(d.vault_dir))).expanduser(),

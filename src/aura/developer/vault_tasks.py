@@ -23,10 +23,10 @@ from pathlib import Path, PurePosixPath
 
 from aura.tools.vault import BUILD_OUTPUT, Vault, VaultError, human_size
 
-MAX_FILES = 2_000  # files copied into a task's workspace
+MAX_FILES = 10_000  # files copied into a task's workspace
 MAX_BYTES = 300 * 1024 * 1024  # ... and their total size (the user's choice, 2026-11-27)
-MAX_CHANGES = 40  # changes one task may bring back for approval
-MAX_FILE_BYTES = 10 * 1024 * 1024  # a single file it may write
+MAX_CHANGES = 200  # changes one task may bring back for approval
+MAX_FILE_BYTES = 50 * 1024 * 1024  # a single file it may write
 DIFF_LINES = 60  # diff lines shown per change
 SKIP = {".DS_Store"}  # Finder's files: never copied, never compared
 # Build output and caches (tools/vault.BUILD_OUTPUT) are never copied, compared or written back, so
@@ -36,7 +36,7 @@ GENERATED = BUILD_OUTPUT
 # A task aimed at the whole Vault is for the user's content, not Aura's runtime machinery. A user
 # can still explicitly choose `Aura/` when they want a Developer to work on the project sandbox.
 SYSTEM_ROOTS = {"Aura", "Audit_Staging", "Audit_Temp", "Skills Inbox"}
-TASK_LIMITS = (10, 8_000)  # characters
+TASK_LIMITS = (10, 20_000)  # characters
 
 
 class VaultTaskError(ValueError):

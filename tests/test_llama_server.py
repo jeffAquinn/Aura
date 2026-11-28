@@ -106,7 +106,7 @@ def test_a_turn_starts_the_server_for_its_model_with_a_secret_key_out_of_sight(s
     argv = started["argv"]
     assert argv[argv.index("--alias") + 1] == "Small-1B"
     assert argv[argv.index("--host") + 1] == "127.0.0.1"
-    assert argv[argv.index("-c") + 1] == "16384"
+    assert argv[argv.index("-c") + 1] == "32768"  # llamacpp_context_tokens
     assert {"--jinja", "-fa", "--cache-type-k", "--cors-origins"} <= set(argv)
     assert last(server)["event"] == "local_model_loaded"
 
