@@ -360,14 +360,18 @@ security or architecture.
   that carries a step. Cards outside a plan are unchanged. Not done: Slack's text cards don't show the
   step line yet.
 
-### T7 — Review steps, Stop, and Continue (done; for Aura's review)
+### T7 — Review steps, Stop, and Continue (done, 30f1778; approved by Aura)
 - Scope: `tools/plans.py`, `server.py` (Stop), `ChatView.swift`.
 - Blocked by: T5 (the card UI), T4.
 - Acceptance: a `review` step pauses with the results so far and Continue or Stop; Stop marks the
   remaining steps `skipped`; a plan resumes after a Developer step ends the turn. Verified by unit
   tests and a check in the real app.
 - Non-goal: plans that start by themselves.
-- **Done (2026-11-28; for Aura's review).** A review step is served by a new tool, `review_step(step,
+- **Done (30f1778); approved by Aura, 2026-11-28,** including the sticky card conditions. Aura's review
+  worked from the security packet, written before the code-review fixes. Two points are now stricter than
+  that packet said: `finish_step` refuses every outcome on a review step, not all but `failed`; and on a
+  card that answers one review twice, Stop wins, not the first answer.
+  A review step is served by a new tool, `review_step(step,
   note)`. Its card lists every recorded result so far and Aura's note, with Continue or Stop Plan
   (Stop is the default). The step line above the card says which step it is.
   - **Only the user ends a review.** `finish_step` refuses every outcome on a review step, and the tool
