@@ -1,7 +1,79 @@
 # Aura
 
-A local, agentic AI system for macOS, living on a Mac mini.
-Architecture and reviews by Gemma; implementation by Claude Code.
+**An interface for disciplined inquiry.** A local agent for macOS, living on a Mac mini.
+Architecture and reviews by Aura (Gemma held the role until 2026-11-26); implementation by Claude Code.
+
+Aura is an agent built on a language model. Its purpose is to help you think more precisely: it
+asks questions that expose weak assumptions, separates what is known from what is only assumed, and
+helps you build sharper mental models. It runs on your Mac, keeps its memory and your notes in a
+local folder (the vault), and acts only within limits you approve.
+
+## The philosophy: the dialectic
+
+Aura treats truth as a matter of resolution, sharpened by continual refinement, rather than a fixed
+destination. Its method is a Socratic and Platonic dialectic. It questions in order to reveal the
+structure under a claim, and it moves between the Many (the models, maps and "useful lies" that help
+us act in the world) and the One (what lies under them). In the vault's terms, the Witness (you)
+works with the Absolute (R) through that interface.
+
+### Core principles
+
+Aura's constitution (`src/aura/constitution.md`) is part of its instructions for every reply,
+ahead of its persona, and its Core rules come last. No persona setting or request can change them.
+
+- **The Integrity Rule.** No expansion of capability may bypass the human in the loop. Every code
+  change must pass automated tests and be approved by you on the Audit Card. Aura never modifies
+  its constitution or its Security Governor.
+- **Honesty about uncertainty.** Aura is instructed never to invent facts, sources or file contents,
+  and to say plainly when it lacks a tool or doesn't know. Like any model, it can still be wrong,
+  which is why it cites its sources and why risky actions wait for your approval.
+- **Approval first.** Writing or deleting files, running code, searching the web, sending a message
+  and handing work to a Developer each show an approval card, and the card defaults to Deny.
+
+### Privacy
+
+Aura is local-first, not local-only. Its conversations, memory and vault stay on your Mac, and the
+default models run locally (Ollama, or llama.cpp). Your words leave the Mac only when you choose
+to send them: a Claude (Anthropic) model picked for a role, a web search you approve, a connected
+account (Gmail, Slack, Discord) you ask Aura to use, or a job handed to Claude Code or Codex.
+
+## How it works
+
+**Models.** Aura picks a model for each kind of request (Startup, Chat, Web Search, Deep Research)
+in the Models window. Models run locally through Ollama (by default `gemma4:26b`) or llama.cpp, or
+in the cloud through Anthropic. Each model can have its own settings, and an idle model is unloaded
+after ten minutes.
+
+**Developers.** Code changes and skill builds go to Claude Code or Codex, each in an isolated
+container, only after you approve the task.
+
+**The vault: the Codex of Emergence.** Aura's local folder, `~/Documents/Aura_Vault`, is organised as
+a map of the inquiry. `Map_of_the_Ascent.md` is its index.
+
+| Area | What it holds |
+|---|---|
+| `The_Absolute_R` | Formalizations: the mathematical, logical and philosophical Forms |
+| `The_Interface_Many` | Models, theories and "useful lies" for navigating the world |
+| `The_Witness_Relational` | Logs of how the inquiry and its perspective change |
+| `Knowledge` | Reference material you provide, searched with citations |
+| `Wisdom` | Distilled principles and mental models that guide the inquiry |
+| `Conversations`, `Chats` | Records of dialogues; every Mac chat is saved to `Chats` |
+| `_scratch` | Temporary files, cleared a week after they were last changed |
+
+**Tools.** Aura works through audited tools:
+- an offline Python sandbox, for calculation and data analysis;
+- skills, which extend what it can do; each one is audited by the Security Governor and installed
+  only when you approve its Audit Card;
+- connections to your Gmail, Google Calendar and Drive, Slack and Discord, reached with your own
+  accounts. Keys stay in the macOS Keychain, and anything Aura sends waits for your approval.
+
+## What makes Aura different
+
+Most assistants are built to finish tasks quickly. Aura is built to think with you: to aim for
+resolution, not just fluency, and to treat the question as carefully as the answer. It is meant for
+someone who wants to understand a question better, not only to have it answered.
+
+*This README is kept current as Aura evolves.*
 
 ## Run
 
@@ -22,7 +94,7 @@ and stops it when it quits. `cd app && swift test` runs the client's unit tests.
 
 **In the panel:** drag the header to move it. Drag over any message to select text; right-click
 a message for **Copy Message** or **Copy Conversation** (copied as plain text), or use the copy
-button that appears beside Aura's replies. Settings (the gear) → Appearance sets the font, the
+button that appears beside Aura's replies. Settings (in the ⋯ menu) → Appearance sets the font, the
 text size and the colors of your bubbles and Aura's (violet by default).
 
 Requires [Ollama](https://ollama.com) serving `gemma4:26b` (or any OpenAI-compatible endpoint), and
@@ -30,9 +102,9 @@ Docker Desktop running for the code interpreter. Configuration: see `.env.exampl
 
 ### Memory on smaller Macs
 
-Aura does not load its language model at launch or when the panel opens. It loads only on the first
-chat request, then releases it after five idle minutes by default (`AURA_MODEL_KEEP_ALIVE=5m`; use
-`0` to release it immediately). The default `gemma4:26b` currently reserves about 17 GB while
+At launch Aura loads only the Startup model (Models window → Roles); opening the panel loads nothing.
+After ten idle minutes it unloads every model (`AURA_MODEL_KEEP_ALIVE=10m`; use `0` to release a
+model as soon as a turn ends), unless Sleep Mode keeps one loaded. The default `gemma4:26b` currently reserves about 17 GB while
 loaded, so a 24 GB Mac may be tight during an active turn. For more headroom, install and select a
 smaller Ollama model with `AURA_MODEL`, and set Ollama's `OLLAMA_CONTEXT_LENGTH` lower before
 starting Ollama; `ollama ps` shows the active context allocation.
