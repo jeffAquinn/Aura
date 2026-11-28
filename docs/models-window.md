@@ -198,7 +198,7 @@ On the **Local** page, under "Find models", each with one sentence on what it is
 Each step is a vertical slice that ships and is tested on its own.
 
 1. **The window, empty, and its menu items.** Snapshot of the four pages with placeholders. Nothing moves yet. **Done 2026-11-27:** `app/Sources/AuraUI/ModelsView.swift`; "Models…" in the menu-bar menu and the panel's ⋯ menu; Roles and Cloud show today's setup read-only (the Anthropic connection included); Settings, Keys, `model_routing.json` and the Keychain unchanged.
-2. **Roles page.** Move the role pickers, Coding and the Startup problem from `ModelsSection`. Settings shows the pointer. Store and snapshot tests.
+2. **Roles page.** Move the role pickers, Coding and the Startup problem from `ModelsSection`. Settings shows the pointer. Store and snapshot tests. **Done 2026-11-27:** `app/Sources/AuraUI/RoleChoices.swift` (the role rows, the Coding row and their save logic, moved unchanged); Settings → Models keeps an Open Models… row, the Startup warning, and Sleep Mode, Sync cloud models and Install a model until steps 3 and 4.
 3. **Local page.** Move Sleep Mode and Install a model. Add `local_state` and `GET /v1/models/local` (`list_models` rebuilt on it), llama.cpp files, the app's memory figure, and the download links.
 4. **Cloud page.** Move the Anthropic key row (removed from Keys) and Sync cloud models.
 5. **Per-model settings, server.** `model_settings.json` (the shape in §6), `GET/PUT /v1/models/settings`, `build_model` per provider including `max_reply_tokens`, Bonsai's defaults migrated, the context check at turn build (the approved spec).

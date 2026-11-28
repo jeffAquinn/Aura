@@ -120,7 +120,8 @@ struct SnapshotTests {
         #expect(used > 256 * 1_048_576 && used < ProcessInfo.processInfo.physicalMemory)
     }
 
-    /// Step 1 of the Models window: four pages; Roles and Cloud show today's setup, read-only.
+    /// The Models window's four pages: Roles holds the role pickers (step 2); Cloud shows today's
+    /// connection, read-only, until step 4.
     @Test func theModelsWindowHasItsFourPages() throws {
         #expect(ModelsPage.allCases.map(\.title) == ["Roles", "Local", "Cloud", "Model settings"])
         let catalog = ModelCatalog(
@@ -132,7 +133,8 @@ struct SnapshotTests {
             ollamaModels: ["gemma4:26b", "qwen3.5:9b"], anthropicModels: ["claude-opus-5-5", "claude-sonnet-5-5"],
             anthropicKeySet: true, codingEngine: "claude", sleepMode: SleepMode(model: "qwen3.5:9b"), startupModelProblem: nil)
         for page in ModelsPage.allCases {
-            let size = try renderWide("39-models-\(page.rawValue)", width: 640, ModelsPageContent(page: page, catalog: catalog))
+            let size = try renderWide("39-models-\(page.rawValue)", width: 640,
+                                      ModelsPageContent(page: page, catalog: catalog, store: ChatStore(items: [])))
             #expect(size.height > 200)
         }
     }

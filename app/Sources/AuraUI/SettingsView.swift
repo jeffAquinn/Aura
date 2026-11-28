@@ -192,13 +192,8 @@ struct UserProfileSection: View {
 /// Settings → Models. Choices are stored by role; keys remain in the Keychain and never appear here.
 struct ModelsSection: View {
     let store: ChatStore
-    @State private var roles: [String: ModelChoice] = [:]
-    /// The last role map confirmed by the server.  Model choices should persist as soon as a user
-    /// picks them; requiring a second, easy-to-miss Save button made them appear to reset later.
-    @State private var savedRoles: [String: ModelChoice] = [:]
-    @State private var saveGeneration = 0
     @State private var error: String?
-    @State private var saving = false
+    @Environment(\.openModels) private var openModels
     @State private var localModel = ""
     @State private var confirmDownload = false
     @State private var downloading = false
@@ -206,9 +201,6 @@ struct ModelsSection: View {
     @State private var sleepMode = SleepMode(model: "")
     @State private var savingSleep = false
     @State private var confirmSleep = false
-
-    /// Coding is an account-backed Developer setting below, not an Aura cloud-chat model role.
-    private static let order = ["startup", "chat", "deep_research", "web_search"]
 
     var body: some View {
         Section("Models") {
@@ -230,15 +222,15 @@ struct ModelsSection: View {
                 .controlSize(.small)
                 Text("Sync checks Anthropic with your saved API key and lists the cloud models available to that account. It never exposes the key to Aura’s interface.")
                     .font(.caption).foregroundStyle(.secondary)
-                ForEach(Self.order, id: \.self) { role in
-                    ModelRoleRow(
-                        title: catalog.roleLabels[role] ?? role,
-                        choice: binding(role),
-                        catalog: catalog,
-                        isStartup: role == "startup"
-                    )
+                // Step 2 of docs/models-window.md: each role's model and the Coding developer are
+                // chosen in the Models window now.
+                HStack {
+                    Label("Each role's model, and the Developer for coding, are chosen in the Models window.",
+                          systemImage: "arrow.triangle.branch")
+                        .font(.callout)
+                    Spacer()
+                    Button("Open Models…") { openModels(.roles) }
                 }
-                DeveloperCodingRow(store: store, engine: catalog.codingEngine)
                 if let problem = catalog.startupModelProblem {
                     Label(problem, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
                 }
@@ -276,19 +268,11 @@ struct ModelsSection: View {
                 if let error {
                     Label(error, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange)
                 }
-                HStack {
-                    Text(saving ? "Saving model settings…" : "Model choices save automatically.")
-                        .font(.caption).foregroundStyle(.secondary)
-                    Spacer()
-                    Button("Save now") { saveNow() }.disabled(saving || roles.count != 5)
-                }
-                .controlSize(.small)
             } else {
                 Text(store.transport == nil ? "Aura is offline." : "Loading model settings…").foregroundStyle(.secondary)
             }
         }
         .onChange(of: store.modelCatalog) { sync() }
-        .onChange(of: roles) { _, _ in scheduleSave() }
         .onAppear(perform: sync)
         .confirmationDialog("Download local model?", isPresented: $confirmDownload, titleVisibility: .visible) {
             Button("Download \(localModel.trimmingCharacters(in: .whitespacesAndNewlines))") { download() }
@@ -309,49 +293,10 @@ struct ModelsSection: View {
 
     private static let ollamaPopularModels = URL(string: "https://ollama.com/library?sort=popular")!
 
-    private func binding(_ role: String) -> Binding<ModelChoice> {
-        Binding(
-            get: { roles[role] ?? ModelChoice(provider: "ollama", model: "") },
-            set: { roles[role] = $0 }
-        )
-    }
-
     private func sync() {
         if let catalog = store.modelCatalog {
-            roles = catalog.roles
-            savedRoles = catalog.roles
             sleepMode = catalog.sleepMode
         }
-    }
-
-    private func scheduleSave() {
-        guard roles.count == savedRoles.count, roles != savedRoles else { return }
-        saveGeneration += 1
-        let generation = saveGeneration
-        // A provider switch changes both provider and model.  Debouncing lets those two picker
-        // updates settle into one validated, atomic server preference update.
-        Task {
-            try? await Task.sleep(nanoseconds: 350_000_000)
-            guard generation == saveGeneration else { return }
-            await persist(roles)
-        }
-    }
-
-    private func saveNow() {
-        saveGeneration += 1  // supersede any queued automatic save
-        Task { await persist(roles) }
-    }
-
-    private func persist(_ requested: [String: ModelChoice]) async {
-        guard requested.count == savedRoles.count else { return }
-        saving = true
-        error = await store.updateModels(requested)
-        if error == nil { savedRoles = requested }
-        saving = false
-        // If the user made another selection while the request was in flight, persist that newer
-        // choice next instead of allowing an older response to silently win. Do not retry a
-        // rejected partial/invalid value by itself: the user should see the validation message.
-        if roles != requested { scheduleSave() }
     }
 
     private func download() {
@@ -394,98 +339,6 @@ struct ModelsSection: View {
             error = await store.updateSleepMode(sleepMode)
             savingSleep = false
         }
-    }
-}
-
-private struct DeveloperCodingRow: View {
-    let store: ChatStore
-    let engine: String
-    @State private var saving = false
-    @State private var error: String?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text("Coding").font(.callout.weight(.medium))
-            Picker("Coding developer", selection: Binding(get: { engine }, set: save)) {
-                Text("Claude Code (your Claude plan)").tag("claude")
-                Text("Codex (your ChatGPT plan)").tag("codex")
-            }
-            .disabled(saving)
-            Text("Code-change requests use this connected Developer account after Aura presents its approval card. They do not use an Anthropic cloud-chat model.")
-                .font(.caption).foregroundStyle(.secondary)
-            if let error { Label(error, systemImage: "exclamationmark.triangle").font(.caption).foregroundStyle(.orange) }
-        }
-        .padding(8)
-        .background(Color.accentColor.opacity(0.10), in: RoundedRectangle(cornerRadius: 8))
-    }
-
-    private func save(_ selected: String) {
-        saving = true
-        error = nil
-        Task {
-            error = await store.updateCodingEngine(selected)
-            saving = false
-        }
-    }
-}
-
-private struct ModelRoleRow: View {
-    let title: String
-    @Binding var choice: ModelChoice
-    let catalog: ModelCatalog
-    let isStartup: Bool
-
-    private var suggestions: [String] {
-        catalog.models(for: choice.provider)
-    }
-
-    private var menuTitle: String {
-        switch choice.provider {
-        case "anthropic": "Available cloud models"
-        case "llamacpp": "Served by llama-server"
-        default: "Installed local models"
-        }
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 5) {
-                Text(title).font(.callout.weight(.medium))
-                if isStartup {
-                    Label("Launch default", systemImage: "power")
-                        .font(.caption2.weight(.semibold))
-                        .foregroundStyle(.tint)
-                }
-            }
-            HStack {
-                Picker("Provider", selection: $choice.provider) {
-                    Text("Ollama (local)").tag("ollama")
-                    Text("llama.cpp (local)").tag("llamacpp")
-                    Text("Anthropic (cloud)").tag("anthropic")
-                }
-                .labelsHidden()
-                .onChange(of: choice.provider) { provider in
-                    choice.model = catalog.models(for: provider).first ?? ""
-                }
-                TextField("Model", text: $choice.model)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(minWidth: 180)
-            }
-            if choice.provider == "llamacpp" && suggestions.isEmpty {
-                Text("No llama.cpp models found. Install llama.cpp (brew install llama.cpp) and put .gguf model files in ~/models; Aura starts and stops llama-server itself.")
-                    .font(.caption).foregroundStyle(.orange)
-            }
-            if !suggestions.isEmpty {
-                Menu(menuTitle) {
-                    ForEach(suggestions, id: \.self) { model in
-                        Button(model) { choice.model = model }
-                    }
-                }
-                .font(.caption).controlSize(.small)
-            }
-        }
-        .padding(8)
-        .background(isStartup ? Color.accentColor.opacity(0.10) : .clear, in: RoundedRectangle(cornerRadius: 8))
     }
 }
 

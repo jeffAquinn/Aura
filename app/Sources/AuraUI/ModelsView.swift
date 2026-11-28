@@ -39,6 +39,9 @@ public enum ModelsPage: String, CaseIterable, Identifiable, Sendable {
         }
     }
 
+    /// Its controls are here now (not still in Settings).
+    var moved: Bool { self == .roles }
+
     /// The plan's step that moves this page's controls here (§12).
     var step: Int {
         switch self {
@@ -74,7 +77,7 @@ public struct ModelsView: View {
                 }
                 .navigationSplitViewColumnWidth(min: 170, ideal: 190, max: 240)
             } detail: {
-                ModelsPageView(page: navigation.page, catalog: store.modelCatalog)
+                ModelsPageView(page: navigation.page, store: store)
             }
         }
         .task { await store.loadSettings() }  // the catalog: roles and the cloud connection, read-only here
@@ -84,10 +87,10 @@ public struct ModelsView: View {
 /// One page, scrolling.
 struct ModelsPageView: View {
     let page: ModelsPage
-    let catalog: ModelCatalog?
+    let store: ChatStore
 
     var body: some View {
-        ScrollView { ModelsPageContent(page: page, catalog: catalog) }
+        ScrollView { ModelsPageContent(page: page, catalog: store.modelCatalog, store: store) }
     }
 }
 
@@ -96,19 +99,26 @@ struct ModelsPageView: View {
 struct ModelsPageContent: View {
     let page: ModelsPage
     let catalog: ModelCatalog?
+    var store: ChatStore? = nil
 
     var body: some View {
             VStack(alignment: .leading, spacing: 14) {
                 Label(page.title, systemImage: page.symbol).font(.title2.weight(.semibold))
                 Text(page.summary).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-                current
-                Label("These controls move here in step \(page.step) of the plan. Until then, change them in Settings → Models"
-                      + (page == .cloud ? " and Settings → Keys." : "."), systemImage: "info.circle")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .padding(10)
-                    .background(.quaternary.opacity(0.5), in: .rect(cornerRadius: 10))
-                    .fixedSize(horizontal: false, vertical: true)
+                if page.moved, let catalog, let store {
+                    RoleChoices(store: store, catalog: catalog)
+                } else if page.moved {
+                    Text(store?.transport == nil ? "Aura is offline." : "Loading model settings…").foregroundStyle(.secondary)
+                } else {
+                    current
+                    Label("These controls move here in step \(page.step) of the plan. Until then, change them in Settings → Models"
+                          + (page == .cloud ? " and Settings → Keys." : "."), systemImage: "info.circle")
+                        .font(.callout)
+                        .foregroundStyle(.secondary)
+                        .padding(10)
+                        .background(.quaternary.opacity(0.5), in: .rect(cornerRadius: 10))
+                        .fixedSize(horizontal: false, vertical: true)
+                }
             }
             .padding(24)
             .frame(maxWidth: 640, alignment: .leading)
