@@ -1,6 +1,6 @@
 # Plans: multi-step work for Aura (Aura's AOF proposal, reviewed)
 
-**Status:** the user decided Q1 and Q2 (2026-11-28); awaiting Aura's architect review. No code yet.
+**Status:** approved by the user (Q1, Q2) and by Aura as architect, 2026-11-28. Tickets in §11; no code yet.
 **From:** Aura's proposal, the Aura Orchestration Framework (AOF), in four messages, 2026-11-27.
 **Reviewed by:** Claude Code, against the code and the audit log, 2026-11-28.
 
@@ -54,17 +54,24 @@ no new dependency.
    into the step. A free-form `context_updates` map, merged into a "global context", is dropped:
    it would let one tool's output (a web page, an email) rewrite what later steps are told, which
    R5 framing exists to prevent. A connection's result stays framed as untrusted data when passed on.
-5. **Limits:** at most 20 steps per plan, each with a one-line description; at most 40 tool calls
+5. **Every step says when it's done** (`"done_when"`): one checkable result, such as "the note exists
+   in Knowledge/" or "three sources found". Taken from superpowers' rule that each step is "one
+   action with a checkable result" (§10).
+6. **Limits:** at most 20 steps per plan, each with a one-line description; at most 40 tool calls
    per turn already applies (`TOOL_CALLS_PER_TURN`).
 
 ```json
 {
   "goal": "Write a research note on quantum error correction",
   "steps": [
-    {"id": "s1", "does": "Find what the vault already has", "tool": "search_vault", "after": []},
-    {"id": "s2", "does": "Search for recent results", "tool": "web_search", "after": []},
-    {"id": "s3", "does": "Draft the note from s1 and s2", "tool": "think", "after": ["s1", "s2"]},
-    {"id": "s4", "does": "Save it to Knowledge/", "tool": "write_file", "after": ["s3"]}
+    {"id": "s1", "does": "Find what the vault already has", "tool": "search_vault", "after": [],
+     "done_when": "the matching notes are listed, or none found"},
+    {"id": "s2", "does": "Search for recent results", "tool": "web_search", "after": [],
+     "done_when": "at least three sources from the last two years"},
+    {"id": "s3", "does": "Draft the note from s1 and s2", "tool": "think", "after": ["s1", "s2"],
+     "done_when": "a draft that cites each source"},
+    {"id": "s4", "does": "Save it to Knowledge/", "tool": "write_file", "after": ["s3"],
+     "done_when": "the note is written"}
   ]
 }
 ```
@@ -117,6 +124,8 @@ code, not in a skill:
   known tools, step IDs, the limits), assigns the IDs and shows the user a plan card (§6). An invalid
   plan comes back with the reasons, and the model may correct it twice.
 - **`plan_status()`**: the plan's steps and results, and which steps can run next.
+- **`finish_step(step, outcome, summary)`**: ends a step with its outcome (§5). For a tool step it
+  is refused unless that tool returned a result in this plan.
 
 `to_tickets` stays as it is. It formats a plan as tickets and doesn't decide anything.
 
@@ -140,6 +149,16 @@ parallel, and self-corrects on failure.
 **How a plan moves (Q2, decided):** Aura works through the steps in a turn, stopping at each
 approval card. Approvals are already durable, so a plan survives the app restarting while a card is
 open. **Stop** ends the plan and marks what remains `skipped`.
+
+- **A step ends with an outcome** (`finish_step`): `done`, `done with concerns` (shown at the next
+  review), `needs input` (Aura asks the user) or `failed`. These are superpowers' four implementer
+  statuses.
+- **A step is done only with evidence:** for a tool step, the code checks that the step's tool
+  returned a result in this plan; `plan_status` and the final summary report only recorded results,
+  never the model's claims. Aura reported Step 1 of its own proposal as done when nothing had been
+  written; this rule makes that impossible.
+- **Rulings:** when Aura departs from the plan (a retry with a changed approach, a skipped step), it
+  records one line, "Ruling: what — why — what it costs if wrong", in the plan's log and its Markdown copy.
 
 ## 6. Governance (Aura's Phase 4)
 
@@ -190,7 +209,126 @@ remains the only interface.
 4. R2 across a plan's turns, with its test.
 5. The live checks.
 
-## 9. Not in this plan
+## 9. Aura's review (2026-11-28)
+
+Aura accepted every correction and the order in §8.
+
+- **State (Q1):** Aura's data folder (`~/Library/Application Support/Aura/state.sqlite`), with the
+  copy in `_scratch/Plans/` for reading.
+- **Running (Q2):** steps run one at a time, in dependency order. Aura called this "one step at a
+  time"; that matches the user's choice, since a plan runs through its steps without pausing between
+  them and stops only at a card, a review step or a question.
+- **Cards:** the plan card approves the structure; each risky step keeps its own approval card
+  (Aura's "Step Card"), default Deny. The plan's state can never stand in for a card.
+- **R2 across a plan:** accepted. Aura didn't answer whether it should also cover steps that only
+  write to the vault. Proposed: no. A vault write already always shows a card (R1), and R2 is about
+  data leaving the Mac.
+- **One clarification:** Aura's summary says "no changes to Aura's own code". The tickets do change
+  Aura's code: Claude Code writes them, the tests cover them, and Aura reviews them. The rule is that
+  Aura and the Developer never change it, and that plans work only in the vault.
+
+## 10. Taken from obra/superpowers (MIT)
+
+[superpowers](https://github.com/obra/superpowers) is a skills library for coding agents: brainstorm,
+write a plan, then execute it. Its plan and execution rules fit Aura's plans. Ideas only; no text or
+code is copied.
+
+| superpowers | Aura's plans |
+|---|---|
+| A step is "one action with a checkable result" | `done_when` on every step (§2) |
+| Execution continues without checking in; it stops for irreversible, security-sensitive or outside side effects, or a plan too broken to follow | Run until a card (Q2): Aura's approval cards are exactly those stops; plus review steps and `needs input` |
+| Implementer statuses: DONE, DONE_WITH_CONCERNS, NEEDS_CONTEXT, BLOCKED | `finish_step` outcomes (§5) |
+| "Ruling: what — why — what it costs if wrong", kept in a ledger | Rulings in the plan's log (§5) |
+| Completion contract: evidence, not claims | A step is done only with a recorded result (§5) |
+| Plans saved as dated files | `_scratch/Plans/YYYY-MM-DD-<slug>-<plan id>.md` |
+
+Not taken: sub-agents and per-task reviewer models (Aura has one model), git worktrees, and
+test-driven development per step (a plan's steps are vault work, not code).
+
+## 11. Tickets (drafts; the user confirms the edges and order)
+
+Each ticket leaves Aura working and is checked on its own. "Aura review" marks a change to approvals,
+security or architecture.
+
+### T1 — The plan graph and its checks
+- Scope: new `src/aura/plans.py` (pure, no I/O); `tests/test_plans.py`.
+- Blocked by: none.
+- Acceptance: a plan is checked (cycles via `graphlib`, unknown `after` IDs, tools not in the
+  Registry or not available, more than 20 steps, a step without `does` or `done_when`), IDs are
+  assigned, the ready steps are computed, and a failure blocks every descendant while independent
+  steps stay ready (Aura's five-task example: D blocked, E ready). Verified by unit tests.
+- Non-goal: storage, tools, prompts.
+
+### T2 — Keep plans in state.sqlite, and record their events
+- Scope: `state.py` (schema 3, forward-only migration: a `plans` table), `plans.py`, `audit.py`
+  (`plan_` events in the Observer's families).
+- Blocked by: T1 (the plan's shape).
+- Acceptance: a plan and each transition survive a restart; transitions are compare-and-set (a
+  stale update is refused); results are kept short (the state store's rule); each transition is an
+  audit event. Verified by unit tests, including a migration from today's schema 2 database.
+- Non-goal: the Markdown copy.
+
+### T3 — The Markdown copy in _scratch/Plans/
+- Scope: `plans.py`, `tools/vault.py` (the `_scratch` path).
+- Blocked by: T2 (it is written on each stored transition).
+- Acceptance: `_scratch/Plans/YYYY-MM-DD-<slug>-<plan id>.md` shows the goal, steps, outcomes and
+  rulings after each transition, and is swept like any `_scratch` file; editing or deleting it changes
+  nothing in the plan. Verified by unit tests.
+- Non-goal: showing plans in the app.
+
+### T4 — make_plan, plan_status and finish_step (Aura review)
+- Scope: new `src/aura/tools/plans.py`, `capabilities.py` (a Plans family; `make_plan` floor "ask",
+  so its card is the plan card), `persona.py` (one rule: while a plan runs, go on to the next ready
+  step without asking; stop only at a card, a review step or `needs input`), `tools/__init__.py`.
+- Blocked by: T2 (stored plans).
+- Acceptance: an invalid plan comes back with its reasons, and a third invalid attempt is refused;
+  `finish_step` is refused for a tool step whose tool returned nothing in this plan; a failure allows
+  one retry with a recorded ruling, then blocks. The approval and egress sets for every existing tool
+  are unchanged, and the first-menu budget test still passes. Verified by unit tests and a scripted turn.
+- Non-goal: the app's plan card (T5); R2 (T8).
+
+### T5 — The plan card in the app
+- Scope: `app/Sources/AuraKit/Protocol.swift`, `ChatView.swift` (`ApprovalCard`), snapshot tests.
+- Blocked by: T4 (the card's payload).
+- Acceptance: the plan card shows the goal, the steps with their tools, what each waits for and its
+  `done_when`, with Approve and Deny (default Deny); a running plan shows its progress line. Verified
+  by snapshot tests and a check in the real app.
+- Non-goal: editing a plan in the app.
+
+### T6 — The step line on approval cards
+- Scope: `middleware.py` (the approval payload), `ChatView.swift`.
+- Blocked by: T4 (knowing the running step).
+- Acceptance: a card raised during a plan reads "Step 3 of 5 of the plan *…*: <does>"; Deny marks
+  the step failed and blocks what depends on it; cards outside a plan are unchanged. Verified by a
+  scripted turn and a snapshot.
+- Non-goal: changing any card's default or floor.
+
+### T7 — Review steps, Stop, and Continue
+- Scope: `tools/plans.py`, `server.py` (Stop), `ChatView.swift`.
+- Blocked by: T5 (the card UI), T4.
+- Acceptance: a `review` step pauses with the results so far and Continue or Stop; Stop marks the
+  remaining steps `skipped`; a plan resumes after a Developer step ends the turn. Verified by unit
+  tests and a check in the real app.
+- Non-goal: plans that start by themselves.
+
+### T8 — R2 across a plan's turns (Aura review)
+- Scope: `brain.py` (the taint check), `plans.py` (a plan's `tainted` flag), `connections/actions.py`.
+- Blocked by: T4 (steps belong to plans).
+- Acceptance: once a step reads private data (`PRIVATE_READS`), every later step of that plan that
+  sends data off the Mac stops for approval, in any turn; vault writes are unchanged (they always
+  ask). Verified by the scripted R2 test: a fake email read in one turn, a web search in the next
+  still stops.
+- Non-goal: changing R2 within a single turn.
+
+### T9 — Live checks (needs the user's go-ahead)
+- Scope: a scratch evaluation like the routing ones, in `AURA_DATA_DIR`/`AURA_VAULT_DIR` scratch folders.
+- Blocked by: T4, T5, T6, T7, T8.
+- Acceptance: on the local model, "write a research note on X" gives a valid plan within two tries
+  in at least 8 of 10 runs; a Developer job in a vault folder runs with a review step before its file
+  card.
+- Non-goal: tuning prompts beyond what the misses show.
+
+## 12. Not in this plan
 
 - Steps running at the same time.
 - Changes to skills, including `to_tickets` (skills are Aura's, changed only through the Workshop).
