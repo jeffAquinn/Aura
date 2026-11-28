@@ -261,7 +261,7 @@ def test_the_rendering_lists_every_family_with_floor_egress_and_source(env):  # 
     assert "| `gmail_read` | no | to your connected account or the model provider | connection | not connected |" in text
     assert "| `check_library` | no | to the internet | core | available |" in text
     assert "- `check_library`: Sends only a package name to PyPI and OSV, with no approval card" in text  # documented
-    assert "| `propose_skill` | no | to the internet | core | available |" in text and "Hand work to Claude Code" in text
+    assert "| `propose_skill` | no | to the internet | core | available |" in text and "The Developer: hand a job" in text
     for family in ("## Files", "## Web", "## Google", "## Slack", "## Capabilities"):
         assert family in text
 

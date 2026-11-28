@@ -33,16 +33,36 @@ RANGES: dict[str, tuple[float, float, type]] = {
     "context_budget": (4_096, 262_144, int),
     "max_reply_tokens": (1_024, 32_768, int),
 }
-EFFORTS = {"llamacpp": ("none", "low", "medium", "high"), "ollama": ("none", "low", "medium", "high"),
-           "anthropic": ("low", "medium", "high", "max")}
-# What each provider accepts (the spec's §3). Current Claude models reject temperature, top_p and
-# top_k; Ollama's OpenAI endpoint doesn't pass top_k, min_p or repeat_penalty through.
-ACCEPTED = {
-    "llamacpp": {"temperature", "top_p", "top_k", "min_p", "presence_penalty", "repeat_penalty", "effort",
-                 "context_budget", "max_reply_tokens"},
-    "ollama": {"temperature", "top_p", "presence_penalty", "effort", "context_budget", "max_reply_tokens"},
-    "anthropic": {"effort", "context_budget", "max_reply_tokens"},
+@dataclass(frozen=True)
+class Profile:
+    """How one provider takes a model's settings (the spec's §3). Every provider-specific rule lives
+    here, so a new provider is one more entry, not a branch in each function below."""
+
+    sampling: tuple[str, ...]  # sent as the client's own fields
+    extra: tuple[str, ...]  # sent in the request body (llama-server's own fields)
+    efforts: tuple[str, ...]
+    effort_as: str  # "reasoning_effort" (OpenAI-style, always sent) or "output_config" (only when set)
+    budget_from: str  # the Settings field that holds the default context budget
+    reply_capped: bool  # a local model's reply is at most half its window
+    window: str  # who decides the server's window: "aura" (it starts the server), "server" (it reports it), "none"
+
+
+_COMMON = ("effort", "context_budget", "max_reply_tokens")
+PROVIDERS: dict[str, Profile] = {
+    # llama-server takes every sampling setting; Aura starts it, so its window is Aura's to set.
+    "llamacpp": Profile(sampling=("temperature", "top_p", "presence_penalty"), extra=("top_k", "min_p", "repeat_penalty"),
+                        efforts=("none", "low", "medium", "high"), effort_as="reasoning_effort",
+                        budget_from="llamacpp_context_tokens", reply_capped=True, window="aura"),
+    # Ollama's OpenAI endpoint doesn't pass top_k, min_p or repeat_penalty through; its window is its own.
+    "ollama": Profile(sampling=("temperature", "top_p", "presence_penalty"), extra=(),
+                      efforts=("none", "low", "medium", "high"), effort_as="reasoning_effort",
+                      budget_from="context_tokens", reply_capped=True, window="server"),
+    # Current Claude models reject temperature, top_p and top_k: effort and reply length only.
+    "anthropic": Profile(sampling=(), extra=(), efforts=("low", "medium", "high", "max"), effort_as="output_config",
+                         budget_from="context_tokens", reply_capped=False, window="none"),
 }
+EFFORTS = {name: profile.efforts for name, profile in PROVIDERS.items()}
+ACCEPTED = {name: {*profile.sampling, *profile.extra, *_COMMON} for name, profile in PROVIDERS.items()}
 # Recommended values, by model family (docs/model-settings.md §5 and §10: Bonsai's non-thinking
 # values tied on accuracy and were 30% faster than its file's thinking-mode defaults).
 RECOMMENDED: dict[str, dict[str, Any]] = {
@@ -161,13 +181,13 @@ def budget(settings: Settings, choice: ModelChoice, values: dict[str, Any]) -> i
     """The model's context budget (Aura's compaction limit): its own, or the provider's default."""
     if "context_budget" in values:
         return int(values["context_budget"])
-    return settings.llamacpp_context_tokens if choice.provider == "llamacpp" else settings.context_tokens
+    return int(getattr(settings, PROVIDERS[choice.provider].budget_from))
 
 
 def reply_tokens(settings: Settings, choice: ModelChoice, values: dict[str, Any], context: int) -> int:
     """The reply limit: the model's own or the global one; a local model's is at most half its window."""
     limit = int(values.get("max_reply_tokens", settings.max_reply_tokens))
-    return limit if choice.provider == "anthropic" else min(limit, context // 2)
+    return min(limit, context // 2) if PROVIDERS[choice.provider].reply_capped else limit
 
 
 def ollama_loaded(settings: Settings) -> list[dict[str, Any]] | None:
@@ -192,16 +212,13 @@ def ollama_window(settings: Settings, model: str) -> int | None:
 
 def request_options(settings: Settings, choice: ModelChoice, values: dict[str, Any], context: int) -> dict[str, Any]:
     """What a model's settings add to its client: each provider is sent only what it accepts."""
+    profile = PROVIDERS[choice.provider]
     options: dict[str, Any] = {"max_tokens": reply_tokens(settings, choice, values, context)}
-    if choice.provider == "anthropic":
-        if "effort" in values:
-            options["output_config"] = {"effort": values["effort"]}
-        return options
-    options["reasoning_effort"] = values.get("effort", settings.reasoning_effort)
-    for name in ("temperature", "top_p", "presence_penalty"):
-        if name in values:
-            options[name] = values[name]
-    extra = {name: values[name] for name in ("top_k", "min_p", "repeat_penalty") if name in values}
-    if extra and choice.provider == "llamacpp":
+    if profile.effort_as == "reasoning_effort":
+        options["reasoning_effort"] = values.get("effort", settings.reasoning_effort)
+    elif "effort" in values:
+        options["output_config"] = {"effort": values["effort"]}
+    options.update({name: values[name] for name in profile.sampling if name in values})
+    if extra := {name: values[name] for name in profile.extra if name in values}:
         options["extra_body"] = extra
     return options

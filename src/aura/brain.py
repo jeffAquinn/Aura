@@ -40,7 +40,7 @@ from langgraph.types import Command, Interrupt
 from aura.config import Settings
 from aura.model_routing import LOCAL_PROVIDERS, ModelChoice, llamacpp_root
 from aura.llama_server import API_KEY as LLAMA_API_KEY, LocalModelError
-from aura.model_settings import ModelSettingsStore, ollama_window, request_options
+from aura.model_settings import PROVIDERS, ModelSettingsStore, ollama_window, request_options
 from aura.model_settings import budget as model_budget
 from aura.middleware import (
     REJECTION_NOTE,
@@ -599,8 +599,8 @@ class Aura:
         a conversation (docs/model-settings.md §4). A cap is recorded once, for the Observer.
         llama-server's window is Aura's to set, so it is started with the model's budget instead."""
         wanted = model_budget(self.settings, choice, ModelSettingsStore(self.settings).get(choice))
-        if choice.provider != "ollama" or self._injected_model:
-            return wanted
+        if PROVIDERS[choice.provider].window != "server" or self._injected_model:
+            return wanted  # llama-server's window is Aura's to set; a cloud model's isn't a concern
         seen = self._windows.get(choice.model)
         if seen is None or time.monotonic() - seen[0] > 60:  # Ollama's window changes only on a reload
             seen = (time.monotonic(), ollama_window(self.settings, choice.model))

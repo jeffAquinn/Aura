@@ -30,13 +30,14 @@ def developer_tools(developer: Developer, vault: Vault) -> list[BaseTool]:
     @tool(return_direct=True)
     def ask_developer(task: str, tool_call_id: Annotated[str, InjectedToolCallId], engine: str = "claude",
                       folder: str = ".") -> str:  # fmt: skip
-        """Have a developer (engine "claude" for Claude Code, or "codex" for Codex) do a job in the
-        user's vault: write or edit notes, scripts or other files, or reorganize folders. It works
-        on a copy of `folder` (vault-relative; "." is the whole vault) and can neither see nor change
-        anything outside it, not even this conversation. Choose a folder that holds everything the
-        task reads and writes: to move notes between folders, use "." (or their common parent).
-        Write `task` as complete, self-contained instructions. The user approves sending it, then
-        allows or denies each file it changed."""
+        """Hand a job to the Developer (engine "claude" for Claude Code, or "codex" for Codex): write
+        or edit notes, scripts or other files in the user's vault, tidy or reorganize folders. Call
+        it directly when the user asks for the Developer or for such a job: you don't need to look
+        through the vault first, because the Developer reads the folder itself. It works on a copy
+        of `folder` (vault-relative, e.g. "Ideas"; "." is the whole vault) and can neither see nor
+        change anything outside it, not even this conversation; to move notes between folders, use
+        their common parent. Write `task` as complete, self-contained instructions. The user approves
+        sending it, then allows or denies each file it changed."""
         engine = engine_name(engine)
         label = developer.engines[engine].label if engine in developer.engines else engine
 

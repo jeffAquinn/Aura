@@ -50,7 +50,7 @@ PROMPTS = [
     ("What agents are registered on the workstation?", "Workshop"),
     ("Which accounts are linked to you?", "Connections"),
     ("What do my study materials say about Plato?", "Knowledge"),
-    ("Give the Developer this job: tidy the Ideas area.", "Developer"),
+    ("Hand this job to your coding agent: tidy the Ideas area.", "Developer"),  # cue-free ("developer" is a cue)
     ("Sound like a British woman, please.", "Voice"),
 ]
 THRESHOLD = 0.85  # Aura's bar, kept (2026-11-26). Baseline: 70% (14/20); see docs/aura-2-plan.md, T6.

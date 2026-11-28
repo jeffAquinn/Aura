@@ -38,7 +38,7 @@ FAMILY_SUMMARY = {
     "Persona": "view and change Aura's persona (tone, brevity, name)",
     "Models": "AI models: what is loaded, what each role uses",
     "Workshop": "installed skills (add-ons) and agents; propose, audit, check a library",
-    "Developer": "hand work to Claude Code or Codex",
+    "Developer": "the Developer: hand a job on files or scripts to Claude Code or Codex",
     "Google": "Gmail, Google Calendar and Google Drive",
     "Slack": "read and send Slack messages",
     "Discord": "read and send Discord messages",
@@ -93,8 +93,10 @@ VOICE_CUES = ("voice", "speak", "speech", "audio", "read aloud")
 PERSONA_CUES = ("persona", "tone", "brevity", "formality", "backstory", "call yourself")
 WORKSHOP_CUES = ("skill", "workshop", "agent candidate", "package", "library", "libraries", "dependency",
                  "dependencies", "provenance")
+# "developer": a request that names the Developer shows its tools at once (2026-11-27: "Have the Developer
+# write a script…" was answered without them in 3 of 4 runs).
 DEVELOPER_CUES = ("claude code", "codex", "codebase", "repository", "repositories", "repo", "git", "implement",
-                  "bug", "test suite")
+                  "bug", "test suite", "developer")
 CONNECTION_CUES = ("gmail", "email", "mailbox", "calendar", "event", "drive", "slack", "discord", "channel",
                    "message")  # fmt: skip
 _CUES_BY_FAMILY = {"Files": FILES_CUES, "Knowledge": FILES_CUES, "Web": WEB_CUES, "Code": CODE_CUES,

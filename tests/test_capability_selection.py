@@ -27,7 +27,7 @@ OLD_FAMILIES = (
     ({"view_persona", "update_persona"}, re.compile(r"\b(persona|tone|brevity|formality|backstory|call yourself)\b", re.I)),
     ({"check_library", "list_skills", "propose_skill", "list_agents", "create_agent_candidate", "import_agent_candidate",
       "propose_agent", "develop_skill"}, re.compile(r"\b(skill|workshop|agent candidate|package|library|dependency|provenance)\b", re.I)),
-    ({"ask_developer", "develop_skill"}, re.compile(r"\b(claude code|codex|codebase|repository|repo|git|implement|bug|test suite)\b", re.I)),
+    ({"ask_developer", "develop_skill"}, re.compile(r"\b(claude code|codex|codebase|repository|repo|git|implement|bug|test suite|developer)\b", re.I)),
     ({"list_connections", "gmail_read", "gmail_draft", "calendar_read", "calendar_add", "drive_read", "slack_read",
       "slack_send", "discord_read", "discord_send", "new_messages"},
      re.compile(r"\b(gmail|email|mailbox|calendar|event|drive|slack|discord|channel|messages?)\b", re.I)),
