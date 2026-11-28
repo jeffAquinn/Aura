@@ -192,23 +192,29 @@ class CapabilitySelection(AgentMiddleware):
     It grants and removes no authority: floors, cards and egress grants apply inside each tool.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, extra: Callable[[], set[str]] = set) -> None:
         super().__init__()
         self.visible: frozenset[str] | None = None  # None: every registered tool
+        # Shown on top of `visible`, re-read on every call: a running plan's tools, so the steps of a
+        # plan approved mid-turn can run in that same turn (docs/orchestration.md T4).
+        self.extra = extra
+
+    def _shown(self) -> frozenset[str] | None:
+        return None if self.visible is None else self.visible | self.extra()
 
     @staticmethod
     def _name(tool: Any) -> str | None:
         return tool.get("name") if isinstance(tool, dict) else getattr(tool, "name", None)
 
     def wrap_model_call(self, request: Any, handler: Callable) -> Any:
-        if self.visible is not None:
-            request = request.override(tools=[t for t in request.tools if self._name(t) in self.visible])
+        if (shown := self._shown()) is not None:
+            request = request.override(tools=[t for t in request.tools if self._name(t) in shown])
         return handler(request)
 
     def wrap_tool_call(self, request: ToolCallRequest, handler: Callable) -> Any:
         name = request.tool_call["name"]
-        if self.visible is not None and name not in self.visible:
-            shown = ", ".join(sorted(self.visible)) or "none"
+        if (visible := self._shown()) is not None and name not in visible:
+            shown = ", ".join(sorted(visible)) or "none"
             return ToolMessage(f"Error: {name} isn't available in this turn. Tools available now: {shown}.",
                                tool_call_id=request.tool_call["id"], name=name, status="error")  # fmt: skip
         return handler(request)

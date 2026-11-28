@@ -52,6 +52,9 @@ from aura.middleware import (
     ToolStatusMiddleware,
 )
 from aura.persona import MEMORY_PROMPT, system_prompt
+from aura.tools.plans import card as plan_card
+from aura.tools.plans import is_valid as plan_is_valid
+from aura.tools.plans import steps_in_use
 from aura.developer.workflow import describe_build, describe_task
 from aura.connections.actions import OUTWARD, describe_outward, inbox_exchange, turn_is_tainted
 from aura.capabilities import (
@@ -428,6 +431,10 @@ class Aura:
                                        private=turn_is_tainted(state["messages"]))  # fmt: skip
             if tool_call["name"] in OUTWARD:
                 return describe_outward(tool_call["name"], args)
+            if tool_call["name"] == "make_plan":
+                active = self.toolbox.plans.active() if self.toolbox.plans else []
+                return plan_card(args.get("goal"), args.get("steps"), self.toolbox.registered,
+                                 active[-1] if active else None)
             return vault.describe_change(tool_call["name"], args)
 
         approval = InterruptOnConfig(allowed_decisions=["approve", "reject"], description=describe)
@@ -439,8 +446,17 @@ class Aura:
         egress = InterruptOnConfig(allowed_decisions=["approve", "reject"], description=describe,
                                    when=lambda request: visible(request.tool_call["args"].get(GATED[request.tool_call["name"]])))  # fmt: skip
         # Every gated tool's card, from the Capability Registry (src/aura/capabilities.py).
+        # The plan card: only for a plan that passed its checks. An invalid plan gets no card; make_plan
+        # then only returns the reasons (it changes nothing), so the model can correct it. LangChain runs
+        # `when` again on resume and, if it turns False, runs the tool even after a Deny. This one depends
+        # only on the call's arguments and the registered tools, and make_plan runs the same check: a
+        # plan that has become invalid is refused by the tool, so a Deny can never start a plan.
+        plan = InterruptOnConfig(allowed_decisions=["approve", "reject"], description=describe,
+                                 when=lambda request: plan_is_valid(request.tool_call["args"].get("goal"),
+                                                                    request.tool_call["args"].get("steps"),
+                                                                    self.toolbox.registered))  # fmt: skip
         interrupt_on = {**{name: editable if name in EDITABLE else approval for name in NEEDS_APPROVAL},
-                        **dict.fromkeys(GATED, egress)}  # fmt: skip
+                        **dict.fromkeys(GATED, egress), "make_plan": plan}  # fmt: skip
         self._interrupt_on = interrupt_on  # which tools wait for a card (tests check it against the Registry)
         # Conversation memory (and paused approvals): checkpointed per thread_id in SQLite, so it
         # survives agent rebuilds (deploying a skill) and restarts of the server.
@@ -495,7 +511,8 @@ class Aura:
         self._build = build
         # The server and the terminal publish the Registry to the vault; tests and embeddings don't.
         self.publish_capabilities = publish_capabilities
-        self._selection = CapabilitySelection()  # shared by every rebuild of the agent
+        # Shared by every rebuild of the agent. A running plan's tools are shown on top of each turn's.
+        self._selection = CapabilitySelection(lambda: steps_in_use(self.toolbox.plans) & self.toolbox.registered)
         self._finder = finder_tool(self._families, self._load)
         self.reload_tools()
         if primary:
@@ -519,6 +536,7 @@ class Aura:
     def _install_tools(self, tools: list) -> None:
         """Build the agent around `tools` (plus find_capabilities) and publish the Registry."""
         self._tools = [*tools, self._finder]
+        self.toolbox.registered = frozenset(t.name for t in self._tools)  # what a plan's steps may use
         self._tool_signature = self._signature(tools)
         self._agent = self._build(self._tools)
         if self.publish_capabilities:  # the vault's read-only Capabilities.md (only if it changed)
@@ -536,7 +554,7 @@ class Aura:
     def _visible_tool_names(self) -> frozenset[str]:
         """What the model is shown now. A narrow set is only a model-context optimization; tests
         use this to prove an approval continuation restores the complete menu."""
-        visible = self._selection.visible
+        visible = self._selection._shown()
         return visible if visible is not None else frozenset(t.name for t in self._tools)
 
     def _select_turn_tools(self, text: str, developer: str | None = None) -> None:

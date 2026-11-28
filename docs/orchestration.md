@@ -1,8 +1,8 @@
 # Plans: multi-step work for Aura (Aura's AOF proposal, reviewed)
 
-**Status:** approved by the user (Q1, Q2) and by Aura as architect, 2026-11-28. Tickets in §11; no code yet.
+**Status:** approved by the user (Q1, Q2) and by Aura as architect, 2026-11-27. Tickets in §11; no code yet.
 **From:** Aura's proposal, the Aura Orchestration Framework (AOF), in four messages, 2026-11-27.
-**Reviewed by:** Claude Code, against the code and the audit log, 2026-11-28.
+**Reviewed by:** Claude Code, against the code and the audit log, 2026-11-27.
 
 Aura's goal is sound: turn a large request into a graph of smaller steps, run them in dependency
 order, stop a step whose inputs failed, and keep the user in control. Several mechanisms it chose
@@ -209,7 +209,7 @@ remains the only interface.
 4. R2 across a plan's turns, with its test.
 5. The live checks.
 
-## 9. Aura's review (2026-11-28)
+## 9. Aura's review (2026-11-27)
 
 Aura accepted every correction and the order in §8.
 
@@ -267,20 +267,20 @@ security or architecture.
   stale update is refused); results are kept short (the state store's rule); each transition is an
   audit event. Verified by unit tests, including a migration from today's schema 2 database.
 - Non-goal: the Markdown copy.
-- **Done (2026-11-28).** Ruling: plans use state.sqlite's existing `records` table (kind `plan`)
+- **Done (2026-11-27).** Ruling: plans use state.sqlite's existing `records` table (kind `plan`)
   instead of a new table and schema 3 — it already gives an ID, a state, JSON data and pruning, and
   no migration means nothing to go wrong in today's database — the cost if wrong: a later
   migration to a table, if plans ever need queries by step. `replace_record` adds compare-and-set
   on the whole record. `plan_` events are in the Observer's Actions.
 
-### T3 — The Markdown copy in _scratch/Plans/
+### T3 — The Markdown copy in _scratch/Plans/ (done, 8fc14d4)
 - Scope: `plans.py`, `tools/vault.py` (the `_scratch` path).
 - Blocked by: T2 (it is written on each stored transition).
 - Acceptance: `_scratch/Plans/YYYY-MM-DD-<slug>-<plan id>.md` shows the goal, steps, outcomes and
   rulings after each transition, and is swept like any `_scratch` file; editing or deleting it changes
   nothing in the plan. Verified by unit tests.
 - Non-goal: showing plans in the app.
-- **Done (2026-11-28).** `PlanStore(copy_dir=copy_folder(vault))` writes the copy atomically after
+- **Done (2026-11-27).** `PlanStore(copy_dir=copy_folder(vault))` writes the copy atomically after
   every change, with secrets masked as in saved chats; a copy that can't be written is logged and
   never stops the plan. The server passes the folder in T4, when plans are first used.
 
@@ -294,6 +294,38 @@ security or architecture.
   one retry with a recorded ruling, then blocks. The approval and egress sets for every existing tool
   are unchanged, and the first-menu budget test still passes. Verified by unit tests and a scripted turn.
 - Non-goal: the app's plan card (T5); R2 (T8).
+- **Built (2026-11-27), awaiting Aura's review.** The plan card is `make_plan`'s approval card,
+  raised only for a plan that passed its checks (`when`, like the web search card); an invalid plan
+  gets no card and only returns its reasons. A running plan's tools and its open steps' tools are
+  shown every turn. Evidence is the newest unclaimed, successful, not-denied result of the step's
+  tool since the plan began. Rulings:
+  - Guidance in the tools' results ("Next: s2 … go on without asking; stop only when a card waits
+    or a step needs input") instead of a new rule in `persona.py`. That keeps the system prompt
+    unchanged for local models. Cost if wrong: the model may stop between steps; T9 measures it.
+  - Review steps are refused until T7 builds them (use `think`, and ask in the reply).
+  - A new plan replaces the running one, and its card says so; there is no stop tool until T7's Stop.
+  - A step's start is saved with its finish; T6 marks a step running when its tool is called.
+- **Code review (2026-11-27), all fixed, each with a test:**
+  - A valid plan after two invalid ones showed a card and was then refused; now only invalid plans count.
+  - In the turn a plan was approved, its steps' tools weren't offered, so the first step failed. The
+    tool menu now re-reads the running plan on every model call.
+  - A result made for an earlier step could prove a later one. Evidence now has to come after the
+    plan's last recorded change.
+  - A retried step's failed result could be counted again by another step. Every result a step ever
+    counted stays counted.
+  - Smaller: skipped or blocked steps' tools stop being offered; two plans in one message are both
+    refused; rulings split only on dashes, not hyphens; "step by step" no longer offers plan tools.
+- **For Aura's review:** LangChain runs a card's `when` condition again when a paused turn resumes,
+  and if it then returns False the tool runs even after a Deny. The plan card's condition depends
+  only on the call's arguments and the registered tools, and `make_plan` repeats the same check, so
+  a plan that has become invalid is refused by the tool itself: a Deny can never start a plan. A test
+  removes a step's tool while the card is open: on resume the tool does run after the Deny, and it
+  refuses the plan.
+- **Security review (2026-11-27): no findings.** Checked: a Deny starting a plan; plan approval
+  standing in for step cards; the extra tools shown for a running plan (showing a schema grants
+  nothing, and every floor and card applies inside each tool); the copy's file name and contents;
+  SQL; secrets in audit events; forged evidence. One reliability note: if a card's condition changes
+  while the message holds several cards, LangChain stops the resume with an error and runs nothing.
 
 ### T5 — The plan card in the app
 - Scope: `app/Sources/AuraKit/Protocol.swift`, `ChatView.swift` (`ApprovalCard`), snapshot tests.
@@ -347,8 +379,8 @@ security or architecture.
 
 | ID | Question | Decision |
 |---|---|---|
-| Q1 | Where a plan's state lives | **Decided (user, 2026-11-28):** Aura's data folder, with a Markdown copy in `_scratch/Plans/` that is never read back |
-| Q2 | How a plan runs | **Decided (user, 2026-11-28):** through the steps in a turn, stopping at each card and review step |
+| Q1 | Where a plan's state lives | **Decided (user, 2026-11-27):** Aura's data folder, with a Markdown copy in `_scratch/Plans/` that is never read back |
+| Q2 | How a plan runs | **Decided (user, 2026-11-27):** through the steps in a turn, stopping at each card and review step |
 | Q3 | The name | Proposed: "plan" in the app and code; AOF for the overall design |
 
 ## Questions for Aura (architect)

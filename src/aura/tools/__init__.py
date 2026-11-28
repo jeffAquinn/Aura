@@ -79,6 +79,8 @@ class Toolbox:
     skill_rows: list[Capability] = field(default_factory=list)  # the loaded skills' rows, as of all_tools()
     skill_state: tuple[tuple[str, str], ...] = ()  # the loaded skills' (name, digest), as of all_tools()
     local_server: Any = None  # Aura's llama-server (aura.llama_server), set by the server only
+    plans: Any = None  # aura.plans.PlanStore: plans in state.sqlite, a copy in _scratch/Plans/
+    registered: frozenset[str] = frozenset()  # the tool names the agent was last built with (set by Aura)
     _checkpointer: Any = field(default=None, repr=False)
 
     def checkpointer(self) -> Any:
@@ -173,4 +175,9 @@ class Toolbox:
 
         # What llama-server has loaded: the server sets local_server after the toolbox is built.
         box.tools += model_tools(settings, lambda: getattr(box.local_server, "model", None), vault.root)
+        from aura.plans import PlanStore, copy_folder
+        from aura.tools.plans import plan_tools
+
+        box.plans = PlanStore(state, audit, copy_dir=copy_folder(vault.root), mask=masker.mask)
+        box.tools += plan_tools(box.plans, lambda: set(box.registered))
         return box

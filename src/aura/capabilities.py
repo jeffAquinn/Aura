@@ -27,7 +27,7 @@ Egress = Literal["none", "account", "internet"]
 Owner = Literal["core", "connection", "skill"]
 
 FAMILIES = ("Files", "Knowledge", "Web", "Code", "Voice", "Persona", "Models", "Workshop", "Developer",
-            "Google", "Slack", "Discord", "Connections", "Skills", "Capabilities")  # fmt: skip
+            "Google", "Slack", "Discord", "Connections", "Skills", "Plans", "Capabilities")  # fmt: skip
 # What find_capabilities says about each family (one line each, for a small local model).
 FAMILY_SUMMARY = {
     "Files": "list, read, write, create and delete files and folders in the vault",
@@ -44,6 +44,7 @@ FAMILY_SUMMARY = {
     "Discord": "read and send Discord messages",
     "Connections": "list connected accounts and check new messages",
     "Skills": "run an installed skill (Workshop lists them)",
+    "Plans": "a plan for a large job: steps run in order, each still asking you as usual",
 }
 
 
@@ -97,12 +98,15 @@ WORKSHOP_CUES = ("skill", "workshop", "agent candidate", "package", "library", "
 # write a script…" was answered without them in 3 of 4 runs).
 DEVELOPER_CUES = ("claude code", "codex", "codebase", "repository", "repositories", "repo", "git", "implement",
                   "bug", "test suite", "developer")
+# Plans (docs/orchestration.md): only explicit requests for a plan; a running plan's tools are
+# shown every turn anyway (brain._select_turn_tools).
+PLAN_CUES = ("make a plan", "plan out", "multi-step", "multistep")  # not "step by step": that's how people ask for explanations
 CONNECTION_CUES = ("gmail", "email", "mailbox", "calendar", "event", "drive", "slack", "discord", "channel",
                    "message")  # fmt: skip
 _CUES_BY_FAMILY = {"Files": FILES_CUES, "Knowledge": FILES_CUES, "Web": WEB_CUES, "Code": CODE_CUES,
                    "Voice": VOICE_CUES, "Persona": PERSONA_CUES, "Workshop": WORKSHOP_CUES,
                    "Developer": DEVELOPER_CUES, "Google": CONNECTION_CUES, "Slack": CONNECTION_CUES,
-                   "Discord": CONNECTION_CUES, "Connections": CONNECTION_CUES}  # fmt: skip
+                   "Discord": CONNECTION_CUES, "Connections": CONNECTION_CUES, "Plans": PLAN_CUES}  # fmt: skip
 
 
 def _c(name: str, family: str, label: str, doing: Callable[[dict], str], extra_cues: tuple[str, ...] = (),
@@ -185,6 +189,11 @@ CAPABILITIES: tuple[Capability, ...] = (
        egress="account", owner="connection"),
     _c("discord_send", "Discord", "Discord", lambda a: f"Posting in Discord {a.get('channel')}...",
        floor="ask", egress="account", owner="connection"),
+    # Plans (docs/orchestration.md T4). make_plan's card is the plan card: approving it approves the
+    # plan's direction only; every step's own tool still asks as usual.
+    _c("make_plan", "Plans", "Plan", lambda a: "Checking the plan...", floor="ask"),
+    _c("plan_status", "Plans", "Plan", lambda a: "Reading the plan..."),
+    _c("finish_step", "Plans", "Plan", lambda a: f"Finishing step {a.get('step', '')}..."),
     # The Registry itself: always shown, so a request no cue matched can still reach its tools
     _c("find_capabilities", "Capabilities", "Capabilities",
        lambda a: f"Loading my {a['family']} tools..." if a.get("family") else "Looking through my capabilities..."),

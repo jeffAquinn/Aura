@@ -151,13 +151,15 @@ def test_the_derived_tables_are_exactly_todays():
     from aura.tools.egress import GATED
 
     # 2026-11-27: tidy_vault (moving clutter to the Trash) is an R1 floor, like delete_path.
-    assert set(NEEDS_APPROVAL) == NEEDS_APPROVAL_TODAY | {"tidy_vault"} and len(NEEDS_APPROVAL) == len(set(NEEDS_APPROVAL))
+    # 2026-11-28: make_plan's card is the plan card (docs/orchestration.md T4); no other tool changes.
+    assert set(NEEDS_APPROVAL) == NEEDS_APPROVAL_TODAY | {"tidy_vault", "make_plan"} and len(NEEDS_APPROVAL) == len(set(NEEDS_APPROVAL))
     assert dict(EDITABLE) == EDITABLE_TODAY
     assert dict(GATED) == GATED_TODAY
     # T4: the Registry's own tool; 2026-11-27: list_models (read-only, the Models family)
     assert dict(GROUP) == GROUP_TODAY | {"find_capabilities": "Capabilities", "list_models": "Models_Tool",
                                          "find_clutter": "File_System_Tool", "tidy_vault": "File_System_Tool",
-                                         "search_vault": "File_System_Tool"}
+                                         "search_vault": "File_System_Tool", "make_plan": "Plan",
+                                         "plan_status": "Plan", "finish_step": "Plan"}
 
 
 def test_status_lines_are_unchanged():
@@ -176,7 +178,8 @@ def test_the_cards_aura_raises_are_the_registrys_floors(settings):
 
     aura, _ = make_aura(settings)
     expected = {c.name for c in CAPABILITIES if c.floor != "none"}
-    assert set(aura._interrupt_on) == expected == NEEDS_APPROVAL_TODAY | set(GATED_TODAY) | {"tidy_vault"}
+    assert set(aura._interrupt_on) == expected == NEEDS_APPROVAL_TODAY | set(GATED_TODAY) | {"tidy_vault", "make_plan"}
+    assert "when" in aura._interrupt_on["make_plan"]  # the plan card: only for a plan that passed its checks
     assert aura._interrupt_on["develop_skill"]["allowed_decisions"] == ["approve", "edit", "reject"]
     assert aura._interrupt_on["web_search"]["allowed_decisions"] == ["approve", "reject"]
     assert "when" in aura._interrupt_on["web_search"] and "when" not in aura._interrupt_on["write_file"]

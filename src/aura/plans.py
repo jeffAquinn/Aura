@@ -66,6 +66,8 @@ class Step:
     outcome: str | None = None
     summary: str = ""
     attempts: int = 0
+    evidence: str = ""  # the tool call whose result showed this step done (or its last failed attempt)
+    claims: tuple[str, ...] = ()  # every tool call this step ever counted: never counted again by any step
 
     @property
     def uses_tool(self) -> bool:
@@ -106,6 +108,11 @@ class Plan:
         """The steps that can start now: pending, with everything they wait for done."""
         return [s for s in self.steps.values()
                 if s.status == PENDING and all(self.steps[a].status == DONE for a in s.after)]
+
+    @property
+    def claimed(self) -> set[str]:
+        """The tool calls already counted as some step's evidence."""
+        return {c for s in self.steps.values() for c in s.claims}
 
     def ancestors(self, step_id: str) -> set[str]:
         seen: set[str] = set()
@@ -153,15 +160,18 @@ class Plan:
         step.status = RUNNING
         return step
 
-    def finish(self, step_id: str, outcome: str, summary: str, evidence: bool = False) -> Step:
+    def finish(self, step_id: str, outcome: str, summary: str, evidence: str | bool = False) -> Step:
         """End a step. A tool step counts as done only with `evidence`: its tool returned a result
-        in this plan (the caller checks that). A model's claim alone never makes a step done."""
+        in this plan (the caller checks that and passes the tool call's ID). A model's claim alone
+        never makes a step done."""
         step = self._expect(step_id, RUNNING, WAITING)
         if outcome not in OUTCOMES:
             raise PlanError([f"outcome must be one of {', '.join(OUTCOMES)}, not {outcome!r}"])
         if outcome in ("done", "done_with_concerns") and step.uses_tool and not evidence:
             raise PlanError([f"step {step_id} isn't done: {step.tool} hasn't returned a result in this plan"])
         step.outcome, step.summary = outcome, _clip(summary, MAX_TEXT * 2)
+        if isinstance(evidence, str) and evidence:
+            step.evidence, step.claims = evidence, (*step.claims, evidence)
         step.status = {"needs_input": WAITING, "failed": FAILED}.get(outcome, DONE)
         self._settle()
         return step
@@ -217,7 +227,8 @@ class Plan:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Plan:
-        steps = {s["id"]: Step(**{**s, "after": tuple(s.get("after", ()))}) for s in data["steps"]}
+        steps = {s["id"]: Step(**{**s, "after": tuple(s.get("after", ())), "claims": tuple(s.get("claims", ()))})
+                 for s in data["steps"]}
         return cls(id=data["id"], goal=data["goal"], steps=steps, rulings=[Ruling(**r) for r in data.get("rulings", [])],
                    version=int(data.get("version", 0)), stopped=bool(data.get("stopped", False)), created=str(data.get("created", "")))
 
