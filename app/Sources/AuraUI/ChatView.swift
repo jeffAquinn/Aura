@@ -637,24 +637,41 @@ struct WelcomeView: View {
 struct TranscriptView: View {
     let store: ChatStore
     let avatar: Image?
+    @State private var position = ScrollPosition(edge: .bottom)
+    /// Whether the view follows the conversation's end, as a chat window does. Scrolling up yourself
+    /// stops it; scrolling back to the bottom, or sending a message, starts it again.
+    @State private var following = true
+    @State private var phase = ScrollPhase.idle
 
     var body: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                TranscriptContent(store: store, avatar: avatar, lazy: true)
-                Color.clear.frame(height: 1).id("bottom")
-            }
-            .scrollIndicators(.automatic)
-            // Start at the last message, and stay pinned there as the content grows (a reply
-            // streaming in, a new bubble, the typing dots) without jumping: SwiftUI keeps the
-            // bottom in place itself. Jumping to the end on every word or phase change made the
-            // lazy list land on rows it hadn't drawn yet, so the bubbles flashed blank.
-            .defaultScrollAnchor(.bottom, for: .initialOffset)
-            .defaultScrollAnchor(.bottom, for: .sizeChanges)
-            // Only your own new message scrolls the view, smoothly, if you'd scrolled up to read.
-            .onChange(of: store.items.count) { old, new in
-                guard new > old, store.items.last?.role == .user else { return }
-                withAnimation(.smooth(duration: 0.3)) { proxy.scrollTo("bottom", anchor: .bottom) }
+        ScrollView {
+            TranscriptContent(store: store, avatar: avatar, lazy: true)
+        }
+        .scrollIndicators(.automatic)
+        .scrollPosition($position)
+        .defaultScrollAnchor(.bottom, for: .initialOffset)
+        .onScrollPhaseChange { _, new in phase = new }
+        // Only your own scrolling changes `following`; content growing under a still view doesn't.
+        .onScrollGeometryChange(for: Bool.self) { geometry in
+            geometry.contentOffset.y + geometry.containerSize.height >= geometry.contentSize.height - 48
+        } action: { _, atBottom in
+            if phase != .idle { following = atBottom }
+        }
+        // A reply streaming in, a new bubble, the typing dots: stay at the end while following.
+        .onScrollGeometryChange(for: CGFloat.self) { $0.contentSize.height } action: { _, _ in
+            if following { position.scrollTo(edge: .bottom) }
+        }
+        // Your own new message always brings the view to the end, once laid out (the lazy list
+        // measures a new row a moment after it's added, so one scroll alone stopped short).
+        .onChange(of: store.items.count) { old, new in
+            guard new > old, store.items.last?.role == .user else { return }
+            following = true
+            position.scrollTo(edge: .bottom)
+            Task { @MainActor in
+                for _ in 0..<3 {
+                    try? await Task.sleep(for: .milliseconds(60))
+                    if following { position.scrollTo(edge: .bottom) }
+                }
             }
         }
     }
