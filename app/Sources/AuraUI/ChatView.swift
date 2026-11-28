@@ -735,10 +735,9 @@ struct ItemView: View {
                 HStack(alignment: .center) {
                     Spacer(minLength: 56)
                     UserAvatarView(size: ChatAppearance.avatarSize(avatarSize))
-                    Text(item.text)
+                    LongText(item.text)
                         .font(chat.font())
                         .textSelection(.enabled)
-                        .lineSpacing(4)
                         .padding(.horizontal, ChatAppearance.textPadding(textPadding))
                         .padding(.vertical, ChatAppearance.verticalTextPadding(textPadding))
                         .foregroundStyle(bubbles.userText)

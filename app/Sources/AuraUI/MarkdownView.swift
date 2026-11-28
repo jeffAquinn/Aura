@@ -45,7 +45,7 @@ private struct BlockView: View {
     @ViewBuilder private var content: some View {
         switch block.kind {
         case .paragraph:
-            Text(styled(block.text, chat)).lineSpacing(4).fixedSize(horizontal: false, vertical: true)
+            LongText(styled(block.text, chat))
         case let .heading(level):
             Text(styled(block.text, chat))
                 .font(level <= 1 ? chat.font(1.2, weight: .semibold) : level == 2 ? chat.font(1.05, weight: .bold)
@@ -57,7 +57,7 @@ private struct BlockView: View {
                     .foregroundStyle(.secondary)
                     .monospacedDigit()
                     .frame(minWidth: 14, alignment: .trailing)
-                Text(styled(block.text, chat)).lineSpacing(4).fixedSize(horizontal: false, vertical: true)
+                LongText(styled(block.text, chat))
             }
             .padding(.leading, CGFloat(depth) * 18)
         case let .code(language):
@@ -119,10 +119,12 @@ private struct CodeBlockView: View {
                 .help("Copy code")
             }
             FitsOrScrolls {
-                Text(code)
-                    .font(chat.code())
-                    .fixedSize()
-                    .textSelection(.enabled)
+                // In pieces of 60 lines: one Text taller than a layer can be draws nothing (TextChunks).
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(Array(TextChunks.splitLines(code).enumerated()), id: \.offset) { _, piece in
+                        Text(piece).font(chat.code()).fixedSize().textSelection(.enabled)
+                    }
+                }
             }
         }
         .padding(10)
@@ -388,6 +390,22 @@ private struct ExternalLinkCard: View {
 }
 
 /// Lays content out at full width; scrolls horizontally only when a line is too wide.
+/// Wrapped text that may be very long, drawn in pieces (TextChunks): macOS draws a whole `Text` as
+/// one layer, and a message taller than a layer can be showed nothing but the panel's background.
+struct LongText: View {
+    let pieces: [AttributedString]
+    init(_ text: AttributedString) { pieces = TextChunks.split(text) }
+    init(_ text: String) { pieces = TextChunks.split(text).map { AttributedString($0) } }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {  // 4: the line spacing, so pieces read as one text
+            ForEach(Array(pieces.enumerated()), id: \.offset) { _, piece in
+                Text(piece).lineSpacing(4).fixedSize(horizontal: false, vertical: true)
+            }
+        }
+    }
+}
+
 private struct FitsOrScrolls<Content: View>: View {
     @ViewBuilder let content: Content
 
