@@ -63,6 +63,26 @@ public struct PlanProposal: Codable, Sendable, Equatable {
     }
 }
 
+/// A card raised during a plan: which step it serves (docs/orchestration.md T6). Every key is one
+/// word, so the live stream and the restored card decode it the same way.
+public struct PlanStepRef: Codable, Sendable, Equatable {
+    public let plan: String
+    public let goal: String
+    public let step: String
+    public let index: Int
+    public let total: Int
+    public let does: String
+
+    public init(plan: String, goal: String, step: String, index: Int, total: Int, does: String) {
+        self.plan = plan
+        self.goal = goal
+        self.step = step
+        self.index = index
+        self.total = total
+        self.does = does
+    }
+}
+
 /// The running plan, for the progress line under the conversation.
 public struct ActivePlan: Codable, Sendable, Equatable {
     public struct Step: Codable, Sendable, Equatable, Identifiable {

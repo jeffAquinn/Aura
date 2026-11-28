@@ -88,6 +88,26 @@ struct PlanStepRow: View {
     }
 }
 
+/// Above a card raised during a plan: which step of which plan the card is for (T6). Deny on the
+/// card fails that step, and the steps that depend on it are blocked.
+struct PlanStepBanner: View {
+    let ref: PlanStepRef
+
+    var body: some View {
+        Label {
+            Text("Step \(ref.index) of \(ref.total) of the plan “\(ref.goal)”: \(ref.does)")
+                .fixedSize(horizontal: false, vertical: true)
+        } icon: {
+            Image(systemName: "list.bullet.rectangle")
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .padding(.leading, 44)
+        .padding(.bottom, 4)
+        .help("Deny fails this step, and the steps that depend on it won't run.")
+    }
+}
+
 enum PlanTool {
     /// `think` is Aura's own work, with no tool call.
     static func label(_ tool: String) -> String { tool == "think" ? "Aura thinks" : tool }

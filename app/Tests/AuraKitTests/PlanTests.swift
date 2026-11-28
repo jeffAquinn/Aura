@@ -27,9 +27,21 @@ import Testing
         #expect(action.plan?.steps.first?.doneWhen == "listed")
     }
 
+    @Test func aCardDuringAPlanNamesItsStepOnBothPaths() throws {
+        let step = #"{"plan": "p-1", "goal": "Tides", "step": "s2", "index": 2, "total": 3, "does": "Save the note"}"#
+        var parser = SSEParser()
+        let lines = ["event: approval", #"data: {"actions": [{"tool": "write_file", "description": "write", "step": "# + step + "}], \"approval_id\": \"a-9\"}"]
+        guard case let .approval(actions)? = lines.compactMap({ parser.feed($0) }).first else { Issue.record("no approval"); return }
+        #expect(actions.first?.step == PlanStepRef(plan: "p-1", goal: "Tides", step: "s2", index: 2, total: 3, does: "Save the note"))
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        let restored = try decoder.decode(PendingAction.self, from: Data((#"{"tool": "write_file", "description": "write", "step": "# + step + "}").utf8))
+        #expect(restored.step?.index == 2 && restored.step?.does == "Save the note")
+    }
+
     @Test func otherCardsHaveNoPlanAndOlderServersStillDecode() throws {
         let action = try JSONDecoder().decode(PendingAction.self, from: Data(#"{"tool": "write_file", "description": "x"}"#.utf8))
-        #expect(action.plan == nil)
+        #expect(action.plan == nil && action.step == nil)
         let null = try JSONDecoder().decode(PendingAction.self, from: Data(#"{"tool": "write_file", "description": "x", "plan": null}"#.utf8))
         #expect(null.plan == nil)
     }

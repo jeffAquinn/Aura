@@ -46,6 +46,7 @@ from aura.middleware import (
     REJECTION_NOTE,
     CapabilitySelection,
     DenialMiddleware,
+    PlanStepMiddleware,
     ProviderThinkingSanitizer,
     RecursionCircuitBreaker,
     RecursionMiddleware,
@@ -54,6 +55,7 @@ from aura.middleware import (
 from aura.persona import MEMORY_PROMPT, system_prompt
 from aura.tools.plans import card as plan_card
 from aura.tools.plans import is_valid as plan_is_valid
+from aura.tools.plans import PlanSteps
 from aura.tools.plans import preview as plan_preview
 from aura.tools.plans import steps_in_use
 from aura.developer.workflow import describe_build, describe_task
@@ -202,11 +204,12 @@ class Action:
     args: dict[str, Any]
     description: str  # e.g. "create folder 'Project Aura/'"
     plan: dict[str, Any] | None = None  # make_plan's card: the checked plan, for the app's plan card (T5)
+    step: dict[str, Any] | None = None  # a card raised during a plan: which step it serves (T6)
 
     def payload(self) -> dict[str, Any]:
-        """What the app receives: `plan` only on a plan card, so every other card is as before."""
+        """What the app receives: `plan` and `step` only when there is one, so other cards are as before."""
         out = {"tool": self.tool, "args": self.args, "description": self.description}
-        return out | {"plan": self.plan} if self.plan is not None else out
+        return out | {k: v for k, v in (("plan", self.plan), ("step", self.step)) if v is not None}
 
 
 @dataclass(frozen=True)
@@ -511,6 +514,7 @@ class Aura:
                     self._selection,
                     RecursionMiddleware(),
                     HumanInTheLoopMiddleware(interrupt_on=interrupt_on),
+                    PlanStepMiddleware(self._plan_steps.started),  # innermost: only calls that run
                 ],
                 checkpointer=self._checkpointer,
             )
@@ -518,6 +522,7 @@ class Aura:
         self._build = build
         # The server and the terminal publish the Registry to the vault; tests and embeddings don't.
         self.publish_capabilities = publish_capabilities
+        self._plan_steps = PlanSteps(self.toolbox.plans)  # cards and tool calls -> the running plan's steps
         # Shared by every rebuild of the agent. A running plan's tools are shown on top of each turn's.
         self._selection = CapabilitySelection(lambda: steps_in_use(self.toolbox.plans) & self.toolbox.registered)
         self._finder = finder_tool(self._families, self._load)
@@ -774,7 +779,8 @@ class Aura:
         ])
 
     def _actions(self, interrupt: Interrupt) -> tuple[Action, ...]:
-        return tuple(Action(a["name"], a["args"], a.get("description", ""), self._plan_preview(a))
+        return tuple(Action(a["name"], a["args"], a.get("description", ""), self._plan_preview(a),
+                            self._plan_steps.line(a["name"]))
                      for a in interrupt.value["action_requests"])
 
     def _plan_preview(self, request: dict[str, Any]) -> dict[str, Any] | None:
@@ -934,6 +940,7 @@ class Aura:
             ok = bool(answer.get("approve")) if isinstance(answer, dict) else bool(answer)
             if ok:  # an approved egress (web search) gets its single-use grant (tools/egress.py)
                 self.toolbox.search.gate.grant_for(action["name"], action["args"], answering, tool_call_id)
+            self._plan_steps.answered(action["name"], ok)  # Deny fails a plan's step (T6)
             self.toolbox.audit.record(
                 "approval",
                 tool=action["name"],
@@ -1017,6 +1024,8 @@ class Aura:
         interrupts = self._agent.get_state(self._config).interrupts
         if interrupts:
             self._pending = interrupts[0]
+            for request in self._pending.value["action_requests"]:
+                self._plan_steps.carded(request["name"])  # the step waits for this card
             actions = self._actions(self._pending)
             self.approval_id = self._register(self._pending, actions)
             yield ApprovalNeeded(actions, self.approval_id)

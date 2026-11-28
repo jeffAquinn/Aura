@@ -1,5 +1,7 @@
 """T4 of docs/orchestration.md: make_plan, plan_status and finish_step in real (scripted) turns."""
 
+import json
+
 from conftest import call, make_aura, tool_turn
 from langchain_core.messages import AIMessage, ToolMessage
 
@@ -94,8 +96,8 @@ def test_a_tool_step_isnt_done_on_the_models_word_or_after_a_denied_card(setting
     assert claim.startswith("Not recorded: step s1 isn't done: write_file hasn't returned a result")
     assert after_deny.startswith("Not recorded:")
     plan = aura.toolbox.plans.active()[0]
-    # A refused finish saves nothing, not even the start that came with it (T6 marks a step running).
-    assert plan.steps["s1"].status == "pending" and not (settings.vault_dir / "a.md").exists()
+    # T6: the denied card failed the step (and the claim before it saved nothing).
+    assert plan.steps["s1"].status == "failed" and not (settings.vault_dir / "a.md").exists()
 
 
 def test_a_failed_step_is_retried_once_with_a_ruling_and_a_new_result(settings):
@@ -291,3 +293,84 @@ def test_the_server_streams_the_plan_card_and_reports_the_running_plan(settings)
     running = client.get("/v1/plans/active", headers=AUTH).json()["plan"]
     assert running["goal"] == "Write a note on tides" and (running["done"], running["total"]) == (0, 3)
     assert [s["status"] for s in running["steps"]] == ["pending"] * 3
+
+
+# ── T6: cards raised during a plan, and what Allow and Deny do to its step ───────────────────
+
+WRITE_PLAN = [{"does": "Find notes", "tool": "search_vault", "done_when": "listed"},
+              {"does": "Save the note", "tool": "write_file", "after": [1], "done_when": "written"},
+              {"does": "Tell the user", "tool": "think", "after": [2], "done_when": "told"}]
+
+
+def running_plan(aura):
+    return aura.toolbox.plans.get(aura.toolbox.plans.state.records("plan")[0][0])
+
+
+def test_a_card_during_a_plan_names_its_step_and_the_step_waits(settings):
+    settings.vault_dir.mkdir(parents=True, exist_ok=True)
+    aura, _ = make_aura(settings, tool_turn(plan_call(WRITE_PLAN)),
+                        tool_turn(call("search_vault", query="tide")),
+                        tool_turn(call("finish_step", step="s1", outcome="done", summary="none found")),
+                        tool_turn(call("write_file", path="Knowledge/tides.md", content="Tides.")),
+                        AIMessage("ok"))
+    list(aura.stream("Make a plan for a note on tides."))
+    card = list(aura.resume([True]))[-1]  # the plan card, then the write's own card
+    assert card.actions[0].tool == "write_file"
+    assert card.actions[0].step == {"plan": running_plan(aura).id, "goal": "Write a note on tides", "step": "s2",
+                                    "index": 2, "total": 3, "does": "Save the note"}
+    assert card.actions[0].payload()["step"]["index"] == 2 and aura.pending()["actions"][0]["step"]["step"] == "s2"
+    assert running_plan(aura).steps["s2"].status == "waiting"
+
+
+def test_deny_fails_the_step_and_blocks_what_depends_on_it(settings):
+    settings.vault_dir.mkdir(parents=True, exist_ok=True)
+    aura, _ = make_aura(settings, tool_turn(plan_call(WRITE_PLAN)),
+                        tool_turn(call("search_vault", query="tide")),
+                        tool_turn(call("finish_step", step="s1", outcome="done", summary="none found")),
+                        tool_turn(call("write_file", path="Knowledge/tides.md", content="Tides.")),
+                        AIMessage("ok"))
+    list(aura.stream("Make a plan for a note on tides."))
+    list(aura.resume([True]))
+    list(aura.resume([False]))  # deny the write
+    plan = running_plan(aura)
+    assert plan.steps["s2"].status == "failed" and plan.steps["s2"].summary == "You denied write_file on its card."
+    assert plan.steps["s3"].status == "blocked" and not (settings.vault_dir / "Knowledge" / "tides.md").exists()
+
+
+def test_allow_runs_the_step_and_its_tool_running_marks_it_running(settings):
+    settings.vault_dir.mkdir(parents=True, exist_ok=True)
+    aura, _ = make_aura(settings, tool_turn(plan_call(WRITE_PLAN)),
+                        tool_turn(call("search_vault", query="tide")),
+                        tool_turn(call("plan_status")),  # s1 is running before it is finished
+                        tool_turn(call("finish_step", step="s1", outcome="done", summary="none found")),
+                        tool_turn(call("write_file", path="Knowledge/tides.md", content="Tides.")),
+                        tool_turn(call("finish_step", step="s2", outcome="done", summary="written")),
+                        AIMessage("ok"))
+    list(aura.stream("Make a plan for a note on tides."))
+    list(aura.resume([True]))
+    list(aura.resume([True]))  # allow the write
+    assert "- s1 [running] Find notes" in results(aura, "plan_status")[0]
+    plan = running_plan(aura)
+    assert plan.steps["s2"].status == "done" and (settings.vault_dir / "Knowledge" / "tides.md").exists()
+    statuses = [(e["step"], e["status"]) for e in map(json.loads, settings.audit_log.read_text().splitlines())
+                if e["event"] == "plan_step"]
+    assert statuses[:5] == [("s1", "running"), ("s1", "done"), ("s2", "waiting"), ("s2", "running"), ("s2", "done")]
+
+
+def test_cards_outside_a_plan_are_unchanged(settings):
+    aura, _ = make_aura(settings, tool_turn(call("create_folder", path="Receipts")), AIMessage("ok"))
+    card = list(aura.stream("Create a folder named Receipts."))[-1]
+    assert card.actions[0].step is None and set(card.actions[0].payload()) == {"tool", "args", "description"}
+
+
+def test_plan_bookkeeping_that_fails_never_breaks_a_tool_call(settings, monkeypatch):
+    settings.vault_dir.mkdir(parents=True, exist_ok=True)
+    aura, _ = make_aura(settings, tool_turn(plan_call(WRITE_PLAN)), tool_turn(call("search_vault", query="tide")),
+                        AIMessage("ok"))
+    list(aura.stream("Make a plan for a note on tides."))
+
+    def broken(*args, **kwargs):
+        raise OSError("disk full")
+    monkeypatch.setattr(aura.toolbox.plans, "change", broken)
+    list(aura.resume([True]))  # the plan card; then search_vault runs although its step can't be recorded
+    assert results(aura, "search_vault") and not results(aura, "search_vault")[0].startswith("Error")

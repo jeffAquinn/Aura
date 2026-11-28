@@ -8,12 +8,16 @@ public struct PendingAction: Codable, Sendable, Equatable {
     public let args: [String: JSONValue]?
     /// make_plan's card: the plan as the server checked it (docs/orchestration.md T5).
     public let plan: PlanProposal?
+    /// A card raised during a plan: the step it serves (T6).
+    public let step: PlanStepRef?
 
-    public init(tool: String, description: String, args: [String: JSONValue]? = nil, plan: PlanProposal? = nil) {
+    public init(tool: String, description: String, args: [String: JSONValue]? = nil, plan: PlanProposal? = nil,
+                step: PlanStepRef? = nil) {
         self.tool = tool
         self.description = description
         self.args = args
         self.plan = plan
+        self.step = step
     }
 
     /// A Developer build Aura is asking to start (a develop_skill call), if this is one.

@@ -785,6 +785,9 @@ struct ItemView: View {
             ToolStatusView(text: item.text)
                 .contextMenu { MessageMenu(item: item, store: store) }
         case .approval:
+            if let ref = item.actions.first?.step {
+                PlanStepBanner(ref: ref)
+            }
             if item.isFileChanges {
                 FileChangesCard(item: item, store: store)
             } else if item.actions.count == 1, let task = item.actions[0].developerTask {

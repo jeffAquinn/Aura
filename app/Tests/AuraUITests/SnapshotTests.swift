@@ -243,6 +243,10 @@ struct SnapshotTests {
             .init(id: "s4", does: "Save it to Knowledge/", status: "pending"),
         ])
         try render("40-plan-started", running, dark: true)
+        let write = PendingAction(tool: "write_file", description: "write 'Knowledge/tides.md' (412 B, new file)",
+                                  step: .init(plan: "p-9", goal: plan.goal, step: "s4", index: 4, total: 4, does: "Save it to Knowledge/"))
+        let stepCard = try render("41-plan-step-card", ChatStore(items: [ask, item(.approval, actions: [write])], phase: .awaitingApproval))
+        #expect(stepCard.height > 400)
         #expect(running.activePlan?.current?.id == "s2")
     }
 

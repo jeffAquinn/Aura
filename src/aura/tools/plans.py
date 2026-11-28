@@ -10,6 +10,7 @@ that no other step has counted. The model's word alone never finishes a tool ste
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Callable, Iterable
 from typing import Annotated, Any
@@ -24,13 +25,19 @@ from aura.plans import (
     MAX_ATTEMPTS,
     OPEN,
     REVIEW,
+    RUNNING,
+    WAITING,
     Plan,
     PlanError,
     PlanStore,
     Ruling,
+    Step,
     make,
 )
 
+log = logging.getLogger(__name__)
+
+PLAN_TOOL_NAMES = frozenset({"make_plan", "plan_status", "finish_step"})
 INVALID = "Plan not valid"
 STARTED = "Approved by the user and started."
 MAX_INVALID = 2  # invalid plans per turn; the third attempt is refused
@@ -226,6 +233,80 @@ def plan_tools(store: PlanStore, available: Callable[[], set[str]]) -> list[Base
             return "Not recorded: " + "; ".join(e.reasons) + "\n" + progress(store.get(plan.id))
 
     return [make_plan, plan_status, finish_step]
+
+
+def step_for(plan: Plan, tool_name: str) -> Step | None:
+    """The step a call of `tool_name` serves: the step already running or waiting with that tool, or
+    else the first ready step that uses it. None: the call isn't part of the plan."""
+    for s in plan.steps.values():
+        if s.tool == tool_name and s.status in (RUNNING, WAITING):
+            return s
+    return next((s for s in plan.ready() if s.tool == tool_name), None)
+
+
+class PlanSteps:
+    """Links Aura's tool calls and cards to the running plan's steps (docs/orchestration.md T6).
+
+    A step's tool running marks it running; a card for it marks it waiting, and the card carries
+    "Step 3 of 5 of the plan …"; Allow sets it running again; Deny fails it, which blocks every step
+    that depends on it. Bookkeeping only: it grants nothing, and a refused transition is logged, never
+    raised, so a plan can never break a turn or a card.
+    """
+
+    def __init__(self, store: PlanStore | None):
+        self.store = store
+
+    def _running(self) -> Plan | None:
+        try:
+            active = self.store.active() if self.store is not None else []
+        except Exception:  # as above: no plan known means no bookkeeping
+            log.warning("couldn't read the running plan", exc_info=True)
+            return None
+        return active[-1] if active else None
+
+    def line(self, tool_name: str) -> dict[str, Any] | None:
+        """What a card raised for `tool_name` says about the plan, or None outside a plan."""
+        if tool_name in PLAN_TOOL_NAMES or (plan := self._running()) is None:
+            return None
+        if (step := step_for(plan, tool_name)) is None:
+            return None
+        ids = list(plan.steps)
+        return {"plan": plan.id, "goal": plan.goal, "step": step.id, "index": ids.index(step.id) + 1,
+                "total": len(ids), "does": step.does}
+
+    def _apply(self, tool_name: str, change: Callable[[Plan, Step], Any]) -> None:
+        if tool_name in PLAN_TOOL_NAMES or (plan := self._running()) is None:
+            return
+        if (step := step_for(plan, tool_name)) is None:
+            return
+        try:
+            self.store.change(plan.id, lambda p: change(p, p.steps[step.id]))
+        except Exception:  # bookkeeping never breaks a tool call or a card
+            log.warning("plan %s: couldn't record %s for step %s", plan.id, tool_name, step.id, exc_info=True)
+
+    def started(self, tool_name: str) -> None:
+        """The tool is about to run: its step is running."""
+        self._apply(tool_name, lambda p, s: p.start(s.id) if s.status == "pending" else None)
+
+    def carded(self, tool_name: str) -> None:
+        """A card waits for the user: its step is waiting."""
+        def change(p: Plan, s: Step) -> None:
+            if s.status == "pending":
+                p.start(s.id)
+            if s.status == RUNNING:
+                p.wait(s.id)
+        self._apply(tool_name, change)
+
+    def answered(self, tool_name: str, allowed: bool) -> None:
+        """The user answered the card: Allow, the step runs; Deny, the step fails."""
+        def change(p: Plan, s: Step) -> None:
+            if s.status != WAITING:
+                return
+            if allowed:
+                p.resume(s.id)
+            else:
+                p.finish(s.id, "failed", f"You denied {tool_name} on its card.")
+        self._apply(tool_name, change)
 
 
 def steps_in_use(store: PlanStore | None) -> set[str]:

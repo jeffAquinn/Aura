@@ -327,7 +327,7 @@ security or architecture.
   SQL; secrets in audit events; forged evidence. One reliability note: if a card's condition changes
   while the message holds several cards, LangChain stops the resume with an error and runs nothing.
 
-### T5 — The plan card in the app
+### T5 — The plan card in the app (done, 2a712e2; approved by Aura)
 - Scope: `app/Sources/AuraKit/Protocol.swift`, `ChatView.swift` (`ApprovalCard`), snapshot tests.
 - Blocked by: T4 (the card's payload).
 - Acceptance: the plan card shows the goal, the steps with their tools, what each waits for and its
@@ -350,6 +350,15 @@ security or architecture.
   the step failed and blocks what depends on it; cards outside a plan are unchanged. Verified by a
   scripted turn and a snapshot.
 - Non-goal: changing any card's default or floor.
+- **Done (2026-11-27).** `PlanSteps` (tools/plans.py) links calls to steps: the step a call serves is
+  the one running or waiting with that tool, else the first ready one that uses it. A card raised for
+  it marks the step waiting and carries `step` (plan, goal, step, index, total, does; one-word keys, so
+  both app decoders read it); Allow sets it running, Deny fails it ("You denied write_file on its card")
+  and blocks its descendants. `PlanStepMiddleware`, innermost, marks a step running when its tool
+  really runs. Every hook only records: an error in it is logged and never breaks a tool call or a
+  card (tested with a failing store). The app shows "Step 4 of 4 of the plan “…”: …" above any card
+  that carries a step. Cards outside a plan are unchanged. Not done: Slack's text cards don't show the
+  step line yet.
 
 ### T7 — Review steps, Stop, and Continue
 - Scope: `tools/plans.py`, `server.py` (Stop), `ChatView.swift`.

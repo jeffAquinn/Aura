@@ -220,6 +220,19 @@ class CapabilitySelection(AgentMiddleware):
         return handler(request)
 
 
+class PlanStepMiddleware(AgentMiddleware):
+    """A running plan's step is marked running when its tool runs (docs/orchestration.md T6). The
+    innermost hook, so it sees only calls that really run: approved, shown this turn, not refused."""
+
+    def __init__(self, started: Callable[[str], None]) -> None:
+        super().__init__()
+        self.started = started
+
+    def wrap_tool_call(self, request: ToolCallRequest, handler: Callable) -> Any:
+        self.started(request.tool_call["name"])
+        return handler(request)
+
+
 class ToolStatusMiddleware(AgentMiddleware):
     """Announce each tool as it actually runs (after any approval), and flag fallback search.
     Every result the model reads is masked (no credential reaches the model, the conversation
