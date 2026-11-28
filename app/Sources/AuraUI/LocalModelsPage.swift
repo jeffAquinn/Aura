@@ -49,6 +49,8 @@ struct LocalModelsPage: View {
                     Text(llama.server.running ? "Aura's llama-server is running \(llama.server.model ?? "a model")."
                          : "llama-server isn't running: Aura starts it when a llama.cpp model is picked.")
                         .font(.caption).foregroundStyle(.secondary)
+                    Text("Loading a llama.cpp model first unloads Ollama's models, so the two never compete for memory.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
             }
             ModelsCard("Memory", symbol: "memorychip") {

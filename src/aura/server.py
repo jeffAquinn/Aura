@@ -917,7 +917,16 @@ def create_app(aura: Aura, token: str, keeper: Keeper | None = None, voices: Kok
     if not supplied_keeper and not aura._injected_model:
         # Aura runs llama-server itself for a llama.cpp model, and stops it when another model is
         # chosen, when idle, and when Aura quits (docs/model-settings.md §11). Tests don't.
-        aura.toolbox.local_server = LlamaServer(aura.settings, aura.toolbox.audit, busy=turn.locked)
+        def unload_ollama() -> None:
+            """Before a llama.cpp model loads, unload Ollama's models, so the two never compete for
+            GPU memory (a llama-server "Compute error" was seen with gemma4:26b's 16 GB loaded)."""
+            for name in loaded_ollama_models(aura.settings):
+                if ModelKeeper(aura.settings.base_url, name, 0).warm():
+                    aura.toolbox.audit.record("local_model_unloaded", model=name, provider="ollama",
+                                              reason="a llama.cpp model is loading")
+
+        aura.toolbox.local_server = LlamaServer(aura.settings, aura.toolbox.audit, busy=turn.locked,
+                                                before_load=unload_ollama)
     llama: LlamaServer | None = aura.toolbox.local_server
     broadcast = TurnBroadcast()  # every turn as shown, for the mirror feed (GET /v1/turns/live)
     app.state.broadcast = broadcast

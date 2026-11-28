@@ -69,7 +69,8 @@ struct ModelSettingsPage: View {
                             .disabled(saving)
                             .help("Fills in this model's recommended values; nothing changes until you save.")
                     }
-                    Button("Reset to defaults") { save([:]) }
+                    // Aura's review: say what Reset brings back (recommended values, or the model's own defaults).
+                    Button(info.recommended.isEmpty ? "Reset to defaults" : "Reset to recommended") { save([:]) }
                         .disabled(saving || info.saved.isEmpty)
                         .help(info.recommended.isEmpty ? "Forgets these settings: the model's own defaults apply."
                               : "Forgets these settings: the recommended values apply again.")
@@ -151,7 +152,7 @@ struct ModelSettingsPage: View {
                     info = saved
                     draft = Self.texts(saved.saved)
                 }
-                (message, failed) = (values.isEmpty ? "Back to defaults." : "Saved.", false)
+                (message, failed) = (!values.isEmpty ? "Saved." : saved.recommended.isEmpty ? "Back to defaults." : "Back to recommended values.", false)
             case let .failure(error):
                 (message, failed) = (error.message, true)
             }

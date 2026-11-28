@@ -111,10 +111,13 @@ class LlamaServer:
     """One llama-server process at a time, serving one model (the Mac's memory allows one)."""
 
     def __init__(self, settings: Settings, audit: Any = None, busy: Callable[[], bool] = lambda: False,
-                 watch_every: float = 15.0):
+                 watch_every: float = 15.0, before_load: Callable[[], None] = lambda: None):
         self.settings = settings
         self.audit = audit
         self.busy = busy  # a turn is running: never unload under it
+        # Called just before a model loads: frees the memory other local models hold (the server
+        # unloads Ollama's), so the two never compete for a 24 GB Mac's GPU memory.
+        self.before_load = before_load
         self.root = llamacpp_root(settings)
         parts = urlsplit(self.root)
         self.host, self.port = parts.hostname or "127.0.0.1", parts.port or 80
@@ -205,6 +208,10 @@ class LlamaServer:
                 raise LocalModelError(
                     f"Another program is using {self.host}:{self.port}, so Aura can't start llama-server there. "
                     "Quit it (for example a llama-server started by hand), then try again.")
+            try:
+                self.before_load()
+            except Exception:  # noqa: BLE001 — freeing memory first helps; it never blocks the load
+                log.exception("couldn't free memory before loading %s", model)
             started = time.monotonic()
             self.log_path.parent.mkdir(parents=True, exist_ok=True)
             with self.log_path.open("ab") as out:

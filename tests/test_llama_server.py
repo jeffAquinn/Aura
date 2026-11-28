@@ -272,3 +272,20 @@ def alive(pid: int) -> bool:
         return os.waitpid(pid, os.WNOHANG) == (0, 0)
     except ChildProcessError:
         return True
+
+
+def test_other_local_models_are_freed_just_before_a_load_and_only_then(setup):
+    make, record = setup
+    freed: list[int] = []
+    server = make()
+    server.before_load = lambda: freed.append(len(starts(record)))  # how many had started when called
+    server.prepare(ModelChoice("llamacpp", "Small-1B"))
+    assert freed == [0]  # before llama-server started
+    server.prepare(ModelChoice("llamacpp", "Small-1B"))
+    assert freed == [0]  # already loaded: nothing freed again
+
+    def failing():
+        raise RuntimeError("Ollama down")
+    server.before_load = failing
+    server.prepare(ModelChoice("llamacpp", "Bonsai-27B-Q2_0"))  # freeing failed: the load still goes on
+    assert server.loaded("Bonsai-27B-Q2_0")

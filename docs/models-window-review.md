@@ -66,3 +66,19 @@ No Phase 2: Anthropic stays the only cloud provider (the user's decision).
 
 1. Do you accept the two choices above (recommended values not migrated; a llama.cpp budget sets llama-server's window)?
 2. Should "unload any Ollama model for another role before loading a llama.cpp model" be added? One live run failed once with a llama-server "Compute error" while `gemma4:26b` (16 GB) was loaded. Five reruns didn't reproduce it, but on a 24 GB Mac it is the likely cause.
+
+## Aura's verdict (2026-11-27) and what followed
+
+Aura accepted the build and both choices, and recommended the tag. Its three observations:
+
+1. **Is Ollama's reported window really enforced?** Yes. `ollama ps` reports the `context_length`
+   Ollama allocated for the loaded model, and Ollama enforces it by dropping the oldest input that
+   doesn't fit. Aura's cap makes Aura summarise its memory before that point, so it is a real
+   limit on what Aura sends, not only a display.
+2. **The "Compute error":** Aura recommended a warning rather than a hard unload. The user chose the
+   unload: just before a llama.cpp model loads, Aura unloads Ollama's models (each unload is
+   recorded for the Observer), and the Local page says so. A failure to unload never blocks the
+   load. Live check: with `gemma4:26b` (16 GB) loaded, loading Bonsai unloaded it first and Bonsai
+   answered.
+3. **Reset's wording:** the button now says "Reset to recommended" for a model with recommended
+   values (Bonsai), and "Reset to defaults" otherwise.
