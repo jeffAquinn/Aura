@@ -242,3 +242,93 @@ def test_an_unknown_plan_is_reported(store):
     plans, _, _ = store
     with pytest.raises(PlanError, match="no plan 'p-nope'"):
         plans.get("p-nope")
+
+
+# ── T3: a Markdown copy in _scratch/Plans/, for reading only ──────────────────────────────────
+
+
+@pytest.fixture
+def copied(tmp_path):
+    state = StateStore(tmp_path / "state.sqlite")
+    folder = tmp_path / "vault" / "_scratch" / "Plans"
+    plans = PlanStore(state, AuditLog(tmp_path / "a.jsonl"), copy_dir=folder, mask=lambda s: s.replace("sk-" + "secret", "[masked]"))
+    yield plans, folder
+    state.close()
+
+
+def test_the_copy_is_written_when_a_plan_starts_and_after_every_change(copied):
+    plans, folder = copied
+    plan = plans.create(make("Write a research note on Quantum Computing!", [
+        step("Search the vault", tool="search_vault", done_when="notes listed"),
+        step("Draft it", after=[1], done_when="a draft"),
+    ], TOOLS))
+    (copy,) = folder.iterdir()
+    assert copy.name == f"{plan.created[:10]}-write-a-research-note-on-quantum-{plan.id}.md"
+    text = copy.read_text()
+    assert text.startswith("# Plan: Write a research note on Quantum Computing!\n")
+    assert "Aura never reads it back" in text and "| s2 | Draft it | pending | think | s1 | a draft |" in text
+    plans.change(plan.id, lambda p: p.start("s1"))
+    plans.change(plan.id, lambda p: p.finish("s1", "failed", "no index"))
+    plans.change(plan.id, lambda p: p.retry("s1", Ruling("s1", "search titles", "no index", "slower")))
+    text = copy.read_text()
+    assert "| s1 | Search the vault | pending | search_vault |  | notes listed |" in text
+    assert "- Ruling (s1): search titles — no index — slower" in text
+
+
+def test_editing_or_deleting_the_copy_changes_nothing(copied):
+    plans, folder = copied
+    plan = plans.create(make("x", [step(), step(after=[1])], TOOLS))
+    (copy,) = folder.iterdir()
+    copy.write_text("| s1 | done |\n| s2 | done |\n")  # a hand edit claiming everything is done
+    assert plans.get(plan.id).steps["s1"].status == "pending" and not plans.get(plan.id).complete
+    copy.unlink()
+    plans.change(plan.id, lambda p: p.start("s1"))
+    assert "| s1 | Do it | running |" in copy.read_text()  # rewritten from the stored plan
+
+
+def test_the_copy_masks_secrets_and_keeps_a_summary_on_one_line(copied):
+    plans, folder = copied
+    plan = plans.create(make("x", [step()], TOOLS))
+    plans.change(plan.id, lambda p: p.start("s1"))
+    plans.change(plan.id, lambda p: p.finish("s1", "done", "key sk-" + "secret\nsecond | line"))
+    text = next(folder.iterdir()).read_text()
+    assert "sk-" + "secret" not in text and "[masked]" in text
+    assert "key [masked] second \\| line" in text  # one table row, its pipes escaped
+
+
+def test_a_copy_that_cant_be_written_never_stops_the_plan(tmp_path):
+    state = StateStore(tmp_path / "state.sqlite")
+    blocker = tmp_path / "file-not-folder"
+    blocker.write_text("x")
+    plans = PlanStore(state, AuditLog(tmp_path / "a.jsonl"), copy_dir=blocker / "Plans")
+    plan = plans.create(make("x", [step()], TOOLS))
+    plans.change(plan.id, lambda p: p.start("s1"))
+    assert plans.get(plan.id).steps["s1"].status == "running"
+    state.close()
+
+
+def test_a_name_with_nothing_usable_still_gets_a_file(copied):
+    plans, folder = copied
+    plan = plans.create(make("!!! ???", [step()], TOOLS))
+    assert next(folder.iterdir()).name == f"{plan.created[:10]}-plan-{plan.id}.md"
+
+
+def test_copies_live_in_the_temporary_folder_and_are_swept_like_any_scratch_file(tmp_path):
+    import time
+
+    from aura.plans import copy_folder
+    from aura.tools.vault import Vault
+
+    vault_root = tmp_path / "vault"
+    vault_root.mkdir()
+    audit = AuditLog(tmp_path / "a.jsonl")
+    state = StateStore(tmp_path / "state.sqlite")
+    plans = PlanStore(state, audit, copy_dir=copy_folder(vault_root))
+    plans.create(make("x", [step()], TOOLS))
+    folder = vault_root / "_scratch" / "Plans"
+    assert copy_folder(vault_root) == folder and len(list(folder.iterdir())) == 1
+    vault = Vault(vault_root, audit)
+    assert vault.sweep_scratch(trash_dir=tmp_path / "trash") == []  # just written: kept
+    swept = vault.sweep_scratch(now=time.time() + 8 * 86_400, trash_dir=tmp_path / "trash")
+    assert swept == ["_scratch/Plans"] and not folder.exists()
+    state.close()

@@ -259,7 +259,7 @@ security or architecture.
   steps stay ready (Aura's five-task example: D blocked, E ready). Verified by unit tests.
 - Non-goal: storage, tools, prompts.
 
-### T2 — Keep plans in state.sqlite, and record their events
+### T2 — Keep plans in state.sqlite, and record their events (done, 68cc415)
 - Scope: `state.py` (schema 3, forward-only migration: a `plans` table), `plans.py`, `audit.py`
   (`plan_` events in the Observer's families).
 - Blocked by: T1 (the plan's shape).
@@ -280,6 +280,9 @@ security or architecture.
   rulings after each transition, and is swept like any `_scratch` file; editing or deleting it changes
   nothing in the plan. Verified by unit tests.
 - Non-goal: showing plans in the app.
+- **Done (2026-11-28).** `PlanStore(copy_dir=copy_folder(vault))` writes the copy atomically after
+  every change, with secrets masked as in saved chats; a copy that can't be written is logged and
+  never stops the plan. The server passes the folder in T4, when plans are first used.
 
 ### T4 — make_plan, plan_status and finish_step (Aura review)
 - Scope: new `src/aura/tools/plans.py`, `capabilities.py` (a Plans family; `make_plan` floor "ask",

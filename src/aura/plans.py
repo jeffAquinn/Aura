@@ -16,14 +16,20 @@ approval card.
 from __future__ import annotations
 
 import graphlib
+import logging
+import os
+import re
 import secrets
 from collections.abc import Callable, Iterable
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from aura.audit import AuditLog
     from aura.state import StateStore
+
+log = logging.getLogger(__name__)
 
 MAX_STEPS = 20
 MAX_TEXT = 300  # a step's `does` and `done_when`: one line each
@@ -87,6 +93,7 @@ class Plan:
     rulings: list[Ruling] = field(default_factory=list)
     version: int = 0  # the stored version this copy was read at (PlanStore's compare-and-set)
     stopped: bool = False  # the user pressed Stop: nothing more runs, not even a retry
+    created: str = ""  # when PlanStore stored it (UTC, ISO 8601)
 
     # -- reading ------------------------------------------------------------------------------
 
@@ -206,31 +213,49 @@ class Plan:
 
     def to_dict(self) -> dict[str, Any]:
         return {"id": self.id, "goal": self.goal, "steps": [asdict(s) for s in self.steps.values()],
-                "rulings": [asdict(r) for r in self.rulings], "version": self.version, "stopped": self.stopped}
+                "rulings": [asdict(r) for r in self.rulings], "version": self.version, "stopped": self.stopped, "created": self.created}
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Plan:
         steps = {s["id"]: Step(**{**s, "after": tuple(s.get("after", ()))}) for s in data["steps"]}
         return cls(id=data["id"], goal=data["goal"], steps=steps, rulings=[Ruling(**r) for r in data.get("rulings", [])],
-                   version=int(data.get("version", 0)), stopped=bool(data.get("stopped", False)))
+                   version=int(data.get("version", 0)), stopped=bool(data.get("stopped", False)), created=str(data.get("created", "")))
 
 
 KIND = "plan"  # state.sqlite's record kind
+COPIES = "Plans"  # the copies' folder, inside the vault's temporary folder
+
+
+def copy_folder(vault_root: Path) -> Path:
+    """Where the plans' Markdown copies go: `_scratch/Plans/`, swept like any temporary file."""
+    from aura.tools.vault import SCRATCH
+
+    return vault_root / SCRATCH / COPIES
 ACTIVE, ENDED = "active", "ended"
 
 
 class PlanStore:
     """Plans in state.sqlite. Every save is compare-and-set: a copy read before another change is
     refused, so two writers can never interleave. Each step whose status changes is one audit
-    event (`plan_step`), with `plan_created` and `plan_ended` around them."""
+    event (`plan_step`), with `plan_created` and `plan_ended` around them.
 
-    def __init__(self, state: StateStore, audit: AuditLog):
+    `copy_dir` (the vault's `_scratch/Plans/`): after every change, a Markdown copy of the plan for
+    the user to read (T3). It is only ever written, never read: editing or deleting it changes
+    nothing, and the next change rewrites it. `mask` hides secrets in it, as in saved chats."""
+
+    def __init__(self, state: StateStore, audit: AuditLog, copy_dir: Path | None = None,
+                 mask: Callable[[str], str] = lambda text: text):
         self.state = state
         self.audit = audit
+        self.copy_dir = copy_dir
+        self.mask = mask
 
     def create(self, plan: Plan) -> Plan:
-        plan.version = 1
+        from aura.state import now
+
+        plan.version, plan.created = 1, plan.created or now()
         self.state.put_record(KIND, plan.id, ACTIVE, plan.to_dict())
+        self._write_copy(plan)
         self.audit.record("plan_created", plan=plan.id, goal=_clip(plan.goal, 200), steps=len(plan.steps))
         self.state.prune_records(KIND, keep_states=[ACTIVE])
         return plan
@@ -250,6 +275,7 @@ class PlanStore:
         if not self.state.replace_record(KIND, plan.id, ENDED if plan.ended else ACTIVE, plan.to_dict(), plan.version):
             raise PlanError([f"plan {plan.id} changed since it was read: read it again"])
         plan.version += 1
+        self._write_copy(plan)
         for step in plan.steps.values():
             old = before.steps.get(step.id)
             if old is None or old.status != step.status:
@@ -260,11 +286,52 @@ class PlanStore:
                               done=sum(s.status == DONE for s in plan.steps.values()), steps=len(plan.steps))
         return plan
 
+    def copy_path(self, plan: Plan) -> Path | None:
+        if self.copy_dir is None:
+            return None
+        slug = re.sub(r"[^a-z0-9]+", "-", plan.goal.lower())[:32].strip("-") or "plan"
+        return self.copy_dir / f"{plan.created[:10]}-{slug}-{plan.id}.md"
+
+    def _write_copy(self, plan: Plan) -> None:
+        """Write the copy atomically. A copy that can't be written is logged, never raised: it is
+        for reading, and the plan itself is already stored."""
+        path = self.copy_path(plan)
+        if path is None:
+            return
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(render(plan, self.mask), encoding="utf-8")
+            os.replace(tmp, path)
+        except OSError:
+            log.warning("couldn't write the copy of plan %s to %s", plan.id, path, exc_info=True)
+
     def change(self, plan_id: str, apply: Callable[[Plan], Any]) -> Plan:
         """Read the plan, apply a change, save it. A refused transition (PlanError) saves nothing."""
         plan = self.get(plan_id)
         apply(plan)
         return self.save(plan)
+
+
+def render(plan: Plan, mask: Callable[[str], str] = lambda text: text) -> str:
+    """The plan as Markdown, for the copy in `_scratch/Plans/`."""
+    def cell(text: str) -> str:
+        return " ".join(mask(str(text)).split()).replace("|", "\\|")
+
+    state = ("stopped" if plan.stopped else "complete" if plan.complete else "ended" if plan.ended else "running")
+    lines = [f"# Plan: {cell(plan.goal)}", "",
+             f"`{plan.id}` · started {plan.created[:16].replace('T', ' ')} UTC · {state}", "",
+             "> A copy for reading. Aura never reads it back: the plan itself is kept in Aura's data",
+             "> folder, so editing or deleting this file changes nothing. It is rewritten after every change.", "",
+             "| Step | Does | Status | Tool | Waits for | Done when | Result |",
+             "|---|---|---|---|---|---|---|"]
+    for s in plan.steps.values():
+        result = f"{s.outcome.replace('_', ' ')}: {s.summary}" if s.outcome else ""
+        lines.append(f"| {s.id} | {cell(s.does)} | {s.status} | {s.tool} | {', '.join(s.after)} | "
+                     f"{cell(s.done_when)} | {cell(result)} |")
+    if plan.rulings:
+        lines += ["", "## Rulings", "", *(f"- {cell(r.line())}" for r in plan.rulings)]
+    return "\n".join(lines) + "\n"
 
 
 def make(goal: Any, steps: Any, available: Iterable[str], plan_id: str | None = None) -> Plan:
